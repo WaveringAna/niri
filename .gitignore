@@ -1,0 +1,13 @@
+node_modules/
+dist/
+apps/*/dist/
+
+# environment
+.env
+
+# runtime state
+session.json
+
+# agent home — ignore everything except the example file
+home/*
+!home/soul.example.md

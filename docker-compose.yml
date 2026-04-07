@@ -1,0 +1,21 @@
+services:
+  agent:
+    build:
+      context: .
+      args:
+        AGENT_USER: ${NIRI_USER:-niri}
+    container_name: ${NIRI_CONTAINER:-niri}
+    restart: unless-stopped
+    network_mode: host
+    user: "${AGENT_UID:-1001}:${AGENT_GID:-1001}"
+    volumes:
+      - ./home:/home/${NIRI_USER:-niri}
+      - .:/workspace
+      - agent_usr:/usr/local
+      - agent_etc:/etc
+    environment:
+      - TZ=${TZ:-UTC}
+
+volumes:
+  agent_usr:
+  agent_etc:

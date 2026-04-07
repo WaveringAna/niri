@@ -1,0 +1,212 @@
+:root {
+  color-scheme: dark;
+  font-family: "JetBrains Mono", "Iosevka", "SFMono-Regular", ui-monospace, monospace;
+  background: #0d1017;
+  color: #eef2ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: #0d1017;
+}
+
+.app {
+  max-width: 900px;
+  margin: 0 auto;
+  min-height: 100vh;
+  padding: 1.25rem;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 1rem;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 1.3rem;
+}
+
+.status {
+  margin: 0.25rem 0 0;
+  color: #c5d0ff;
+}
+
+.toggles {
+  margin-top: 0.75rem;
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+  color: #c5d0ff;
+  font-size: 0.9rem;
+}
+
+.toggles button {
+  border-radius: 8px;
+  border: 1px solid #2d344a;
+  background: #141a2b;
+  color: inherit;
+  padding: 0.35rem 0.65rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.toggles button:hover {
+  border-color: #4d4fb2;
+}
+
+.feed {
+  border: 1px solid #252a3a;
+  border-radius: 12px;
+  padding: 0.9rem;
+  overflow: auto;
+  background: #111522;
+}
+
+.entry {
+  padding: 0.7rem;
+  border-radius: 8px;
+  margin-bottom: 0.7rem;
+  border: 1px solid transparent;
+}
+
+.entry strong {
+  display: block;
+  margin-bottom: 0.35rem;
+}
+
+.entry pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+}
+
+.entry-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.4rem;
+}
+
+.entry-header button {
+  border-radius: 8px;
+  border: 1px solid #6a561f;
+  background: #2f2613;
+  color: #fce8a6;
+  padding: 0.25rem 0.5rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.entry-header button:hover {
+  border-color: #a88935;
+}
+
+.markdown {
+  line-height: 1.45;
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote {
+  margin: 0.45rem 0;
+}
+
+.markdown a {
+  color: #9bc8ff;
+}
+
+.markdown :not(pre) > code {
+  background: #1a2133;
+  border: 1px solid #2f3c5c;
+  border-radius: 6px;
+  padding: 0.1rem 0.3rem;
+}
+
+.markdown pre {
+  padding: 0.65rem;
+  border-radius: 8px;
+  border: 1px solid #2a3145;
+  background: #0d1321;
+  overflow: auto;
+}
+
+.entry-user {
+  background: #12223a;
+  border-color: #1f385f;
+}
+
+.entry-incoming {
+  background: #123334;
+  border-color: #25605f;
+}
+
+.entry-niri {
+  background: #281436;
+  border-color: #4f2b67;
+}
+
+.entry-tool {
+  background: #2b230f;
+  border-color: #58471a;
+}
+
+.entry-thinking,
+.entry-info {
+  background: #1a1f2e;
+  border-color: #2b3249;
+  color: #c5d0ff;
+}
+
+.entry-error {
+  background: #38151a;
+  border-color: #68222b;
+  color: #ffd5da;
+}
+
+.composer {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.6rem;
+}
+
+.composer input,
+.composer button {
+  border-radius: 8px;
+  border: 1px solid #2d344a;
+  background: #141a2b;
+  color: inherit;
+  padding: 0.65rem 0.8rem;
+  font: inherit;
+}
+
+.composer button {
+  cursor: pointer;
+  background: #2d2f6a;
+  border-color: #4d4fb2;
+}
+
+.composer button:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.markdown pre code.hljs {
+  background: transparent;
+  padding: 0;
+}
