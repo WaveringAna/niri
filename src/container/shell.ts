@@ -154,7 +154,7 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
         const end = cleaned.indexOf(endSentinel)
         // Drop the single newline that echo adds after the start sentinel,
         // then trim trailing whitespace from the command output.
-        resolve(cleaned.slice(start).replace(/^\n/, "").slice(0, end - start).trimEnd())
+        resolve(cleaned.slice(start, end).replace(/^\n/, "").trimEnd())
       }
     })
 
