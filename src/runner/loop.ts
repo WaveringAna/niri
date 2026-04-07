@@ -693,9 +693,11 @@ async function executeToolCall(
   }
 
   if ((call.function.name === "wait" || call.function.name === "rest") && latestAssistantContent(state).length === 0) {
-    const errorText = `error: ${call.function.name} requires non-empty assistant content. say something before calling ${call.function.name}.`
-    recordToolResult(convId, state, call, call.function.name, { _content_required: true }, errorText)
-    return {}
+    // Some providers emit tool-only assistant turns with empty `content`.
+    // Don't block wait/rest in that case; log it for debugging instead.
+    console.warn(
+      `[runner] ${call.function.name} called with empty assistant content; allowing tool-only turn (provider emitted no text).`,
+    )
   }
 
   const isWaitTool = call.function.name === "wait"
