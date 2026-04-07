@@ -77,12 +77,41 @@ type ToolExecutionContext = {
 
 type ToolHandler = (ctx: ToolExecutionContext) => Promise<ToolExecutionOutcome>
 
+function assistantContentText(content: unknown): string {
+  if (typeof content === "string") return content.trim()
+  if (!Array.isArray(content)) return ""
+
+  let combined = ""
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue
+    const record = part as Record<string, unknown>
+
+    // Accept common structured content formats:
+    // - { type: "text", text: "..." }
+    // - { type: "text", text: { value: "..." } }
+    // - { text: "..." } from OpenAI-compatible providers
+    if (typeof record.text === "string") {
+      combined += record.text
+      continue
+    }
+    if (
+      record.text &&
+      typeof record.text === "object" &&
+      "value" in record.text &&
+      typeof (record.text as { value?: unknown }).value === "string"
+    ) {
+      combined += (record.text as { value: string }).value
+    }
+  }
+
+  return combined.trim()
+}
+
 function latestAssistantContent(state: LoopState): string {
   for (let i = state.conversation.length - 1; i >= 0; i--) {
     const message = state.conversation[i]
     if (!message || message.role !== "assistant") continue
-    if (typeof message.content === "string") return message.content.trim()
-    return ""
+    return assistantContentText(message.content)
   }
   return ""
 }
