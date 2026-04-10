@@ -322,9 +322,9 @@ export const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
             type: "string",
             description: "Optional inbox item id to mark as acted after sending.",
           },
-          reference_message_id: {
+          reference_message: {
             type: "string",
-            description: "Optional specific message id to treat as reply target.",
+            description: "Optional specific message to treat as reply target. Provide message content, username (for their latest message), or message id",
           },
           reply_mode: {
             type: "string",

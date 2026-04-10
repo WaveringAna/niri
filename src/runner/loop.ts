@@ -53,7 +53,7 @@ type ToolArgs = {
   before_message_id?: string
   content?: string
   source_item_id?: string
-  reference_message_id?: string
+  reference_message?: string
   reply_mode?: string
   include_unconfigured?: boolean
   [key: string]: unknown
@@ -631,15 +631,15 @@ function buildToolHandlers(): Record<string, ToolHandler> {
       runStandardTool(ctx, {
         name: "discord_send",
         logArgKeys: ["channel_id", "source_item_id", "reply_mode"] as const,
-        runArgKeys: ["channel_id", "content", "source_item_id", "reply_mode", "reference_message_id"] as const,
-        run: async (channel_id, content, source_item_id, reply_mode, reference_message_id) =>
+        runArgKeys: ["channel_id", "content", "source_item_id", "reply_mode", "reference_message"] as const,
+        run: async (channel_id, content, source_item_id, reply_mode, reference_message) =>
           JSON.stringify(
             await sendDiscordMessage({
               channelId: channel_id as string,
               content: content as string,
               sourceItemId: source_item_id as string | undefined,
               replyMode: reply_mode as string | undefined,
-              referenceMessageId: reference_message_id as string | undefined,
+              referenceMessage: reference_message as string | undefined,
             }),
             null,
             2,

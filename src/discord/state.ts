@@ -853,9 +853,43 @@ export function buildDiscordBatchDigest(params?: {
   }
 }
 
-function getSourceMessageId(sourceItemId?: string, referenceMessageId?: string): string | null {
-  if (referenceMessageId && referenceMessageId.trim()) return referenceMessageId.trim()
-  if (!sourceItemId || !sourceItemId.trim()) return null
+function resolveReferenceMessage(channelId: string, sourceItemId?: string, referenceMessage?: string): string | null {
+  const ref = referenceMessage?.trim()
+  if (ref) {
+    const db = getDb()
+
+    // If it looks like a snowflake ID, verify it exists in cache
+    if (/^\d+$/.test(ref)) {
+      const exists = db
+        .prepare(`select 1 from discord_messages where message_id = ?`)
+        .get(ref)
+      return exists ? ref : null
+    }
+
+    // Try matching by message content (most recent in channel)
+    const byContent = db
+      .prepare(
+        `select message_id from discord_messages
+         where channel_id = ? and content like ? and is_from_bot = 0
+         order by cast(message_id as integer) desc limit 1`,
+      )
+      .get(channelId, `%${ref}%`) as { message_id?: string } | undefined
+    if (byContent?.message_id) return byContent.message_id
+
+    // Try matching by author username (most recent message in channel)
+    const byUsername = db
+      .prepare(
+        `select message_id from discord_messages
+         where channel_id = ? and author_username like ? and is_from_bot = 0
+         order by cast(message_id as integer) desc limit 1`,
+      )
+      .get(channelId, `%${ref}%`) as { message_id?: string } | undefined
+    if (byUsername?.message_id) return byUsername.message_id
+
+    return null
+  }
+
+  if (!sourceItemId?.trim()) return null
 
   const db = getDb()
   const row = db
@@ -902,9 +936,9 @@ async function chooseMessageReference(options: {
   channelId: string
   replyMode: ReplyMode
   sourceItemId?: string
-  referenceMessageId?: string
+  referenceMessage?: string
 }): Promise<string | null> {
-  const sourceMessageId = getSourceMessageId(options.sourceItemId, options.referenceMessageId)
+  const sourceMessageId = resolveReferenceMessage(options.channelId, options.sourceItemId, options.referenceMessage)
   if (!sourceMessageId) return null
 
   if (options.replyMode === "plain") return null
@@ -1037,7 +1071,7 @@ export async function sendDiscordMessage(params: {
   content: string
   sourceItemId?: string
   replyMode?: string
-  referenceMessageId?: string
+  referenceMessage?: string
 }): Promise<Record<string, unknown>> {
   let channelId = String(params.channelId ?? "").trim()
   if (!channelId && params.sourceItemId?.trim()) {
@@ -1065,7 +1099,7 @@ export async function sendDiscordMessage(params: {
     channelId,
     replyMode,
     sourceItemId: resolvedSourceItemId ?? undefined,
-    referenceMessageId: params.referenceMessageId,
+    referenceMessage: params.referenceMessage,
   })
 
   const rest = makeRestClient()
