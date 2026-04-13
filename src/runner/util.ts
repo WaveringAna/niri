@@ -383,6 +383,23 @@ export const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "wait_then_continue",
+      description:
+        "Wait for a short delay, then continue to another assistant turn without waiting for a new external event. Use this after a timeout or recoverable tool error when you still want to keep working. Accepts timeout_ms (default 10000, max 600000).",
+      parameters: {
+        type: "object",
+        properties: {
+          timeout_ms: {
+            type: "integer",
+            description: "Delay before continuing in milliseconds. Defaults to 10000. Max 600000.",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "rest",
       description: "Go to sleep and end this session. Call this when you're truly done for now — conversation context will be cleared.",
       parameters: {

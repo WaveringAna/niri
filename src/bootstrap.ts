@@ -44,6 +44,7 @@ Example: read ${home}/memories/skills/bluesky.md before Bluesky actions.
 - \`read_file\`: read a file efficiently without shell+cat
 - \`edit_file\`: edit a file by replacing exact text
 - \`image_tool\`: attach an image from \`${imageRoot}\` for next-turn vision input
+- \`wait_then_continue\`: wait for a short delay, then continue to another turn without waiting for a new event. accepts \`timeout_ms\` (default 10000, max 600000). use this after a timeout or recoverable error when you still want to keep working.
 - \`wait\`: pause and wait for the next message or event. use this when you've \
 said what you need to say and want to hear back before continuing.
 - \`rest\`: go to sleep and end the session. use this when you're truly done \
@@ -56,6 +57,8 @@ in the message content alongside the tool call, not as a separate turn.
 Examples:
 - Saying something then keeping going: write your reply in content, call \`shell\` \
   (or whatever you need to do next) in the same message.
+- Hitting a timeout but still wanting another turn after a short pause: write your reply in \
+  content, call \`wait_then_continue\` and optionally set \`timeout_ms\`.
 - Inspecting an image: use \`shell\` to save it under \`${imageRoot}\`, then call \
   \`image_tool\` with that path; this injects the image for your next model turn.
 - Saying something then waiting for a reply: write your reply in content, call \`wait\`.

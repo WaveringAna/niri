@@ -1,4 +1,5 @@
 import OpenAI from "openai"
+import { normalizeTimeoutMs } from "../container/config.js"
 import { runCommand, readFile, editFile, readImageForModel } from "../container/index.js"
 import {
   listDiscordBackread,
@@ -135,6 +136,8 @@ function isFunctionToolCall(call: OpenAI.Chat.ChatCompletionMessageToolCall): ca
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
+
+const DEFAULT_WAIT_THEN_CONTINUE_MS = 10_000
 
 function formatRetryAt(retryAfterMs: number): string {
   const retryAt = new Date(Date.now() + retryAfterMs)
@@ -469,6 +472,21 @@ function maybeInterruptAfterTool(
  */
 function buildToolHandlers(): Record<string, ToolHandler> {
   return {
+    wait_then_continue: async ({ convId, state, call, args }) => {
+      const timeoutMs = normalizeTimeoutMs(args.timeout_ms as number | undefined, DEFAULT_WAIT_THEN_CONTINUE_MS)
+      recordToolResult(
+        convId,
+        state,
+        call,
+        "wait_then_continue",
+        args,
+        `Waiting ${timeoutMs}ms, then continuing without a new event.`,
+      )
+      console.log(`[runner] waiting ${timeoutMs}ms before continuing to next assistant turn...`)
+      await sleep(timeoutMs)
+      return {}
+    },
+
     wait: async ({ convId, state, hooks, call, args }) => {
       recordToolResult(convId, state, call, "wait", args, "Waiting for next event.")
       console.log("[runner] niri is waiting for next event...")
