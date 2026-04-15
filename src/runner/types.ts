@@ -19,6 +19,8 @@ export interface LoopState {
 export interface LoopHooks {
   /** Waits for the next incoming event from any trigger source. */
   waitForEvent: () => Promise<UserMessage>
+  /** Waits up to timeoutMs for the next event; resolves null on timeout. */
+  waitForEventWithTimeout: (timeoutMs: number) => Promise<UserMessage | null>
   /** Injects an incoming event into the in-memory conversation. */
   injectIncomingEvent: (convId: number, event: UserMessage) => void
   /** Flushes events deferred while a tool call was in flight. */

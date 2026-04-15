@@ -472,7 +472,7 @@ function maybeInterruptAfterTool(
  */
 function buildToolHandlers(): Record<string, ToolHandler> {
   return {
-    wait_then_continue: async ({ convId, state, call, args }) => {
+    wait_then_continue: async ({ convId, state, hooks, call, args }) => {
       const timeoutMs = normalizeTimeoutMs(args.timeout_ms as number | undefined, DEFAULT_WAIT_THEN_CONTINUE_MS)
       recordToolResult(
         convId,
@@ -480,10 +480,16 @@ function buildToolHandlers(): Record<string, ToolHandler> {
         call,
         "wait_then_continue",
         args,
-        `Waiting ${timeoutMs}ms, then continuing without a new event.`,
+        `Waiting up to ${timeoutMs}ms for an event or timeout, then continuing.`,
       )
-      console.log(`[runner] waiting ${timeoutMs}ms before continuing to next assistant turn...`)
-      await sleep(timeoutMs)
+      console.log(`[runner] wait_then_continue: waiting up to ${timeoutMs}ms...`)
+      const event = await hooks.waitForEventWithTimeout(timeoutMs)
+      if (event) {
+        console.log(`[runner] wait_then_continue: interrupted early by incoming ${event.source} event`)
+        hooks.injectIncomingEvent(convId, event)
+        return { isWait: true }
+      }
+      console.log(`[runner] wait_then_continue: timeout elapsed, continuing to next turn`)
       return {}
     },
 
@@ -718,7 +724,7 @@ async function executeToolCall(
     )
   }
 
-  const isWaitTool = call.function.name === "wait"
+  const isWaitTool = call.function.name === "wait" || call.function.name === "wait_then_continue"
   if (!isWaitTool) state.toolInFlight = true
 
   try {

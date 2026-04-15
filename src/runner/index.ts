@@ -104,6 +104,33 @@ function waitForEvent(): Promise<UserMessage> {
   })
 }
 
+/** Wait up to timeoutMs for the next event; resolves null if the timer fires first. */
+function waitForEventWithTimeout(timeoutMs: number): Promise<UserMessage | null> {
+  if (state.pendingInputs.length > 0) {
+    return Promise.resolve(state.pendingInputs.shift()!)
+  }
+  return new Promise<UserMessage | null>((resolve) => {
+    let settled = false
+
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      const idx = eventResolvers.indexOf(resolver)
+      if (idx !== -1) eventResolvers.splice(idx, 1)
+      resolve(null)
+    }, timeoutMs)
+
+    const resolver = (event: UserMessage) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(event)
+    }
+
+    eventResolvers.push(resolver)
+  })
+}
+
 function formatIncomingEvent(event: UserMessage): string {
   return `[incoming — ${event.source}]\n\n${event.content}`
 }
@@ -171,6 +198,7 @@ export async function wake(event: UserMessage): Promise<void> {
   try {
     await runLoop(convId, state, {
       waitForEvent,
+      waitForEventWithTimeout,
       injectIncomingEvent,
       flushDeferredEvents,
       clearSession,
