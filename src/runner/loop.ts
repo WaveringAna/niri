@@ -24,13 +24,17 @@ import {
   USE_FALLBACK,
   client,
   errorSummary,
+  estimatePromptTokens,
   fallbackClient,
   fallbackContextWindow,
+  forceCompactConversation,
+  isPromptTooLargeError,
   maybeCompactConversation,
   parseImageDetail,
   parseToolArguments,
   retryDelayMs,
   shouldFallback,
+  summarizeConversationViaLLM,
 } from "./util.js"
 
 type FunctionToolCall = OpenAI.Chat.ChatCompletionMessageToolCall & { type: "function" }
@@ -346,6 +350,76 @@ async function runStandardTool<
   return {}
 }
 
+function logPromptSizeDebug(state: LoopState, err: unknown, label: string): void {
+  const messageCount = state.conversation.length
+  const roleCounts = state.conversation.reduce<Record<string, number>>((acc, m) => {
+    const role = (m as { role?: string }).role ?? "unknown"
+    acc[role] = (acc[role] ?? 0) + 1
+    return acc
+  }, {})
+  const estimate = estimatePromptTokens(state.conversation)
+  const charLength = JSON.stringify(state.conversation).length
+  const summary = err instanceof OpenAI.APIError ? `${err.status} ${err.message}` : errorSummary(err)
+  console.warn(
+    `[api] ${label}: ${summary} - messages=${messageCount} est_tokens=${estimate} chars=${charLength} roles=${JSON.stringify(roleCounts)} observedPromptTokens=${state.contextSize}`,
+  )
+}
+
+/**
+ * Recovers from a prompt-too-large error by compacting and optionally LLM-summarizing.
+ *
+ * Mutates `state.conversation` in place on success.
+ *
+ * @returns `true` when the conversation shrank and a retry is worth attempting.
+ */
+async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Promise<boolean> {
+  const beforeCount = state.conversation.length
+  const beforeEstimate = estimatePromptTokens(state.conversation)
+
+  // First attempt: aggressive heuristic compaction.
+  if (attempt === 0) {
+    const targetTokens = Math.max(4096, Math.floor(beforeEstimate * 0.5))
+    const result = forceCompactConversation(state.conversation, targetTokens, state.contextSize)
+    if (result.compacted) {
+      state.conversation = result.messages
+      state.contextSize = result.estimateAfter
+      console.warn(
+        `[context] recovery: force-compacted ${result.messagesRemoved} msgs across ${result.chunks} chunks (${result.estimateBefore} -> ${result.estimateAfter}, target=${targetTokens})`,
+      )
+      return true
+    }
+    console.warn(`[context] recovery: force-compaction produced no changes (messages=${beforeCount}, est=${beforeEstimate})`)
+  }
+
+  // Second attempt: LLM-based summarization via the available provider.
+  const summaryClient = USE_FALLBACK ? fallbackClient : client
+  const summaryModel = USE_FALLBACK ? FALLBACK_MODEL : MODEL
+  if (!summaryClient || !summaryModel) {
+    console.warn(`[context] recovery: no summary client available; cannot llm-summarize`)
+    return false
+  }
+
+  console.warn(`[context] recovery: attempting llm summarization via ${summaryModel}`)
+  const summarized = await summarizeConversationViaLLM(state.conversation, summaryClient, summaryModel)
+  if (!summarized) {
+    console.warn(`[context] recovery: llm summarization returned no changes`)
+    return false
+  }
+
+  const afterEstimate = estimatePromptTokens(summarized)
+  if (afterEstimate >= beforeEstimate) {
+    console.warn(`[context] recovery: llm summary not smaller (${beforeEstimate} -> ${afterEstimate}); keeping original`)
+    return false
+  }
+
+  state.conversation = summarized
+  state.contextSize = afterEstimate
+  console.warn(
+    `[context] recovery: llm-summarized conversation (${beforeCount} -> ${summarized.length} msgs, ${beforeEstimate} -> ${afterEstimate} tokens)`,
+  )
+  return true
+}
+
 /**
  * Fetches the next assistant completion, including fallback/backoff behavior.
  *
@@ -354,6 +428,7 @@ async function runStandardTool<
  * @throws If the primary request fails with a non-fallback error condition.
  */
 async function fetchCompletion(state: LoopState): Promise<OpenAI.Chat.ChatCompletion> {
+  let promptTooLargeAttempts = 0
   while (true) {
     if (USE_FALLBACK) {
       const fallbackWindow = fallbackContextWindow(state.conversation)
@@ -363,7 +438,17 @@ async function fetchCompletion(state: LoopState): Promise<OpenAI.Chat.ChatComple
         )
       }
 
-      return createFallbackCompletion(state)
+      try {
+        return await createFallbackCompletion(state)
+      } catch (fallbackErr) {
+        if (isPromptTooLargeError(fallbackErr) && promptTooLargeAttempts < 2) {
+          logPromptSizeDebug(state, fallbackErr, `fallback rejected prompt (attempt ${promptTooLargeAttempts + 1}/2)`)
+          const recovered = await recoverFromPromptTooLarge(state, promptTooLargeAttempts)
+          promptTooLargeAttempts++
+          if (recovered) continue
+        }
+        throw fallbackErr
+      }
     }
 
     try {
@@ -374,6 +459,18 @@ async function fetchCompletion(state: LoopState): Promise<OpenAI.Chat.ChatComple
         tool_choice: "required",
       })
     } catch (primaryErr) {
+      if (isPromptTooLargeError(primaryErr) && promptTooLargeAttempts < 2) {
+        logPromptSizeDebug(state, primaryErr, `primary rejected prompt (attempt ${promptTooLargeAttempts + 1}/2)`)
+        const recovered = await recoverFromPromptTooLarge(state, promptTooLargeAttempts)
+        promptTooLargeAttempts++
+        if (recovered) continue
+        // Recovery failed — don't try fallback for this; the prompt is simply too large.
+        if (primaryErr instanceof OpenAI.APIError) {
+          console.error(`[api] ${primaryErr.status} ${primaryErr.message} - model=${MODEL} api=${API_BASE}`)
+        }
+        throw primaryErr
+      }
+
       if (!shouldFallback(primaryErr)) {
         if (primaryErr instanceof OpenAI.APIError) {
           console.error(`[api] ${primaryErr.status} ${primaryErr.message} - model=${MODEL} api=${API_BASE}`)
@@ -404,6 +501,12 @@ async function fetchCompletion(state: LoopState): Promise<OpenAI.Chat.ChatComple
       try {
         return await createFallbackCompletion(state)
       } catch (fallbackErr) {
+        if (isPromptTooLargeError(fallbackErr) && promptTooLargeAttempts < 2) {
+          logPromptSizeDebug(state, fallbackErr, `fallback rejected prompt during failover (attempt ${promptTooLargeAttempts + 1}/2)`)
+          const recovered = await recoverFromPromptTooLarge(state, promptTooLargeAttempts)
+          promptTooLargeAttempts++
+          if (recovered) continue
+        }
         console.warn(
           `[api] fallback failed (${errorSummary(fallbackErr)}) after primary failure (${errorSummary(primaryErr)}); retrying primary after backoff`,
         )

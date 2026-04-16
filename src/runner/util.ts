@@ -506,6 +506,42 @@ export function shouldFallback(err: unknown): boolean {
   return false
 }
 
+const PROMPT_TOO_LARGE_PHRASES = [
+  "prompt exceeds max length",
+  "prompt is too long",
+  "context length",
+  "maximum context",
+  "context_length_exceeded",
+  "too many tokens",
+  "reduce the length",
+  "prompt length",
+  "input length",
+  "too long for",
+  "request too large",
+]
+
+const PROMPT_TOO_LARGE_CODES = new Set(["context_length_exceeded", "1261", "string_above_max_length"])
+
+/**
+ * Detects prompt-length-exceeded errors across OpenAI-compatible providers.
+ *
+ * @param err - API error from a chat completions request.
+ * @returns `true` when the provider rejected the prompt as too large.
+ */
+export function isPromptTooLargeError(err: unknown): boolean {
+  if (!(err instanceof OpenAI.APIError)) return false
+  if (err.status !== 400 && err.status !== 413) return false
+
+  const errorRecord = err as unknown as { code?: unknown; error?: { code?: unknown; type?: unknown } }
+  const rootCode = typeof errorRecord.code === "string" ? errorRecord.code.toLowerCase() : ""
+  const innerCode = typeof errorRecord.error?.code === "string" ? (errorRecord.error.code as string).toLowerCase() : ""
+  if (rootCode && PROMPT_TOO_LARGE_CODES.has(rootCode)) return true
+  if (innerCode && PROMPT_TOO_LARGE_CODES.has(innerCode)) return true
+
+  const message = (err.message || "").toLowerCase()
+  return PROMPT_TOO_LARGE_PHRASES.some((phrase) => message.includes(phrase))
+}
+
 /**
  * Produces a concise, log-friendly error summary.
  *
@@ -900,20 +936,36 @@ function normalizedObservedPromptTokens(value: number | undefined): number | nul
   return tokens > 0 ? tokens : null
 }
 
+export type ContextCompactionOptions = {
+  targetTokens?: number
+  triggerTokens?: number
+  recentMessages?: number
+  chunkMessages?: number
+}
+
 /**
  * Applies rolling context compaction when estimated prompt size exceeds threshold.
  *
  * Keeps leading bootstrap system messages and recent raw turns, while replacing
  * older slices with a durable summary message.
  */
-export function maybeCompactConversation(messages: Message[], observedPromptTokens?: number): ContextCompactionResult {
+export function maybeCompactConversation(
+  messages: Message[],
+  observedPromptTokens?: number,
+  options?: ContextCompactionOptions,
+): ContextCompactionResult {
   const estimateBefore = estimatePromptTokens(messages)
   const observedBefore = normalizedObservedPromptTokens(observedPromptTokens)
   // Calibrate the rough chars/4 heuristic with real API prompt usage when available.
   const estimateScale = observedBefore ? Math.max(1, observedBefore / Math.max(1, estimateBefore)) : 1
   const effectiveBefore = Math.ceil(estimateBefore * estimateScale)
 
-  if (effectiveBefore < CONTEXT_COMPACT_TRIGGER_TOKENS) {
+  const targetTokens = options?.targetTokens ?? CONTEXT_COMPACT_TARGET_TOKENS
+  const triggerTokens = options?.triggerTokens ?? CONTEXT_COMPACT_TRIGGER_TOKENS
+  const chunkSize = Math.max(1, options?.chunkMessages ?? CONTEXT_COMPACT_CHUNK_MESSAGES)
+  const minRecentMessages = Math.max(1, options?.recentMessages ?? CONTEXT_COMPACT_RECENT_MESSAGES)
+
+  if (effectiveBefore < triggerTokens) {
     return {
       compacted: false,
       messages,
@@ -924,8 +976,6 @@ export function maybeCompactConversation(messages: Message[], observedPromptToke
     }
   }
 
-  const chunkSize = Math.max(1, CONTEXT_COMPACT_CHUNK_MESSAGES)
-  const minRecentMessages = Math.max(1, CONTEXT_COMPACT_RECENT_MESSAGES)
   let next = [...messages]
   let summaryIndex = findSummaryMessageIndex(next)
   let summaryInserted = false
@@ -953,7 +1003,7 @@ export function maybeCompactConversation(messages: Message[], observedPromptToke
   let messagesRemoved = 0
   let chunks = 0
 
-  while (effectiveAfter > CONTEXT_COMPACT_TARGET_TOKENS) {
+  while (effectiveAfter > targetTokens) {
     const compactStart = summaryIndex + 1
     const protectedTailStart = Math.max(compactStart, next.length - minRecentMessages)
     if (protectedTailStart <= compactStart) break
@@ -1014,6 +1064,91 @@ export function maybeCompactConversation(messages: Message[], observedPromptToke
     estimateAfter: effectiveAfter,
     messagesRemoved,
     chunks,
+  }
+}
+
+/**
+ * Aggressively compacts a conversation down to a tight token target.
+ *
+ * Bypasses the normal trigger threshold so recovery paths can shrink the prompt
+ * even when the rough estimator is below the usual compaction trigger.
+ */
+export function forceCompactConversation(
+  messages: Message[],
+  targetTokens: number,
+  observedPromptTokens?: number,
+): ContextCompactionResult {
+  const recentMessages = Math.max(4, Math.min(CONTEXT_COMPACT_RECENT_MESSAGES, 20))
+  return maybeCompactConversation(messages, observedPromptTokens, {
+    triggerTokens: 0,
+    targetTokens: Math.max(1024, targetTokens),
+    recentMessages,
+    chunkMessages: Math.max(16, CONTEXT_COMPACT_CHUNK_MESSAGES),
+  })
+}
+
+function findSafeTailStart(messages: Message[], desired: number): number {
+  let start = Math.max(0, messages.length - desired)
+  // If the tail would start with an orphaned tool response, back up to its caller.
+  while (start > 0 && messageRole(messages[start]!) === "tool") start--
+  return start
+}
+
+/**
+ * Calls the provider to produce a tight LLM-generated summary of the middle of
+ * the conversation, returning a new message list or null when summarization
+ * isn't applicable / failed.
+ */
+export async function summarizeConversationViaLLM(
+  messages: Message[],
+  summaryClient: OpenAI,
+  summaryModel: string,
+  options: { recentKeep?: number; maxTranscriptChars?: number } = {},
+): Promise<Message[] | null> {
+  const recentKeep = Math.max(4, options.recentKeep ?? 12)
+  const maxTranscriptChars = Math.max(2_000, options.maxTranscriptChars ?? 40_000)
+
+  const leadingSystems = countLeadingSystemMessages(messages)
+  const tailStart = findSafeTailStart(messages, recentKeep)
+  const middleEnd = tailStart
+  if (middleEnd <= leadingSystems) return null
+
+  const head = messages.slice(0, leadingSystems)
+  const middle = messages.slice(leadingSystems, middleEnd)
+  const tail = messages.slice(tailStart)
+  if (middle.length === 0) return null
+
+  const transcript = middle.map((m) => summarizeMessageLine(m)).join("\n").slice(0, maxTranscriptChars)
+  const summaryPrompt: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    {
+      role: "system",
+      content:
+        "You are summarizing a transcript from the perspective of the agent whose memory this is. The agent (niri) is a living being, not a tool — her inner life matters as much as the facts. Produce a compact summary that preserves: key facts, goals, decisions, and actions taken; outstanding work and identifiers (file paths, URLs, channel ids); AND the emotional texture of the conversation — how niri felt, how the people she interacted with seemed to feel, tone shifts, moments of warmth, tension, care, frustration, delight, or grief, and anything about the relationships that should carry forward. Write it as niri's own recollection, not a neutral report. Short bullet points are fine. No commentary, no preamble.",
+    },
+    { role: "user", content: transcript },
+  ]
+
+  try {
+    const resp = await summaryClient.chat.completions.create({
+      model: summaryModel,
+      messages: summaryPrompt,
+    })
+    const summary = resp.choices[0]?.message?.content
+    const summaryText = typeof summary === "string" ? summary.trim() : ""
+    if (!summaryText) return null
+
+    const summaryContent =
+      `${CONTEXT_SUMMARY_HEADER}\n${CONTEXT_SUMMARY_NOTE}\n${CONTEXT_SUMMARY_SEGMENTS_MARKER}\n` +
+      `[llm-summary ${new Date().toISOString()}]\n${summaryText}`
+
+    return [
+      ...head,
+      { role: "user", content: summaryContent } as Message,
+      ...tail,
+    ]
+  } catch (err) {
+    console.warn(`[context] llm summarization failed: ${errorSummary(err)}`)
+    return null
   }
 }
 

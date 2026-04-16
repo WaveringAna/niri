@@ -204,6 +204,15 @@ export async function wake(event: UserMessage): Promise<void> {
       clearSession,
       saveSession: async () => saveSession(state.conversation),
     })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`[runner] loop aborted: ${message}`)
+    if (err instanceof Error && err.stack) console.error(err.stack)
+    try {
+      await saveSession(state.conversation)
+    } catch (saveErr) {
+      console.warn(`[runner] failed to persist session after abort: ${saveErr instanceof Error ? saveErr.message : String(saveErr)}`)
+    }
   } finally {
     endConversation(convId, state.tokenCount)
     state.running = false
