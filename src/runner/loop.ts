@@ -15,6 +15,7 @@ import { emit } from "../stream.js"
 import type { LoopHooks, LoopState } from "./types.js"
 import {
   API_BASE,
+  CONTEXT_COMPACT_TRIGGER_TOKENS,
   FALLBACK_MODEL,
   FALLBACK_TOOL_CHOICE,
   FALLBACK_TOKEN_NUDGE_THRESHOLD,
@@ -36,6 +37,8 @@ import {
   shouldFallback,
   summarizeConversationViaLLM,
 } from "./util.js"
+
+const LLM_POST_TURN_RECENT_MESSAGES = 40
 
 type FunctionToolCall = OpenAI.Chat.ChatCompletionMessageToolCall & { type: "function" }
 type ToolArgs = {
@@ -936,6 +939,46 @@ function applyRollingCompaction(state: LoopState, phase: "pre-turn" | "post-turn
 }
 
 /**
+ * Post-turn compaction: when observed context crosses the compaction trigger,
+ * replace the middle of the conversation with a single LLM-generated summary so
+ * older history keeps its narrative/emotional texture instead of being reduced
+ * to bullet lines. Falls back to the heuristic compactor on failure.
+ */
+async function applyPostTurnCompaction(state: LoopState): Promise<boolean> {
+  if (state.contextSize >= CONTEXT_COMPACT_TRIGGER_TOKENS) {
+    const summaryClient = USE_FALLBACK ? fallbackClient : client
+    const summaryModel = USE_FALLBACK ? FALLBACK_MODEL : MODEL
+    if (summaryClient && summaryModel) {
+      const beforeCount = state.conversation.length
+      const beforeEstimate = estimatePromptTokens(state.conversation)
+      const summarized = await summarizeConversationViaLLM(
+        state.conversation,
+        summaryClient,
+        summaryModel,
+        { recentKeep: LLM_POST_TURN_RECENT_MESSAGES },
+      )
+      if (summarized) {
+        const afterEstimate = estimatePromptTokens(summarized)
+        if (afterEstimate < beforeEstimate) {
+          state.conversation = summarized
+          state.contextSize = afterEstimate
+          console.log(
+            `[context] post-turn llm-summarized (${beforeCount} -> ${summarized.length} msgs, ${beforeEstimate} -> ${afterEstimate})`,
+          )
+          return true
+        }
+        console.warn(
+          `[context] post-turn llm summary not smaller (${beforeEstimate} -> ${afterEstimate}); falling back to heuristic`,
+        )
+      } else {
+        console.warn(`[context] post-turn llm summary unavailable; falling back to heuristic`)
+      }
+    }
+  }
+  return applyRollingCompaction(state, "post-turn")
+}
+
+/**
  * Executes the main assistant/tool loop for an active conversation.
  *
  * The loop repeatedly:
@@ -957,7 +1000,7 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
     const outcome = await processAssistantTurn(convId, state, hooks)
     if (outcome === CycleOutcome.Rest) break
 
-    applyRollingCompaction(state, "post-turn")
+    await applyPostTurnCompaction(state)
     if (outcome !== CycleOutcome.NoTools) {
       applyContextNudge(state)
     }
