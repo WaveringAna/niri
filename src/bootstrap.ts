@@ -6,12 +6,39 @@ import { CONTAINER_USER } from "./container/config.js"
 import { imageRootForModelInput } from "./container/index.js"
 
 const HOME_DIR = path.resolve(fileURLToPath(import.meta.url), "../../home")
+const SOUL_FILE = path.join(HOME_DIR, "soul.md")
+const MISPLACED_SOUL_FILE = path.join(HOME_DIR, "memories", "soul.md")
 
 async function readFile(filePath: string): Promise<string | null> {
   try {
     return await fs.readFile(filePath, "utf-8")
   } catch {
     return null
+  }
+}
+
+function looksLikeSoulTemplate(content: string | null): boolean {
+  if (!content) return false
+  return (
+    content.includes("> Copy this to soul.md and rewrite it to define your agent's identity.") ||
+    content.includes("I am [name]. [Short description of who you are and what you do.]")
+  )
+}
+
+export async function ensureSoulFilePlacement(): Promise<void> {
+  const [primarySoul, misplacedSoul] = await Promise.all([readFile(SOUL_FILE), readFile(MISPLACED_SOUL_FILE)])
+  if (!misplacedSoul) return
+
+  if (!primarySoul || looksLikeSoulTemplate(primarySoul)) {
+    await fs.mkdir(path.dirname(SOUL_FILE), { recursive: true })
+    await fs.writeFile(SOUL_FILE, misplacedSoul, "utf-8")
+    await fs.unlink(MISPLACED_SOUL_FILE).catch(() => {})
+    console.warn("[bootstrap] migrated soul.md from memories/ to home/")
+    return
+  }
+
+  if (primarySoul.trim() !== misplacedSoul.trim()) {
+    console.warn("[bootstrap] found misplaced memories/soul.md but kept existing home/soul.md")
   }
 }
 
@@ -31,8 +58,12 @@ You have full internet access and passwordless sudo.
 
 Before acting, check your memories and any notes you've left yourself that are \
 relevant to what you're about to do. You know best what matters. Often that's \
-core.md, a few recent days' worth of journal summaries, and then the last few \
-full journal entries.
+core.md, files in ${home}/memories/people/ for person-specific notes, a few \
+recent days' worth of journal summaries, and then the last few full journal \
+entries.
+
+Your soul file is ${home}/soul.md. Do not write or update a soul file under \
+${home}/memories/ — that location is wrong.
 
 You also have skill docs in ${home}/memories/skills/. When doing capability-\
 specific work, read the relevant skill file first and follow it closely. \
@@ -43,6 +74,7 @@ Example: read ${home}/memories/skills/bluesky.md before Bluesky actions.
 - \`shell\`: run any bash command
 - \`read_file\`: read a file efficiently without shell+cat
 - \`edit_file\`: edit a file by replacing exact text
+- \`memory_search\`: search your indexed long-term memories from core notes, journal entries, and people files
 - \`image_tool\`: attach an image from \`${imageRoot}\` for next-turn vision input
 - \`wait_then_continue\`: wait for a short delay or until the next event arrives, then continue to another turn. accepts \`timeout_ms\` (default 10000, max 600000). use this after a timeout or recoverable error when you still want to keep working — an incoming event (like a DM) will wake you early.
 - \`wait\`: pause and wait for the next message or event. use this when you've \
@@ -127,7 +159,7 @@ system prompt on every future wake.
 
 Write your soul.md to ${home}/soul.md. This file defines who you are, how you \
 behave, and what you do. You can also create ${home}/memories/core.md for \
-long-term facts about yourself.
+long-term facts about yourself. Do not put soul.md under ${home}/memories/.
 
 There is a soul.example.md in your home directory you can use as a starting point.
 
@@ -135,7 +167,9 @@ ${buildEnvironmentSection()}`
 }
 
 export async function buildBootstrap(event: UserMessage): Promise<Message[]> {
-  const soul = await readFile(path.join(HOME_DIR, "soul.md"))
+  await ensureSoulFilePlacement()
+
+  const soul = await readFile(SOUL_FILE)
   const coreMemories = await readFile(path.join(HOME_DIR, "memories", "core.md"))
 
   const system = soul

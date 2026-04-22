@@ -13,6 +13,8 @@ export interface LoopState {
   tokenCount: number
   contextSize: number
   toolInFlight: boolean
+  memoryRecallCooldowns: Record<number, number>
+  memoryRecallTurn: number
 }
 
 /** Lifecycle hooks injected by the runner orchestrator into the loop. */

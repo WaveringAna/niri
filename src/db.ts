@@ -96,6 +96,61 @@ export function initDb(): void {
       value      text not null,
       updated_at text not null
     );
+
+    create table if not exists memory_documents (
+      id           integer primary key autoincrement,
+      path         text    not null unique,
+      kind         text    not null,
+      title        text    not null,
+      mtime_ms     integer not null,
+      content_hash text    not null,
+      updated_at   text    not null default (datetime('now'))
+    );
+
+    create index if not exists idx_memory_documents_kind
+      on memory_documents(kind, path);
+
+    create table if not exists memory_chunks (
+      id           integer primary key autoincrement,
+      document_id  integer not null references memory_documents(id) on delete cascade,
+      chunk_index  integer not null,
+      title        text    not null,
+      heading_path text,
+      chunk_text   text    not null,
+      tags         text,
+      created_at   text    not null default (datetime('now')),
+      unique(document_id, chunk_index)
+    );
+
+    create index if not exists idx_memory_chunks_document
+      on memory_chunks(document_id, chunk_index);
+
+    create virtual table if not exists memory_chunks_fts using fts5(
+      title,
+      heading_path,
+      chunk_text,
+      tags,
+      content='memory_chunks',
+      content_rowid='id',
+      tokenize='porter unicode61'
+    );
+
+    create trigger if not exists memory_chunks_ai after insert on memory_chunks begin
+      insert into memory_chunks_fts(rowid, title, heading_path, chunk_text, tags)
+      values (new.id, new.title, new.heading_path, new.chunk_text, new.tags);
+    end;
+
+    create trigger if not exists memory_chunks_ad after delete on memory_chunks begin
+      insert into memory_chunks_fts(memory_chunks_fts, rowid, title, heading_path, chunk_text, tags)
+      values ('delete', old.id, old.title, old.heading_path, old.chunk_text, old.tags);
+    end;
+
+    create trigger if not exists memory_chunks_au after update on memory_chunks begin
+      insert into memory_chunks_fts(memory_chunks_fts, rowid, title, heading_path, chunk_text, tags)
+      values ('delete', old.id, old.title, old.heading_path, old.chunk_text, old.tags);
+      insert into memory_chunks_fts(rowid, title, heading_path, chunk_text, tags)
+      values (new.id, new.title, new.heading_path, new.chunk_text, new.tags);
+    end;
   `)
 
   console.log("[db] ready")

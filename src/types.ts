@@ -18,4 +18,6 @@ export interface RunnerState {
   pendingInputs: UserMessage[]
   tokenCount: number
   contextSize: number
+  memoryRecallCooldowns: Record<number, number>
+  memoryRecallTurn: number
 }

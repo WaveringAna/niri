@@ -28,6 +28,8 @@ const toolSummary = (name: string, args: Record<string, unknown>): string => {
     }
     case "edit_file":
       return `edit ${String(args.path ?? "")}`
+    case "memory_search":
+      return `memory ${String(args.query ?? "")}`
     case "rest":
       return `rest${args.note ? ` ${String(args.note)}` : ""}`
     default:
@@ -50,26 +52,58 @@ const client = createChatClient({ baseUrl: BASE, clientId })
 
 let showAllTools = false
 let showThinking = false
+let activeStreamKind: "text" | "thinking" | null = null
+let activeStreamMuted = false
 
 const print = (line: string) => {
+  endActiveStream()
   rl.pause()
   process.stdout.write(`\r\x1b[K${line}\n`)
   rl.resume()
   rl.prompt(true)
 }
 
+const startActiveStream = (kind: "text" | "thinking") => {
+  if (activeStreamKind === kind) return
+  endActiveStream()
+
+  activeStreamKind = kind
+  activeStreamMuted = kind === "thinking" && !showThinking
+
+  rl.pause()
+  process.stdout.write("\r\x1b[K")
+  if (kind === "text") {
+    process.stdout.write(c.magentaBright("niri: "))
+  } else if (activeStreamMuted) {
+    process.stdout.write(c.gray("⟨ thinking ⟩"))
+  } else {
+    process.stdout.write(c.gray("⟨ thinking ⟩ "))
+  }
+}
+
+const appendActiveStream = (kind: "text" | "thinking", chunk: string) => {
+  startActiveStream(kind)
+  if (!chunk || activeStreamMuted) return
+
+  const rendered = kind === "thinking" ? c.gray(chunk) : chunk
+  process.stdout.write(rendered)
+}
+
+function endActiveStream(): void {
+  if (!activeStreamKind) return
+  process.stdout.write("\n")
+  activeStreamKind = null
+  activeStreamMuted = false
+}
+
 const handleStreamEvent = (event: StreamEvent) => {
   if (event.type === "thinking") {
-    if (showThinking) {
-      print(c.gray("⟨ thinking ⟩"))
-      print(renderMarkdownAnsi(event.text))
-    } else {
-      print(c.gray(`⟨ thinking — ${lineCount(event.text)} lines ⟩`))
-    }
+    appendActiveStream("thinking", event.text)
     return
   }
 
   if (event.type === "tool") {
+    endActiveStream()
     print(c.yellow(`tool: ${toolSummary(event.name, event.args)}`))
     if (showAllTools) {
       print(renderToolBody(event.result || "(no output)"))
@@ -81,13 +115,13 @@ const handleStreamEvent = (event: StreamEvent) => {
 
   if (event.type === "user") {
     if (event.clientId === clientId) return
+    endActiveStream()
     print(c.cyan(`${event.source}:`))
     print(renderMarkdownAnsi(event.text))
     return
   }
 
-  print(c.magentaBright("niri:"))
-  print(renderMarkdownAnsi(event.text))
+  appendActiveStream("text", event.text)
 }
 
 const rl = readline.createInterface({
@@ -124,6 +158,7 @@ rl.on("line", async (line) => {
   }
 
   if (trimmed === "/q" || trimmed === "/quit" || trimmed === "/exit") {
+    endActiveStream()
     controller.abort()
     rl.close()
     process.exit(0)
@@ -154,8 +189,6 @@ rl.on("line", async (line) => {
     return
   }
 
-  print(c.cyanBright(`you: ${trimmed}`))
-
   try {
     await client.send(trimmed)
   } catch (err) {
@@ -166,11 +199,13 @@ rl.on("line", async (line) => {
 })
 
 rl.on("SIGINT", () => {
+  endActiveStream()
   controller.abort()
   rl.close()
   process.exit(0)
 })
 
 rl.on("close", () => {
+  endActiveStream()
   controller.abort()
 })

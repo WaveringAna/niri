@@ -16,6 +16,8 @@ const state: RunnerStateInternal = {
   pendingInputs: [],
   tokenCount: 0,
   toolInFlight: false,
+  memoryRecallCooldowns: {},
+  memoryRecallTurn: 0,
   deferredEvents: [],
 }
 
@@ -173,6 +175,8 @@ export async function wake(event: UserMessage): Promise<void> {
   state.running = true
   state.tokenCount = 0
   state.contextSize = 0
+  state.memoryRecallCooldowns = {}
+  state.memoryRecallTurn = 0
 
   const saved = await loadSession()
   if (saved) {
@@ -218,6 +222,8 @@ export async function wake(event: UserMessage): Promise<void> {
     state.running = false
     state.conversation = []
     state.toolInFlight = false
+    state.memoryRecallCooldowns = {}
+    state.memoryRecallTurn = 0
     flushDeferredEvents()
     state.deferredEvents = []
     eventResolvers = []

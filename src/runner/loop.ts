@@ -37,12 +37,14 @@ import {
   shouldFallback,
   summarizeConversationViaLLM,
 } from "./util.js"
+import { buildCompletionMessages, rememberRecalledMemoryChunks, searchMemories } from "../memory.js"
 
 const LLM_POST_TURN_RECENT_MESSAGES = 40
 
 type FunctionToolCall = OpenAI.Chat.ChatCompletionMessageToolCall & { type: "function" }
 type ToolArgs = {
   command?: string
+  query?: string
   max_lines?: number
   timeout_ms?: number
   path?: string
@@ -67,6 +69,27 @@ type ToolArgs = {
   [key: string]: unknown
 }
 type ToolExecutionOutcome = { shouldRest?: boolean; isWait?: boolean }
+type CompletionTurnResult = {
+  message: OpenAI.Chat.ChatCompletionMessage
+  usage?: OpenAI.Completions.CompletionUsage
+  emittedText: boolean
+  emittedThinking: boolean
+  bufferedThinking: string
+}
+type CompletionRequest = {
+  model: string
+  messages: OpenAI.Chat.ChatCompletionMessageParam[]
+  tools: OpenAI.Chat.ChatCompletionTool[]
+  tool_choice: "required" | "auto" | "none"
+}
+type ToolCallAssembly = {
+  id: string
+  type: "function"
+  function: {
+    name: string
+    arguments: string
+  }
+}
 enum CycleOutcome {
   NoTools = "no_tools",
   ToolsDone = "tools_done",
@@ -160,22 +183,127 @@ function shouldRetryFallbackWithAutoToolChoice(err: unknown): boolean {
   return /no endpoints found that support the provided 'tool_choice' value/i.test(err.message)
 }
 
-async function createFallbackCompletion(state: LoopState): Promise<OpenAI.Chat.ChatCompletion> {
-  const request = {
-    model: FALLBACK_MODEL,
-    messages: state.conversation,
-    tools: TOOLS,
-    tool_choice: FALLBACK_TOOL_CHOICE,
+function shouldRetryWithoutStreamUsage(err: unknown): boolean {
+  if (!(err instanceof OpenAI.APIError)) return false
+  if (err.status !== 400) return false
+  return /stream_options|include_usage/i.test(err.message)
+}
+
+async function consumeCompletionStream(
+  stream: AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
+): Promise<CompletionTurnResult> {
+  const contentParts: string[] = []
+  const toolCalls = new Map<number, ToolCallAssembly>()
+  let usage: OpenAI.Completions.CompletionUsage | undefined
+  let emittedText = false
+  let emittedThinking = false
+  const reasoningParts: string[] = []
+
+  for await (const chunk of stream) {
+    if (chunk.usage) usage = chunk.usage
+
+    const choice = chunk.choices[0]
+    if (!choice) continue
+
+    const delta = choice.delta as OpenAI.Chat.ChatCompletionChunk.Choice.Delta & {
+      reasoning_content?: string
+    }
+
+    if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+      reasoningParts.push(delta.reasoning_content)
+    }
+
+    if (typeof delta.content === "string" && delta.content.length > 0) {
+      if (!emittedThinking && reasoningParts.length > 0) {
+        emit({ type: "thinking", text: reasoningParts.join("") })
+        emittedThinking = true
+      }
+      contentParts.push(delta.content)
+      emit({ type: "text", text: delta.content })
+      emittedText = true
+    }
+
+    if (!Array.isArray(delta.tool_calls)) continue
+
+    for (const partial of delta.tool_calls) {
+      const index = partial.index ?? 0
+      const existing = toolCalls.get(index) ?? {
+        id: partial.id ?? `call_${index}`,
+        type: "function" as const,
+        function: { name: "", arguments: "" },
+      }
+
+      if (partial.id) existing.id = partial.id
+      if (partial.type === "function") existing.type = "function"
+      if (partial.function?.name) existing.function.name += partial.function.name
+      if (partial.function?.arguments) existing.function.arguments += partial.function.arguments
+      toolCalls.set(index, existing)
+    }
+  }
+
+  const message: OpenAI.Chat.ChatCompletionMessage = {
+    role: "assistant",
+    content: contentParts.length > 0 ? contentParts.join("") : null,
+    refusal: null,
+    ...(toolCalls.size > 0
+      ? {
+          tool_calls: [...toolCalls.entries()]
+            .sort((a, b) => a[0] - b[0])
+            .map(([, toolCall]) => toolCall),
+        }
+      : {}),
+  }
+
+  return {
+    message,
+    usage,
+    emittedText,
+    emittedThinking,
+    bufferedThinking: reasoningParts.join(""),
+  }
+}
+
+async function createStreamedCompletion(
+  apiClient: OpenAI,
+  request: CompletionRequest,
+): Promise<CompletionTurnResult> {
+  const streamedRequest = {
+    ...request,
+    stream: true,
+    stream_options: { include_usage: true },
   } as const
 
   try {
-    return await fallbackClient.chat.completions.create(request)
+    const stream = await apiClient.chat.completions.create(streamedRequest)
+    return consumeCompletionStream(stream as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>)
+  } catch (err) {
+    if (shouldRetryWithoutStreamUsage(err)) {
+      const stream = await apiClient.chat.completions.create({
+        ...request,
+        stream: true,
+      } as const)
+      return consumeCompletionStream(stream as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>)
+    }
+    throw err
+  }
+}
+
+async function createFallbackCompletion(messages: OpenAI.Chat.ChatCompletionMessageParam[]): Promise<CompletionTurnResult> {
+  const request: CompletionRequest = {
+    model: FALLBACK_MODEL,
+    messages,
+    tools: TOOLS,
+    tool_choice: FALLBACK_TOOL_CHOICE,
+  }
+
+  try {
+    return await createStreamedCompletion(fallbackClient, request)
   } catch (err) {
     if (request.tool_choice !== "auto" && shouldRetryFallbackWithAutoToolChoice(err)) {
       console.warn(
         `[fallback] provider rejected tool_choice=${request.tool_choice}; retrying with tool_choice=auto`,
       )
-      return fallbackClient.chat.completions.create({
+      return createStreamedCompletion(fallbackClient, {
         ...request,
         tool_choice: "auto",
       })
@@ -430,11 +558,21 @@ async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Pro
  * @returns The next chat completion response.
  * @throws If the primary request fails with a non-fallback error condition.
  */
-async function fetchCompletion(state: LoopState): Promise<OpenAI.Chat.ChatCompletion> {
+async function fetchCompletion(
+  state: LoopState,
+  baseConversation: OpenAI.Chat.ChatCompletionMessageParam[] = state.conversation,
+): Promise<CompletionTurnResult> {
   let promptTooLargeAttempts = 0
   while (true) {
+    const requestContext = await buildCompletionMessages(
+      baseConversation,
+      state.memoryRecallCooldowns,
+      state.memoryRecallTurn,
+    )
+    const requestMessages = requestContext.messages
+
     if (USE_FALLBACK) {
-      const fallbackWindow = fallbackContextWindow(state.conversation)
+      const fallbackWindow = fallbackContextWindow(requestMessages)
       if (fallbackWindow.nearLimit) {
         console.warn(
           `[fallback] prompt estimate ${fallbackWindow.estimate} nearing fallback limit ${fallbackWindow.softLimit} (${FALLBACK_MODEL})`,
@@ -442,7 +580,13 @@ async function fetchCompletion(state: LoopState): Promise<OpenAI.Chat.ChatComple
       }
 
       try {
-        return await createFallbackCompletion(state)
+        const completion = await createFallbackCompletion(requestMessages)
+        state.memoryRecallCooldowns = rememberRecalledMemoryChunks(
+          state.memoryRecallCooldowns,
+          requestContext.recalledChunkIds,
+          state.memoryRecallTurn,
+        )
+        return completion
       } catch (fallbackErr) {
         if (isPromptTooLargeError(fallbackErr) && promptTooLargeAttempts < 2) {
           logPromptSizeDebug(state, fallbackErr, `fallback rejected prompt (attempt ${promptTooLargeAttempts + 1}/2)`)
@@ -455,12 +599,18 @@ async function fetchCompletion(state: LoopState): Promise<OpenAI.Chat.ChatComple
     }
 
     try {
-      return await client!.chat.completions.create({
+      const completion = await createStreamedCompletion(client!, {
         model: MODEL,
-        messages: state.conversation,
+        messages: requestMessages,
         tools: TOOLS,
         tool_choice: "required",
       })
+      state.memoryRecallCooldowns = rememberRecalledMemoryChunks(
+        state.memoryRecallCooldowns,
+        requestContext.recalledChunkIds,
+        state.memoryRecallTurn,
+      )
+      return completion
     } catch (primaryErr) {
       if (isPromptTooLargeError(primaryErr) && promptTooLargeAttempts < 2) {
         logPromptSizeDebug(state, primaryErr, `primary rejected prompt (attempt ${promptTooLargeAttempts + 1}/2)`)
@@ -481,7 +631,7 @@ async function fetchCompletion(state: LoopState): Promise<OpenAI.Chat.ChatComple
         throw primaryErr
       }
 
-      const fallbackWindow = fallbackContextWindow(state.conversation)
+      const fallbackWindow = fallbackContextWindow(requestMessages)
       if (fallbackWindow.skip) {
         console.warn(
           `[api] primary down (${errorSummary(primaryErr)}) and fallback context estimate ${fallbackWindow.estimate} exceeds hard limit ${fallbackWindow.hardLimit}; retrying primary after backoff`,
@@ -502,7 +652,13 @@ async function fetchCompletion(state: LoopState): Promise<OpenAI.Chat.ChatComple
 
       console.warn(`[api] primary down (${errorSummary(primaryErr)}) - switching to fallback`)
       try {
-        return await createFallbackCompletion(state)
+        const completion = await createFallbackCompletion(requestMessages)
+        state.memoryRecallCooldowns = rememberRecalledMemoryChunks(
+          state.memoryRecallCooldowns,
+          requestContext.recalledChunkIds,
+          state.memoryRecallTurn,
+        )
+        return completion
       } catch (fallbackErr) {
         if (isPromptTooLargeError(fallbackErr) && promptTooLargeAttempts < 2) {
           logPromptSizeDebug(state, fallbackErr, `fallback rejected prompt during failover (attempt ${promptTooLargeAttempts + 1}/2)`)
@@ -521,6 +677,24 @@ async function fetchCompletion(state: LoopState): Promise<OpenAI.Chat.ChatComple
       }
     }
   }
+}
+
+function needsVisibleReplyRepair(message: OpenAI.Chat.ChatCompletionMessage): boolean {
+  if (assistantContentText(message.content).length > 0) return false
+  return Array.isArray(message.tool_calls) && message.tool_calls.length > 0
+}
+
+function buildVisibleReplyRepairConversation(
+  conversation: OpenAI.Chat.ChatCompletionMessageParam[],
+): OpenAI.Chat.ChatCompletionMessageParam[] {
+  return [
+    ...conversation,
+    {
+      role: "user",
+      content:
+        "[system] Your previous draft had no user-visible assistant content. Retry this turn. Write 1-2 brief sentences addressed to the person before any tool calls. Keep the overall intent, but you may choose different tools if needed. Do not output a tool-only turn.",
+    },
+  ]
 }
 
 /**
@@ -650,6 +824,23 @@ function buildToolHandlers(): Record<string, ToolHandler> {
         },
         emitArgKeys: ["path"] as const,
         previewChars: 0,
+      }),
+
+    memory_search: (ctx) =>
+      runStandardTool(ctx, {
+        name: "memory_search",
+        logArgKeys: ["query", "limit"] as const,
+        runArgKeys: ["query", "limit"] as const,
+        run: async (query, limit) =>
+          JSON.stringify(
+            {
+              query,
+              results: await searchMemories(query as string, limit as number | undefined),
+            },
+            null,
+            2,
+          ),
+        emptyFallback: '{"query":"","results":[]}',
       }),
 
     image_tool: async ({ convId, state, call, args }) => {
@@ -886,16 +1077,27 @@ async function processToolCalls(
  * @throws Propagates non-fallback completion errors from `fetchCompletion`.
  */
 async function processAssistantTurn(convId: number, state: LoopState, hooks: LoopHooks): Promise<CycleOutcome> {
-  const response = await fetchCompletion(state)
+  state.memoryRecallTurn += 1
+  let response = await fetchCompletion(state)
+  let repairAttempts = 0
+  while (needsVisibleReplyRepair(response.message) && repairAttempts < 2) {
+    repairAttempts++
+    console.warn(`[runner] assistant emitted tool-only turn with empty content; retrying for visible reply (${repairAttempts}/2)`)
+    response = await fetchCompletion(state, buildVisibleReplyRepairConversation(state.conversation))
+  }
   applyUsage(state, response.usage)
 
-  const msg = response.choices[0].message
+  const msg = response.message
   addAssistantMessage(convId, state, msg)
-  emitThinking(msg)
+  if (!response.emittedThinking && response.bufferedThinking) {
+    emit({ type: "thinking", text: response.bufferedThinking })
+  } else if (!response.emittedThinking) {
+    emitThinking(msg)
+  }
 
   // With tool_choice: "required" this shouldn't happen but handle gracefully anyway.
   const functionCalls = (msg.tool_calls ?? []).filter(isFunctionToolCall)
-  if (msg.content) emit({ type: "text", text: msg.content })
+  if (!response.emittedText && msg.content) emit({ type: "text", text: msg.content })
   if (functionCalls.length === 0) return CycleOutcome.NoTools
 
   return processToolCalls(convId, state, hooks, functionCalls)

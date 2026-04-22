@@ -3,12 +3,14 @@ import { createServer } from "./server.js"
 import { initDb } from "./db.js"
 import { shutdown } from "./runner/index.js"
 import { startDiscordGateway } from "./discord/gateway.js"
+import { ensureSoulFilePlacement } from "./bootstrap.js"
 
 const PORT = parseInt(process.env.PORT ?? "3000")
 
 async function main() {
   console.log("[niri] starting up...")
 
+  await ensureSoulFilePlacement()
   initDb()
   await openBash()
 

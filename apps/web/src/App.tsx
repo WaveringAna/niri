@@ -26,6 +26,8 @@ const toolSummary = (name: string, args: Record<string, unknown>): string => {
     }
     case "edit_file":
       return `edit ${String(args.path ?? "")}`
+    case "memory_search":
+      return `memory ${String(args.query ?? "")}`
     case "rest":
       return `rest${args.note ? ` ${String(args.note)}` : ""}`
     default:
@@ -73,6 +75,18 @@ export function App() {
     return id
   }, [])
 
+  const appendStreamText = useCallback((kind: "text" | "thinking", text: string) => {
+    setEntries((prev) => {
+      const last = prev[prev.length - 1]
+      if (last?.kind === kind) {
+        return [...prev.slice(0, -1), { ...last, text: last.text + text }]
+      }
+
+      const id = nextId.current++
+      return [...prev, { id, kind, text }]
+    })
+  }, [])
+
   const toggleTool = useCallback((id: number) => {
     setCollapsedToolIds((prev) => {
       const next = new Set(prev)
@@ -101,7 +115,7 @@ export function App() {
         signal: controller.signal,
         onEvent: (event: StreamEvent) => {
           if (event.type === "thinking") {
-            push({ kind: "thinking", text: event.text })
+            appendStreamText("thinking", event.text)
             return
           }
 
@@ -121,7 +135,7 @@ export function App() {
             return
           }
 
-          push({ kind: "text", text: event.text })
+          appendStreamText("text", event.text)
         },
       })
       .catch((err) => {
@@ -130,7 +144,7 @@ export function App() {
       })
 
     return () => controller.abort()
-  }, [client, clientId, push])
+  }, [appendStreamText, client, clientId, push])
 
   useEffect(() => {
     client
