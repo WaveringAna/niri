@@ -117,6 +117,11 @@ type MemorySearchProfile = {
   eventQuery: boolean
 }
 
+type MemoryHitSignal = {
+  overlap: number
+  strongOverlap: boolean
+}
+
 function normalizeText(value: string): string {
   return value.replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim()
 }
@@ -295,10 +300,23 @@ function latestUserMessage(conversation: Message[]): string | null {
 }
 
 function normalizeSearchInput(raw: string): string {
-  return raw
-    .replace(/^\[(wake|incoming|harness restarted)[^\n]*\]\s*/gi, "")
+  const withoutWakeEnvelope = raw.replace(/^\[(wake|incoming|harness restarted)[^\n]*\]\s*/gi, "").trim()
+
+  const blocks = withoutWakeEnvelope
+    .split(/\n\s*\n/g)
+    .map((block) => block.trim())
+    .filter(Boolean)
+
+  const bodyCandidate = blocks.length > 0 ? blocks[blocks.length - 1]! : withoutWakeEnvelope
+
+  return bodyCandidate
+    .replace(/^\[discord\/[^\]]+\]\s*@\S+\s+in\s+\d+(?:\s+\(\d+\))?\s*/gi, "")
+    .replace(/^\[[^\]]+\]\s*/g, "")
+    .replace(/@[a-z0-9_.-]+/gi, " ")
+    .replace(/\b\d{6,}\b/g, " ")
     .replace(/[^\p{L}\p{N}\s'-]+/gu, " ")
     .toLowerCase()
+    .trim()
 }
 
 function searchTokens(raw: string): string[] {
@@ -472,6 +490,42 @@ function scoreMemoryHit(hit: MemoryHit, profile: MemorySearchProfile): number {
   return score
 }
 
+function hitSearchHaystack(hit: MemoryHit): string {
+  return `${hit.documentTitle} ${hit.title} ${hit.headingPath ?? ""} ${basenameWithoutExt(hit.path)} ${hit.text}`.toLowerCase()
+}
+
+function memoryHitSignal(hit: MemoryHit, profile: MemorySearchProfile): MemoryHitSignal {
+  const haystack = hitSearchHaystack(hit)
+  let overlap = 0
+  let strongOverlap = false
+
+  for (const token of profile.tokens) {
+    if (!haystack.includes(token)) continue
+    overlap += 1
+    if (token.length >= 5 || /[0-9]/.test(token)) strongOverlap = true
+  }
+
+  return { overlap, strongOverlap }
+}
+
+function shouldInjectHits(hits: MemoryHit[], profile: MemorySearchProfile): boolean {
+  if (hits.length === 0) return false
+
+  const topSignal = memoryHitSignal(hits[0]!, profile)
+
+  if (profile.personQuery && !profile.eventQuery) {
+    return topSignal.overlap >= 1 && hits.some((hit) => hit.kind === "people" || hit.kind === "core")
+  }
+
+  if (profile.eventQuery && !profile.personQuery) {
+    return topSignal.overlap >= 1 && hits.some((hit) => hit.kind === "journal")
+  }
+
+  if (topSignal.overlap >= 2) return true
+  if (topSignal.overlap >= 1 && topSignal.strongOverlap) return true
+  return false
+}
+
 function searchMemory(
   profile: MemorySearchProfile,
   cooldowns: Record<number, number>,
@@ -581,6 +635,12 @@ export async function buildCompletionMessages(
 
   const hits = searchMemory(profile, cooldowns, currentTurn, MEMORY_RECALL_MAX_CHUNKS)
   if (hits.length === 0) return { messages: conversation, recalledChunkIds: [] }
+  if (!shouldInjectHits(hits, profile)) {
+    console.log(
+      `[memory] skipped query=${JSON.stringify(trimForPrompt(normalizeText(latestUser), 120))} personQuery=${profile.personQuery} eventQuery=${profile.eventQuery} reason=weak-match`,
+    )
+    return { messages: conversation, recalledChunkIds: [] }
+  }
 
   const recallContent = buildMemoryRecallMessage(hits)
   console.log(
