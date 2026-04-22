@@ -296,6 +296,14 @@ function latestUserMessage(conversation: Message[]): string | null {
   if (typeof last.content !== "string") return null
   if (last.content.startsWith(MEMORY_RECALL_HEADER)) return null
   if (last.content.startsWith("[system]")) return null
+  if (
+    last.content.includes("[discord batch]") ||
+    last.content.includes("scan snapshot:") ||
+    last.content.includes("recent messages:") ||
+    last.content.includes("pending preview:")
+  ) {
+    return null
+  }
   return last.content
 }
 
