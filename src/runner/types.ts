@@ -36,5 +36,5 @@ export interface LoopHooks {
 /** Internal runtime state for the runner service. */
 export interface RunnerStateInternal extends RunnerState {
   toolInFlight: boolean
-  deferredEvents: UserMessage[]
+  deferredEvents: Array<{ event: UserMessage; priority: boolean }>
 }

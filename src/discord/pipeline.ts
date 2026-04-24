@@ -3,7 +3,6 @@ import { fromDiscord } from "../triggers/discord.js"
 import { ingestDiscordEvent } from "./state.js"
 
 const DISCORD_WAKE_ON_EVENT = (process.env.DISCORD_WAKE_ON_EVENT ?? "false").trim().toLowerCase() === "true"
-const DISCORD_WAKE_ON_DM = (process.env.DISCORD_WAKE_ON_DM ?? "true").trim().toLowerCase() !== "false"
 
 export type DiscordIngressOutcome = {
   ingested: boolean
@@ -15,7 +14,7 @@ export type DiscordIngressOutcome = {
 export function handleDiscordIngress(payload: unknown): DiscordIngressOutcome {
   const ingest = ingestDiscordEvent(payload)
   const isWakeEligible = ingest.isNew && !ingest.isFromSelf && Boolean(ingest.bucket)
-  const wakeForDm = DISCORD_WAKE_ON_DM && ingest.bucket === "dm"
+  const wakeForDm = ingest.bucket === "dm"
   const shouldWake = isWakeEligible && (DISCORD_WAKE_ON_EVENT || wakeForDm)
 
   if (!shouldWake) {
@@ -28,7 +27,11 @@ export function handleDiscordIngress(payload: unknown): DiscordIngressOutcome {
   }
 
   const event = fromDiscord(payload)
-  isRunning() ? enqueueEvent(event) : wake(event)
+  if (isRunning()) {
+    enqueueEvent(event, { priority: wakeForDm })
+  } else {
+    void wake(event)
+  }
 
   return {
     ingested: ingest.stored,

@@ -3,7 +3,7 @@ import fastifyStatic from "@fastify/static"
 import { existsSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { wake, isRunning, enqueueEvent } from "./runner/index.js"
+import { wake, isRunning, isWaitingForEvent, enqueueEvent } from "./runner/index.js"
 import { buildDiscordBatchDigest } from "./discord/state.js"
 import { handleDiscordIngress } from "./discord/pipeline.js"
 import { fromBsky } from "./triggers/bsky.js"
@@ -30,26 +30,10 @@ export function createServer() {
   let discordBatchInFlight = false
   let discordBatchTimer: ReturnType<typeof setInterval> | null = null
 
-  const emitDiscordBatchEvent = (content: string, raw: Record<string, unknown>): void => {
-    const event: UserMessage = {
-      source: "discord",
-      triggeredAt: new Date().toISOString(),
-      content,
-      raw: {
-        ...raw,
-        interrupt_wait: true,
-      },
-    }
-    if (isRunning()) {
-      console.log("[discord batch] interrupting active runner wait/loop")
-      enqueueEvent(event)
-    } else {
-      void wake(event)
-    }
-  }
-
   const runDiscordBatch = async (): Promise<void> => {
     if (discordBatchInFlight) return
+    if (!isRunning()) return
+    if (!isWaitingForEvent()) return
     discordBatchInFlight = true
     try {
       const digest = buildDiscordBatchDigest({
@@ -58,11 +42,19 @@ export function createServer() {
       })
       if (!digest) return
 
-      emitDiscordBatchEvent(digest.content, {
-        type: "discord_batch",
-        digest,
-        source: "gateway_cache",
-      })
+      enqueueEvent(
+        {
+          source: "discord",
+          triggeredAt: new Date().toISOString(),
+          content: digest.content,
+          raw: {
+            type: "discord_batch",
+            digest,
+            source: "gateway_cache",
+          },
+        },
+        { onlyIfWaiting: true },
+      )
     } finally {
       discordBatchInFlight = false
     }
@@ -75,7 +67,7 @@ export function createServer() {
     }, DISCORD_BATCH_INTERVAL_MS)
     if (typeof discordBatchTimer.unref === "function") discordBatchTimer.unref()
 
-    // Kick one shortly after startup so a sleeping niri can receive recent Discord context quickly.
+    // Kick one shortly after startup; it only emits if niri is already waiting.
     setTimeout(() => {
       void runDiscordBatch()
     }, 5_000).unref?.()

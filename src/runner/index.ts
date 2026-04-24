@@ -30,13 +30,32 @@ export function isRunning(): boolean {
   return state.running
 }
 
+/** Returns whether the runner is currently blocked in wait or wait_then_continue. */
+export function isWaitingForEvent(): boolean {
+  return eventResolvers.length > 0
+}
+
+type EnqueueOptions = {
+  onlyIfWaiting?: boolean
+  priority?: boolean
+}
+
 /** Push an event into the live session, resolving the loop's wait if it's idle. */
-function deliverEvent(event: UserMessage): void {
+function deliverEvent(event: UserMessage, options: EnqueueOptions = {}): boolean {
+  if (options.onlyIfWaiting && eventResolvers.length === 0) {
+    return false
+  }
+
   console.log("[runner] queued event from", event.source)
   if (state.toolInFlight) {
     // Defer external steering until the currently running tool settles.
-    state.deferredEvents.push(event)
-    return
+    const deferred = { event, priority: Boolean(options.priority) }
+    if (options.priority) {
+      state.deferredEvents.unshift(deferred)
+    } else {
+      state.deferredEvents.push(deferred)
+    }
+    return true
   }
 
   // Never push directly into conversation as the loop adds the user message at
@@ -45,30 +64,44 @@ function deliverEvent(event: UserMessage): void {
   if (resolver) {
     resolver(event)
   } else {
-    state.pendingInputs.push(event)
+    if (options.priority) {
+      state.pendingInputs.unshift(event)
+    } else {
+      state.pendingInputs.push(event)
+    }
   }
+  return true
 }
 
 function flushDeferredEvents(): void {
   if (state.toolInFlight || state.deferredEvents.length === 0) return
   const events = state.deferredEvents
   state.deferredEvents = []
-  for (const event of events) {
-    deliverEvent(event)
+  for (const { event, priority } of events) {
+    deliverEvent(event, { priority })
   }
 }
 
 /**
  * Enqueues an event for the active session, or stores it for the next wake cycle.
+ * `onlyIfWaiting` rejects the event unless a wait resolver is active.
  *
  * @param event - Trigger event to deliver to the runner.
+ * @returns `true` when the event was accepted for delivery.
  */
-export function enqueueEvent(event: UserMessage): void {
+export function enqueueEvent(event: UserMessage, options: EnqueueOptions = {}): boolean {
   if (state.running) {
-    deliverEvent(event)
+    return deliverEvent(event, options)
+  }
+  if (options.onlyIfWaiting) {
+    return false
+  }
+  if (options.priority) {
+    state.pendingInputs.unshift(event)
   } else {
     state.pendingInputs.push(event)
   }
+  return true
 }
 
 /**
