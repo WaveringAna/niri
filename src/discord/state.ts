@@ -18,6 +18,7 @@ type DiscordMessageRecord = {
   createdAt: string
   isDm: boolean
   isFromBot: boolean
+  isFromSelf: boolean
   mentionsBot: boolean
   rawJson: string
 }
@@ -40,6 +41,8 @@ export type DiscordIngestResult = {
   messageId?: string
   itemId?: string
   bucket?: "dm" | "mention"
+  isFromBot?: boolean
+  isFromSelf?: boolean
   reason?: string
 }
 
@@ -158,8 +161,9 @@ function parseMessageRecord(payload: unknown, botUserId?: string): DiscordMessag
     asBoolean(root.is_dm) ||
     channelType === 1 ||
     channelType === 3 ||
-    (message.guild_id == null && root.guild_id == null && channel?.guild_id == null)
-  const isFromBot = asBoolean(author?.bot ?? root.author_is_bot)
+    (guildId == null && channelType == null)
+  const isFromSelf = Boolean(botId && authorId === botId)
+  const isFromBot = asBoolean(author?.bot ?? root.author_is_bot) || isFromSelf
 
   let mentionsBot = asBoolean(root.mentions_bot)
   if (!mentionsBot && botId) {
@@ -187,6 +191,7 @@ function parseMessageRecord(payload: unknown, botUserId?: string): DiscordMessag
     createdAt,
     isDm,
     isFromBot,
+    isFromSelf,
     mentionsBot,
     rawJson: JSON.stringify(payload),
   }
@@ -268,13 +273,17 @@ function upsertDiscordMessage(record: DiscordMessageRecord): void {
     ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     on conflict(message_id) do update set
       channel_id = excluded.channel_id,
-      guild_id = excluded.guild_id,
-      channel_type = excluded.channel_type,
+      guild_id = coalesce(excluded.guild_id, discord_messages.guild_id),
+      channel_type = coalesce(excluded.channel_type, discord_messages.channel_type),
       author_id = excluded.author_id,
       author_username = excluded.author_username,
       content = excluded.content,
       created_at = excluded.created_at,
-      is_dm = excluded.is_dm,
+      is_dm = case
+        when excluded.guild_id is not null then 0
+        when discord_messages.guild_id is not null and excluded.guild_id is null then discord_messages.is_dm
+        else excluded.is_dm
+      end,
       mentions_bot = excluded.mentions_bot,
       is_from_bot = excluded.is_from_bot,
       last_seen_at = excluded.last_seen_at,
@@ -313,7 +322,7 @@ function upsertInboxItem(messageId: string, bucket: "dm" | "mention"): void {
 }
 
 function detectInboxBucket(record: DiscordMessageRecord): "dm" | "mention" | null {
-  if (record.isFromBot) return null
+  if (record.isFromSelf) return null
   if (record.isDm) return "dm"
   if (record.mentionsBot) return "mention"
   return null
@@ -350,6 +359,8 @@ export function ingestDiscordEvent(payload: unknown, options?: { botUserId?: str
       messageId: record.messageId,
       itemId: record.messageId,
       bucket,
+      isFromBot: record.isFromBot,
+      isFromSelf: record.isFromSelf,
     }
   }
 
@@ -357,6 +368,8 @@ export function ingestDiscordEvent(payload: unknown, options?: { botUserId?: str
     stored: true,
     isNew,
     messageId: record.messageId,
+    isFromBot: record.isFromBot,
+    isFromSelf: record.isFromSelf,
   }
 }
 
@@ -493,6 +506,32 @@ function autoDemoteStalePendingItems(staleMinutes: number): number {
   return Number(result.changes ?? 0)
 }
 
+function repairDiscordMessageChannelFlags(): number {
+  const db = getDb()
+  const result = db.prepare(
+    `update discord_messages
+     set guild_id = (
+           select c.guild_id from discord_channels c
+           where c.channel_id = discord_messages.channel_id
+             and c.guild_id is not null
+         ),
+         channel_type = coalesce(
+           channel_type,
+           (select c.channel_type from discord_channels c where c.channel_id = discord_messages.channel_id)
+         ),
+         is_dm = 0,
+         last_seen_at = ?
+     where is_dm = 1
+       and exists (
+         select 1 from discord_channels c
+         where c.channel_id = discord_messages.channel_id
+           and c.guild_id is not null
+       )`,
+  ).run(new Date().toISOString())
+
+  return Number(result.changes ?? 0)
+}
+
 function channelLabel(row: {
   is_dm: number
   guild_name: string | null
@@ -503,7 +542,7 @@ function channelLabel(row: {
   if (row.is_dm === 1) return `dm/${row.channel_id}`
   const guild = row.guild_name ?? row.guild_id ?? "unknown-guild"
   const channel = row.channel_name ?? row.channel_id
-  return `${guild}/#${channel}`
+  return `channel/${guild}/#${channel}`
 }
 
 function normalizeStatuses(input?: string[] | string | null): InboxStatus[] {
@@ -702,8 +741,10 @@ export function buildDiscordBatchDigest(params?: {
   const channelScopeClause = batchOnlyConfigured
     ? "and (m.is_dm = 1 or coalesce(c.configured, 0) = 1)"
     : ""
+  const botUserId = process.env.DISCORD_BOT_USER_ID?.trim() ?? ""
 
   const autoDemotedCount = autoDemoteStalePendingItems(autoSeenMinutes)
+  const repairedMessageCount = repairDiscordMessageChannelFlags()
 
   const from =
     getDiscordMeta("discord_batch_last_dispatched_at") ??
@@ -726,14 +767,14 @@ export function buildDiscordBatchDigest(params?: {
        from discord_messages m
        left join discord_channels c on c.channel_id = m.channel_id
        left join discord_items i on i.message_id = m.message_id
-       where m.is_from_bot = 0
+       where (? = '' or coalesce(m.author_id, '') != ?)
          and m.first_seen_at > ?
          and (i.message_id is null or i.status = 'pending')
          ${channelScopeClause}
        order by m.first_seen_at asc
        limit ?`,
     )
-    .all(from, maxMessages + 1) as Array<{
+    .all(botUserId, botUserId, from, maxMessages + 1) as Array<{
       message_id: string
       channel_id: string
       guild_id: string | null
@@ -759,9 +800,10 @@ export function buildDiscordBatchDigest(params?: {
        join discord_messages m on m.message_id = i.message_id
        left join discord_channels c on c.channel_id = m.channel_id
        where i.status = 'pending'
+       and (? = '' or coalesce(m.author_id, '') != ?)
        ${channelScopeClause}`,
     )
-    .get() as { count?: number } | undefined
+    .get(botUserId, botUserId) as { count?: number } | undefined
   const pendingCount = pendingCountRow?.count ?? 0
 
   const pendingPreview = db
@@ -783,11 +825,12 @@ export function buildDiscordBatchDigest(params?: {
        join discord_messages m on m.message_id = i.message_id
        left join discord_channels c on c.channel_id = m.channel_id
        where i.status = 'pending'
+         and (? = '' or coalesce(m.author_id, '') != ?)
          ${channelScopeClause}
        order by i.last_seen_at desc
        limit ?`,
     )
-    .all(previewLimit) as Array<{
+    .all(botUserId, botUserId, previewLimit) as Array<{
       item_id: string
       bucket: string
       channel_id: string
@@ -809,6 +852,8 @@ export function buildDiscordBatchDigest(params?: {
     `[discord batch] ${from} -> ${nowIso}`,
     `new_messages=${recentMessages.length}${truncated ? "+" : ""} channels=${uniqueChannels.size} pending_inbox=${pendingCount} scope=${batchOnlyConfigured ? "configured+dm" : "all"}`,
     `auto_seen_timeout=${autoSeenMinutes}m auto_demoted=${autoDemotedCount}`,
+    `channel_flag_repairs=${repairedMessageCount}`,
+    "channel messages are context, not direct requests. replying is optional; use judgment.",
     "",
     "recent messages:",
   ]
@@ -840,7 +885,7 @@ export function buildDiscordBatchDigest(params?: {
   }
 
   lines.push("")
-  lines.push("you can reply if you want via discord_send, then mark decisions with discord_mark.")
+  lines.push("you can reply if useful via discord_send, or choose not to reply. mark decisions with discord_mark when you handle pending items.")
 
   setDiscordMeta("discord_batch_last_dispatched_at", nowIso)
 

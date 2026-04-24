@@ -71,7 +71,7 @@ export type DiscordGatewayHandle = {
 export async function startDiscordGateway(): Promise<DiscordGatewayHandle | null> {
   const enabled = asEnabled(process.env.DISCORD_GATEWAY_ENABLED, true)
   const trace = asEnabled(process.env.DISCORD_GATEWAY_TRACE, false)
-  const rawFallback = asEnabled(process.env.DISCORD_GATEWAY_RAW_FALLBACK, true)
+  const rawFallback = asEnabled(process.env.DISCORD_GATEWAY_RAW_FALLBACK, false)
   if (!enabled) {
     console.log("[discord gateway] disabled via DISCORD_GATEWAY_ENABLED=false")
     return null
