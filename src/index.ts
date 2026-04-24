@@ -1,6 +1,7 @@
 import { openBash, closeBash } from "./container/index.js"
 import { createServer } from "./server.js"
 import { initDb } from "./db.js"
+import { initMetricsDb } from "./metrics.js"
 import { shutdown } from "./runner/index.js"
 import { startDiscordGateway } from "./discord/gateway.js"
 import { ensureSoulFilePlacement } from "./bootstrap.js"
@@ -12,6 +13,7 @@ async function main() {
 
   await ensureSoulFilePlacement()
   initDb()
+  initMetricsDb()
   await openBash()
 
   let discordGateway: Awaited<ReturnType<typeof startDiscordGateway>> = null

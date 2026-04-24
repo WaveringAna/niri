@@ -926,7 +926,7 @@ function countLeadingSystemMessages(messages: Message[]): number {
   return count
 }
 
-function findSummaryMessageIndex(messages: Message[]): number {
+export function findSummaryMessageIndex(messages: Message[]): number {
   return messages.findIndex((message) => {
     const content = messageStringContent(message)
     return content.startsWith(CONTEXT_SUMMARY_HEADER)

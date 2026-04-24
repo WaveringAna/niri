@@ -4,6 +4,7 @@ import { createHash } from "crypto"
 import { fileURLToPath } from "url"
 import type { Message } from "./types.js"
 import { getDb } from "./db.js"
+import { recordMetric } from "./metrics.js"
 
 const HOME_DIR = path.resolve(fileURLToPath(import.meta.url), "../../home")
 const MEMORIES_DIR = path.join(HOME_DIR, "memories")
@@ -655,6 +656,12 @@ export async function buildCompletionMessages(
     `[memory] recalled query=${JSON.stringify(trimForPrompt(normalizeText(latestUser), 120))} personQuery=${profile.personQuery} eventQuery=${profile.eventQuery}\n${recallContent}`,
   )
 
+  recordMetric({
+    type: "memory",
+    query: latestUser,
+    results: hits.map(toMemorySearchResult),
+  })
+
   const recallMessage: Message = {
     role: "user",
     content: recallContent,
@@ -687,5 +694,11 @@ export async function searchMemories(rawQuery: string, limit = 5): Promise<Memor
   const profile = buildSearchProfile(rawQuery)
   if (profile.tokens.length === 0) return []
 
-  return searchMemory(profile, {}, Number.POSITIVE_INFINITY, Math.max(1, Math.min(limit, 10))).map(toMemorySearchResult)
+  const results = searchMemory(profile, {}, Number.POSITIVE_INFINITY, Math.max(1, Math.min(limit, 10))).map(toMemorySearchResult)
+  recordMetric({
+    type: "memory",
+    query: rawQuery,
+    results,
+  })
+  return results
 }

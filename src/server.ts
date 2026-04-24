@@ -11,6 +11,7 @@ import { fromWebhook } from "./triggers/webhook.js"
 import { fromCron } from "./triggers/cron.js"
 import { fromChat } from "./triggers/chat.js"
 import { subscribe } from "./stream.js"
+import { getMetrics, getMetricDetail } from "./metrics.js"
 import type { UserMessage } from "./types.js"
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url))
@@ -190,6 +191,18 @@ export function createServer() {
   app.get("/status", async () => ({
     running: isRunning(),
   }))
+
+  app.get("/metrics", async (req) => {
+    const { limit } = req.query as { limit?: string }
+    return getMetrics(limit ? parseInt(limit, 10) : 100)
+  })
+
+  app.get("/metrics/:id", async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const metric = getMetricDetail(parseInt(id, 10))
+    if (!metric) return reply.code(404).send({ error: "metric not found" })
+    return metric
+  })
 
   return app
 }

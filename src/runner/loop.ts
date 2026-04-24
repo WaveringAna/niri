@@ -28,6 +28,7 @@ import {
   estimatePromptTokens,
   fallbackClient,
   fallbackContextWindow,
+  findSummaryMessageIndex,
   forceCompactConversation,
   isPromptTooLargeError,
   maybeCompactConversation,
@@ -38,6 +39,7 @@ import {
   summarizeConversationViaLLM,
 } from "./util.js"
 import { buildCompletionMessages, rememberRecalledMemoryChunks, searchMemories } from "../memory.js"
+import { recordMetric } from "../metrics.js"
 
 const LLM_POST_TURN_RECENT_MESSAGES = 40
 
@@ -273,6 +275,8 @@ async function createStreamedCompletion(
     stream_options: { include_usage: true },
   } as const
 
+  recordMetric({ type: "prompt", messages: request.messages })
+
   try {
     const stream = await apiClient.chat.completions.create(streamedRequest)
     return consumeCompletionStream(stream as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>)
@@ -335,6 +339,7 @@ function applyUsage(state: LoopState, usage: OpenAI.Completions.CompletionUsage 
   state.tokenCount += usage.total_tokens
   if (usage.prompt_tokens) state.contextSize = usage.prompt_tokens
   console.log(`[tokens] +${usage.total_tokens} total=${state.tokenCount}`)
+  recordMetric({ type: "usage", usage })
 }
 
 /**
@@ -514,9 +519,21 @@ async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Pro
     if (result.compacted) {
       state.conversation = result.messages
       state.contextSize = result.estimateAfter
+
+      const summaryIdx = findSummaryMessageIndex(state.conversation)
+      const summary = summaryIdx >= 0 ? (state.conversation[summaryIdx]?.content as string) : undefined
+
       console.warn(
         `[context] recovery: force-compacted ${result.messagesRemoved} msgs across ${result.chunks} chunks (${result.estimateBefore} -> ${result.estimateAfter}, target=${targetTokens})`,
       )
+
+      recordMetric({
+        type: "compaction",
+        before: result.estimateBefore,
+        after: result.estimateAfter,
+        method: "force-heuristic",
+        summary,
+      })
       return true
     }
     console.warn(`[context] recovery: force-compaction produced no changes (messages=${beforeCount}, est=${beforeEstimate})`)
@@ -545,9 +562,21 @@ async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Pro
 
   state.conversation = summarized
   state.contextSize = afterEstimate
+
+  const summaryIdx = findSummaryMessageIndex(state.conversation)
+  const summary = summaryIdx >= 0 ? (state.conversation[summaryIdx]?.content as string) : undefined
+
   console.warn(
     `[context] recovery: llm-summarized conversation (${beforeCount} -> ${summarized.length} msgs, ${beforeEstimate} -> ${afterEstimate} tokens)`,
   )
+
+  recordMetric({
+    type: "compaction",
+    before: beforeEstimate,
+    after: afterEstimate,
+    method: "force-llm",
+    summary,
+  })
   return true
 }
 
@@ -1134,9 +1163,20 @@ function applyRollingCompaction(state: LoopState, phase: "pre-turn" | "post-turn
   state.conversation = result.messages
   state.contextSize = result.estimateAfter
 
+  const summaryIdx = findSummaryMessageIndex(state.conversation)
+  const summary = summaryIdx >= 0 ? (state.conversation[summaryIdx]?.content as string) : undefined
+
   console.log(
     `[context] ${phase} compacted ${result.messagesRemoved} messages across ${result.chunks} chunks (${result.estimateBefore} -> ${result.estimateAfter})`,
   )
+
+  recordMetric({
+    type: "compaction",
+    before: result.estimateBefore,
+    after: result.estimateAfter,
+    method: "rolling",
+    summary,
+  })
   return true
 }
 
@@ -1164,11 +1204,24 @@ async function applyPostTurnCompaction(state: LoopState): Promise<boolean> {
         if (afterEstimate < beforeEstimate) {
           state.conversation = summarized
           state.contextSize = afterEstimate
+
+          const summaryIdx = findSummaryMessageIndex(state.conversation)
+          const summary = summaryIdx >= 0 ? (state.conversation[summaryIdx]?.content as string) : undefined
+
           console.log(
-            `[context] post-turn llm-summarized (${beforeCount} -> ${summarized.length} msgs, ${beforeEstimate} -> ${afterEstimate})`,
+            `[context] post-turn llm-summarized conversation (${beforeCount} -> ${summarized.length} msgs, ${beforeEstimate} -> ${afterEstimate} tokens)`,
           )
+
+          recordMetric({
+            type: "compaction",
+            before: beforeEstimate,
+            after: afterEstimate,
+            method: "post-turn-llm",
+            summary,
+          })
           return true
         }
+
         console.warn(
           `[context] post-turn llm summary not smaller (${beforeEstimate} -> ${afterEstimate}); falling back to heuristic`,
         )
