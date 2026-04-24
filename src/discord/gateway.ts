@@ -1,4 +1,5 @@
 import {
+  ChannelType,
   Client,
   Events,
   GatewayIntentBits,
@@ -14,6 +15,19 @@ function asEnabled(value: string | undefined, fallback: boolean): boolean {
   if (normalized === "false" || normalized === "0" || normalized === "no") return false
   if (normalized === "true" || normalized === "1" || normalized === "yes") return true
   return fallback
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : ""
+}
+
+function asNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
 }
 
 function buildIngressPayload(message: Message): Record<string, unknown> {
@@ -71,7 +85,8 @@ export type DiscordGatewayHandle = {
 export async function startDiscordGateway(): Promise<DiscordGatewayHandle | null> {
   const enabled = asEnabled(process.env.DISCORD_GATEWAY_ENABLED, true)
   const trace = asEnabled(process.env.DISCORD_GATEWAY_TRACE, false)
-  const rawFallback = asEnabled(process.env.DISCORD_GATEWAY_RAW_FALLBACK, false)
+  const rawFallback = asEnabled(process.env.DISCORD_GATEWAY_RAW_FALLBACK, true)
+  const rawFallbackAll = asEnabled(process.env.DISCORD_GATEWAY_RAW_FALLBACK_ALL, false)
   if (!enabled) {
     console.log("[discord gateway] disabled via DISCORD_GATEWAY_ENABLED=false")
     return null
@@ -110,10 +125,34 @@ export async function startDiscordGateway(): Promise<DiscordGatewayHandle | null
     if (packet?.t !== "MESSAGE_CREATE") return
     if (!rawFallback) return
     const d = packet.d ?? {}
+    const channelId = asString(d.channel_id)
+    const guildId = asString(d.guild_id)
+    const channelType = asNumber(d.channel_type)
+    const cachedChannel = channelId ? client.channels.cache.get(channelId) : null
+    const cachedType = typeof cachedChannel?.type === "number" ? cachedChannel.type : null
+    const isDm =
+      !guildId &&
+      (channelType === ChannelType.DM ||
+        channelType === ChannelType.GroupDM ||
+        cachedType === ChannelType.DM ||
+        cachedType === ChannelType.GroupDM)
+
+    if (!rawFallbackAll && !isDm) {
+      if (trace) {
+        console.log(
+          `[discord gateway/raw] ignored MESSAGE_CREATE id=${String(d.id ?? "unknown")} channel=${channelId || "unknown"} guild=${guildId || "none"} type=${channelType ?? cachedType ?? "unknown"} reason=not_dm_fallback`,
+        )
+      }
+      return
+    }
+
     const author = (d.author ?? {}) as Record<string, unknown>
     let ingestResultText = ""
     try {
-      const result = handleDiscordIngress(d)
+      const result = handleDiscordIngress({
+        ...d,
+        is_dm: isDm,
+      })
       ingestResultText = ` ingested=${result.ingested} woke=${result.woke} reason=${result.reason}`
     } catch (err) {
       ingestResultText = ` ingest_error=${err instanceof Error ? err.message : String(err)}`
