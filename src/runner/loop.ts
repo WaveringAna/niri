@@ -22,6 +22,7 @@ import {
   FALLBACK_TOKEN_NUDGE_THRESHOLD,
   MODEL,
   PRIMARY_TOOL_CHOICE,
+  SUMMARY_MODEL,
   TOKEN_NUDGE_THRESHOLD,
   TOOLS,
   USE_FALLBACK,
@@ -39,12 +40,21 @@ import {
   parseToolArguments,
   retryDelayMs,
   shouldFallback,
+  summaryClient,
   summarizeConversationViaLLM,
 } from "./util.js"
 import { buildCompletionMessages, rememberRecalledMemoryChunks, searchMemories } from "../memory.js"
 import { recordMetric } from "../metrics.js"
 
 const LLM_POST_TURN_RECENT_MESSAGES = 40
+
+function configuredSummaryProvider(): { client: OpenAI | null; model: string } {
+  if (summaryClient && SUMMARY_MODEL) return { client: summaryClient, model: SUMMARY_MODEL }
+  return {
+    client: USE_FALLBACK ? fallbackClient : client,
+    model: USE_FALLBACK ? FALLBACK_MODEL : MODEL,
+  }
+}
 
 function logApiError(err: unknown, context: string): void {
   if (!(err instanceof OpenAI.APIError)) return
@@ -626,16 +636,15 @@ async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Pro
     console.warn(`[context] recovery: force-compaction produced no changes (messages=${beforeCount}, est=${beforeEstimate})`)
   }
 
-  // Second attempt: LLM-based summarization via the available provider.
-  const summaryClient = USE_FALLBACK ? fallbackClient : client
-  const summaryModel = USE_FALLBACK ? FALLBACK_MODEL : MODEL
-  if (!summaryClient || !summaryModel) {
+  // Second attempt: LLM-based summarization via the configured summary provider.
+  const summaryProvider = configuredSummaryProvider()
+  if (!summaryProvider.client || !summaryProvider.model) {
     console.warn(`[context] recovery: no summary client available; cannot llm-summarize`)
     return false
   }
 
-  console.warn(`[context] recovery: attempting llm summarization via ${summaryModel}`)
-  const summarized = await summarizeConversationViaLLM(state.conversation, summaryClient, summaryModel)
+  console.warn(`[context] recovery: attempting llm summarization via ${summaryProvider.model}`)
+  const summarized = await summarizeConversationViaLLM(state.conversation, summaryProvider.client, summaryProvider.model)
   if (!summarized) {
     console.warn(`[context] recovery: llm summarization returned no changes`)
     return false
@@ -1243,15 +1252,14 @@ function applyRollingCompaction(state: LoopState, phase: "pre-turn" | "post-turn
  */
 async function applyPostTurnCompaction(state: LoopState): Promise<boolean> {
   if (state.contextSize >= CONTEXT_COMPACT_TRIGGER_TOKENS) {
-    const summaryClient = USE_FALLBACK ? fallbackClient : client
-    const summaryModel = USE_FALLBACK ? FALLBACK_MODEL : MODEL
-    if (summaryClient && summaryModel) {
+    const summaryProvider = configuredSummaryProvider()
+    if (summaryProvider.client && summaryProvider.model) {
       const beforeCount = state.conversation.length
       const beforeEstimate = estimatePromptTokens(state.conversation)
       const summarized = await summarizeConversationViaLLM(
         state.conversation,
-        summaryClient,
-        summaryModel,
+        summaryProvider.client,
+        summaryProvider.model,
         { recentKeep: LLM_POST_TURN_RECENT_MESSAGES },
       )
       if (summarized) {
@@ -1264,7 +1272,7 @@ async function applyPostTurnCompaction(state: LoopState): Promise<boolean> {
           const summary = summaryIdx >= 0 ? (state.conversation[summaryIdx]?.content as string) : undefined
 
           console.log(
-            `[context] post-turn llm-summarized conversation (${beforeCount} -> ${summarized.length} msgs, ${beforeEstimate} -> ${afterEstimate} tokens)`,
+            `[context] post-turn llm-summarized conversation via ${summaryProvider.model} (${beforeCount} -> ${summarized.length} msgs, ${beforeEstimate} -> ${afterEstimate} tokens)`,
           )
 
           recordMetric({

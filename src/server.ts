@@ -35,9 +35,17 @@ export function createServer() {
       source: "discord",
       triggeredAt: new Date().toISOString(),
       content,
-      raw,
+      raw: {
+        ...raw,
+        interrupt_wait: true,
+      },
     }
-    isRunning() ? enqueueEvent(event) : wake(event)
+    if (isRunning()) {
+      console.log("[discord batch] interrupting active runner wait/loop")
+      enqueueEvent(event)
+    } else {
+      void wake(event)
+    }
   }
 
   const runDiscordBatch = async (): Promise<void> => {

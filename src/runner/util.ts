@@ -46,6 +46,9 @@ export const FALLBACK_BASE =
   process.env.FALLBACK_OPENAI_BASE_URL ?? process.env.OPENROUTER_BASE_URL ?? process.env.LMSTUDIO_BASE_URL ?? DEFAULT_FALLBACK_BASE
 export const FALLBACK_MODEL =
   process.env.FALLBACK_MODEL ?? process.env.OPENROUTER_MODEL ?? process.env.LMSTUDIO_MODEL ?? "zai-org/glm-4.7-flash"
+export const SUMMARY_BASE =
+  process.env.SUMMARY_OPENAI_BASE_URL ?? process.env.SUMMARY_BASE_URL ?? ""
+export const SUMMARY_MODEL = process.env.SUMMARY_MODEL ?? ""
 export const PRIMARY_TOOL_CHOICE = parseToolChoiceEnv(process.env.PRIMARY_TOOL_CHOICE ?? process.env.TOOL_CHOICE, "required")
 export const FALLBACK_TOOL_CHOICE = parseToolChoiceEnv(process.env.FALLBACK_TOOL_CHOICE, "required")
 const FALLBACK_N_CTX = parseInt(process.env.FALLBACK_N_CTX ?? process.env.LMSTUDIO_N_CTX ?? "4096")
@@ -64,9 +67,19 @@ const fallbackApiKey =
   process.env.LMSTUDIO_API_KEY ??
   process.env.OPENAI_API_KEY ??
   (isLikelyLocalBase(FALLBACK_BASE) ? "lm-studio" : "")
+const summaryApiKey =
+  process.env.SUMMARY_OPENAI_API_KEY ??
+  process.env.SUMMARY_API_KEY ??
+  (SUMMARY_BASE === process.env.OPENROUTER_BASE_URL ? process.env.OPENROUTER_API_KEY : undefined) ??
+  (SUMMARY_BASE === process.env.LMSTUDIO_BASE_URL ? process.env.LMSTUDIO_API_KEY : undefined) ??
+  process.env.OPENAI_API_KEY ??
+  (SUMMARY_BASE && isLikelyLocalBase(SUMMARY_BASE) ? "lm-studio" : "")
 const fallbackHeaders: Record<string, string> = {}
 if (process.env.FALLBACK_OPENAI_REFERER) fallbackHeaders["HTTP-Referer"] = process.env.FALLBACK_OPENAI_REFERER
 if (process.env.FALLBACK_OPENAI_TITLE) fallbackHeaders["X-Title"] = process.env.FALLBACK_OPENAI_TITLE
+const summaryHeaders: Record<string, string> = {}
+if (process.env.SUMMARY_OPENAI_REFERER) summaryHeaders["HTTP-Referer"] = process.env.SUMMARY_OPENAI_REFERER
+if (process.env.SUMMARY_OPENAI_TITLE) summaryHeaders["X-Title"] = process.env.SUMMARY_OPENAI_TITLE
 
 if (!USE_FALLBACK && !MODEL) {
   throw new Error("MODEL is required unless fallback is forced (NIRI_ENV=local).")
@@ -79,6 +92,12 @@ if (!USE_FALLBACK && !process.env.OPENAI_API_KEY) {
 if (USE_FALLBACK && !fallbackApiKey) {
   throw new Error(
     "Fallback API key is required in local mode. Set FALLBACK_OPENAI_API_KEY (or OPENROUTER_API_KEY / LMSTUDIO_API_KEY).",
+  )
+}
+
+if ((SUMMARY_BASE || SUMMARY_MODEL) && (!SUMMARY_BASE || !SUMMARY_MODEL || !summaryApiKey)) {
+  throw new Error(
+    "Summary provider requires SUMMARY_OPENAI_BASE_URL (or SUMMARY_BASE_URL), SUMMARY_MODEL, and SUMMARY_OPENAI_API_KEY (or SUMMARY_API_KEY).",
   )
 }
 
@@ -95,8 +114,18 @@ export const fallbackClient = new OpenAI({
   defaultHeaders: Object.keys(fallbackHeaders).length ? fallbackHeaders : undefined,
 })
 
+export const summaryClient =
+  SUMMARY_BASE && SUMMARY_MODEL
+    ? new OpenAI({
+        baseURL: SUMMARY_BASE,
+        apiKey: summaryApiKey,
+        defaultHeaders: Object.keys(summaryHeaders).length ? summaryHeaders : undefined,
+      })
+    : null
+
 console.log(`[config] primary=${MODEL} @ ${API_BASE}`)
 console.log(`[config] fallback=${FALLBACK_MODEL} @ ${FALLBACK_BASE}`)
+if (summaryClient) console.log(`[config] summary=${SUMMARY_MODEL} @ ${SUMMARY_BASE}`)
 console.log(`[config] env=${NIRI_ENV} use_fallback=${USE_FALLBACK}`)
 
 const IMAGE_ROOT_HINT = imageRootForModelInput()
