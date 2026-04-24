@@ -119,6 +119,7 @@ enum CycleOutcome {
   ToolsDone = "tools_done",
   Rest = "rest",
 }
+export type RunLoopExit = "rest"
 type ToolArgKey = keyof ToolArgs
 type ArgTuple<K extends readonly ToolArgKey[]> = { [I in keyof K]: ToolArgs[K[I]] }
 
@@ -1308,15 +1309,15 @@ async function applyPostTurnCompaction(state: LoopState): Promise<boolean> {
  * @param convId - Active conversation id used for persistence/logging.
  * @param state - Mutable loop state for conversation, tokens, and pending events.
  * @param hooks - Host-provided lifecycle and event hooks.
- * @returns A promise that resolves when the loop exits.
+ * @returns Why the loop exited. Waiting for events does not exit the loop.
  */
-export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks): Promise<void> {
+export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks): Promise<RunLoopExit> {
   while (true) {
     const preCompacted = applyRollingCompaction(state, "pre-turn")
     if (preCompacted) await hooks.saveSession()
 
     const outcome = await processAssistantTurn(convId, state, hooks)
-    if (outcome === CycleOutcome.Rest) break
+    if (outcome === CycleOutcome.Rest) return "rest"
 
     await applyPostTurnCompaction(state)
     if (outcome !== CycleOutcome.NoTools) {

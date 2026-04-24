@@ -1,4 +1,5 @@
 import {
+  ActivityType,
   ChannelType,
   Client,
   Events,
@@ -7,6 +8,7 @@ import {
   type Message,
 } from "discord.js"
 import { handleDiscordIngress } from "./pipeline.js"
+import { subscribeRunnerPresence, type RunnerPresence } from "../runner/presence.js"
 
 function asEnabled(value: string | undefined, fallback: boolean): boolean {
   if (typeof value !== "string") return fallback
@@ -82,6 +84,32 @@ export type DiscordGatewayHandle = {
   stop: () => Promise<void>
 }
 
+async function setDiscordPresence(client: Client, presence: RunnerPresence): Promise<void> {
+  if (!client.user) return
+
+  try {
+    await client.user.setPresence(
+      presence === "resting"
+        ? {
+            status: "idle",
+            activities: [
+              {
+                name: "resting",
+                state: "resting",
+                type: ActivityType.Custom,
+              },
+            ],
+          }
+        : {
+            status: "online",
+            activities: [],
+          },
+    )
+  } catch (err) {
+    console.warn("[discord gateway] failed to update presence:", err)
+  }
+}
+
 export async function startDiscordGateway(): Promise<DiscordGatewayHandle | null> {
   const enabled = asEnabled(process.env.DISCORD_GATEWAY_ENABLED, true)
   const trace = asEnabled(process.env.DISCORD_GATEWAY_TRACE, false)
@@ -112,6 +140,9 @@ export async function startDiscordGateway(): Promise<DiscordGatewayHandle | null
     console.log("[discord gateway] trace enabled")
   }
 
+  let latestPresence: RunnerPresence = "resting"
+  let unsubscribePresence: (() => void) | null = null
+
   client.once(Events.ClientReady, (ready) => {
     if (!process.env.DISCORD_BOT_USER_ID && ready.user?.id) {
       process.env.DISCORD_BOT_USER_ID = ready.user.id
@@ -119,6 +150,12 @@ export async function startDiscordGateway(): Promise<DiscordGatewayHandle | null
     console.log(
       `[discord gateway] connected as ${ready.user?.tag ?? ready.user?.id ?? "unknown"} (id=${ready.user?.id ?? "unknown"})`,
     )
+    void setDiscordPresence(client, latestPresence)
+  })
+
+  unsubscribePresence = subscribeRunnerPresence((presence) => {
+    latestPresence = presence
+    if (client.isReady()) void setDiscordPresence(client, presence)
   })
 
   client.on("raw", (packet: { t?: string; d?: Record<string, unknown> }) => {
@@ -189,6 +226,7 @@ export async function startDiscordGateway(): Promise<DiscordGatewayHandle | null
 
   return {
     stop: async () => {
+      unsubscribePresence?.()
       await client.destroy()
       console.log("[discord gateway] disconnected")
     },

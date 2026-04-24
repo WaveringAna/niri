@@ -2,6 +2,7 @@ import { buildBootstrap } from "../bootstrap.js"
 import { endConversation, logMessage, startConversation } from "../db.js"
 import { emit } from "../stream.js"
 import { runLoop } from "./loop.js"
+import { setRunnerPresence } from "./presence.js"
 import type { RunnerStateInternal } from "./types.js"
 import { clearSession, loadSession, saveSession } from "./util.js"
 import type { UserMessage } from "../types.js"
@@ -206,6 +207,7 @@ export async function wake(event: UserMessage): Promise<void> {
   }
 
   state.running = true
+  setRunnerPresence("awake")
   state.tokenCount = 0
   state.contextSize = 0
   state.memoryRecallCooldowns = {}
@@ -233,7 +235,7 @@ export async function wake(event: UserMessage): Promise<void> {
   console.log("[runner] niri is awake")
 
   try {
-    await runLoop(convId, state, {
+    const exit = await runLoop(convId, state, {
       waitForEvent,
       waitForEventWithTimeout,
       injectIncomingEvent,
@@ -241,6 +243,7 @@ export async function wake(event: UserMessage): Promise<void> {
       clearSession,
       saveSession: async () => saveSession(state.conversation),
     })
+    if (exit === "rest") setRunnerPresence("resting")
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error(`[runner] loop aborted: ${message}`)
@@ -260,6 +263,7 @@ export async function wake(event: UserMessage): Promise<void> {
     flushDeferredEvents()
     state.deferredEvents = []
     eventResolvers = []
+    setRunnerPresence("resting")
     console.log("[runner] niri is resting")
     shutdownResolve?.()
     shutdownResolve = null
