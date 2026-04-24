@@ -14,7 +14,7 @@ export type DiscordIngressOutcome = {
 
 export function handleDiscordIngress(payload: unknown): DiscordIngressOutcome {
   const ingest = ingestDiscordEvent(payload)
-  const isWakeEligible = ingest.isNew && !ingest.isFromSelf
+  const isWakeEligible = ingest.isNew && !ingest.isFromSelf && Boolean(ingest.bucket)
   const wakeForDm = DISCORD_WAKE_ON_DM && ingest.bucket === "dm"
   const shouldWake = isWakeEligible && (DISCORD_WAKE_ON_EVENT || wakeForDm)
 

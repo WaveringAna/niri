@@ -321,10 +321,14 @@ function upsertInboxItem(messageId: string, bucket: "dm" | "mention"): void {
   ).run(messageId, messageId, bucket, now, now)
 }
 
+function isConfiguredDiscordChannel(channelId: string): boolean {
+  return configuredChannelIdSet().has(channelId)
+}
+
 function detectInboxBucket(record: DiscordMessageRecord): "dm" | "mention" | null {
   if (record.isFromSelf) return null
   if (record.isDm) return "dm"
-  if (record.mentionsBot) return "mention"
+  if (record.mentionsBot && isConfiguredDiscordChannel(record.channelId)) return "mention"
   return null
 }
 
@@ -370,6 +374,9 @@ export function ingestDiscordEvent(payload: unknown, options?: { botUserId?: str
     messageId: record.messageId,
     isFromBot: record.isFromBot,
     isFromSelf: record.isFromSelf,
+    ...(!record.isDm && record.mentionsBot && !isConfiguredDiscordChannel(record.channelId)
+      ? { reason: "ignored mention from unconfigured channel" }
+      : {}),
   }
 }
 
