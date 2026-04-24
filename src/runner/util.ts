@@ -46,6 +46,7 @@ export const FALLBACK_BASE =
   process.env.FALLBACK_OPENAI_BASE_URL ?? process.env.OPENROUTER_BASE_URL ?? process.env.LMSTUDIO_BASE_URL ?? DEFAULT_FALLBACK_BASE
 export const FALLBACK_MODEL =
   process.env.FALLBACK_MODEL ?? process.env.OPENROUTER_MODEL ?? process.env.LMSTUDIO_MODEL ?? "zai-org/glm-4.7-flash"
+export const PRIMARY_TOOL_CHOICE = parseToolChoiceEnv(process.env.PRIMARY_TOOL_CHOICE ?? process.env.TOOL_CHOICE, "required")
 export const FALLBACK_TOOL_CHOICE = parseToolChoiceEnv(process.env.FALLBACK_TOOL_CHOICE, "required")
 const FALLBACK_N_CTX = parseInt(process.env.FALLBACK_N_CTX ?? process.env.LMSTUDIO_N_CTX ?? "4096")
 const FALLBACK_CONTEXT_MARGIN = parseInt(process.env.FALLBACK_CONTEXT_MARGIN ?? process.env.LMSTUDIO_CONTEXT_MARGIN ?? "256")
@@ -519,7 +520,8 @@ export async function loadSession(): Promise<Message[] | null> {
 export function shouldFallback(err: unknown): boolean {
   if (err instanceof OpenAI.APIError) {
     // 429 + 5xx = overloaded or down; 0/undefined = network-level failure
-    return !err.status || err.status === 429 || err.status >= 500
+    if (!err.status || err.status === 429 || err.status >= 500) return true
+    return false
   }
   // Node fetch errors (ECONNREFUSED, ENOTFOUND, ETIMEDOUT…)
   if (err instanceof Error) {
@@ -574,6 +576,61 @@ export function errorSummary(err: unknown): string {
   if (err instanceof OpenAI.APIError) return `${err.status} ${err.message}`
   if (err instanceof Error) return err.message
   return String(err)
+}
+
+const API_ERROR_DETAIL_MAX_CHARS = 4000
+
+function truncateForLog(value: string): string {
+  if (value.length <= API_ERROR_DETAIL_MAX_CHARS) return value
+  return `${value.slice(0, API_ERROR_DETAIL_MAX_CHARS)}... [truncated ${value.length - API_ERROR_DETAIL_MAX_CHARS} chars]`
+}
+
+function stringifyForLog(value: unknown): string {
+  if (typeof value === "string") return truncateForLog(value)
+  try {
+    return truncateForLog(JSON.stringify(value))
+  } catch {
+    return truncateForLog(String(value))
+  }
+}
+
+function apiErrorRawMetadata(error: unknown): unknown {
+  if (!error || typeof error !== "object") return undefined
+  const metadata = (error as { metadata?: unknown }).metadata
+  if (!metadata || typeof metadata !== "object") return undefined
+  return (metadata as { raw?: unknown }).raw
+}
+
+/**
+ * Produces detailed API error lines for provider-specific diagnostics.
+ *
+ * Some OpenAI-compatible providers wrap the real upstream failure in
+ * `error.metadata.raw`; include it explicitly so the root cause appears in logs.
+ */
+export function apiErrorDetails(err: unknown): string[] {
+  if (!(err instanceof OpenAI.APIError)) return []
+
+  const details = [
+    `status=${err.status ?? "unknown"}`,
+    `message=${err.message}`,
+  ]
+  if (err.code) details.push(`code=${err.code}`)
+  if (err.type) details.push(`type=${err.type}`)
+  if (err.param) details.push(`param=${err.param}`)
+  if (err.requestID) details.push(`request_id=${err.requestID}`)
+
+  const lines = [`[api] error details: ${details.join(" ")}`]
+
+  if (err.error !== undefined) {
+    lines.push(`[api] error body: ${stringifyForLog(err.error)}`)
+  }
+
+  const raw = apiErrorRawMetadata(err.error)
+  if (raw !== undefined) {
+    lines.push(`[api] provider raw: ${stringifyForLog(raw)}`)
+  }
+
+  return lines
 }
 
 function parseRetryAfterHeaderMs(value: string): number | null {

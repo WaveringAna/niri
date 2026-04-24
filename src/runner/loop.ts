@@ -16,13 +16,16 @@ import type { LoopHooks, LoopState } from "./types.js"
 import {
   API_BASE,
   CONTEXT_COMPACT_TRIGGER_TOKENS,
+  FALLBACK_BASE,
   FALLBACK_MODEL,
   FALLBACK_TOOL_CHOICE,
   FALLBACK_TOKEN_NUDGE_THRESHOLD,
   MODEL,
+  PRIMARY_TOOL_CHOICE,
   TOKEN_NUDGE_THRESHOLD,
   TOOLS,
   USE_FALLBACK,
+  apiErrorDetails,
   client,
   errorSummary,
   estimatePromptTokens,
@@ -42,6 +45,12 @@ import { buildCompletionMessages, rememberRecalledMemoryChunks, searchMemories }
 import { recordMetric } from "../metrics.js"
 
 const LLM_POST_TURN_RECENT_MESSAGES = 40
+
+function logApiError(err: unknown, context: string): void {
+  if (!(err instanceof OpenAI.APIError)) return
+  console.error(`[api] ${err.status} ${err.message} - ${context}`)
+  for (const line of apiErrorDetails(err)) console.error(line)
+}
 
 type FunctionToolCall = OpenAI.Chat.ChatCompletionMessageToolCall & { type: "function" }
 type ToolArgs = {
@@ -83,6 +92,9 @@ type CompletionRequest = {
   messages: OpenAI.Chat.ChatCompletionMessageParam[]
   tools: OpenAI.Chat.ChatCompletionTool[]
   tool_choice: "required" | "auto" | "none"
+  include_reasoning?: boolean
+  reasoning?: { enabled?: boolean; exclude?: boolean; effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" }
+  provider?: { require_parameters?: boolean }
 }
 type ToolCallAssembly = {
   id: string
@@ -180,9 +192,36 @@ function formatRetryAt(retryAfterMs: number): string {
   return `${local} (${retryAt.toISOString()})`
 }
 
-function shouldRetryFallbackWithAutoToolChoice(err: unknown): boolean {
+function apiErrorSearchText(err: { message: string; error?: unknown }): string {
+  const parts = [err.message]
+  if (err.error !== undefined) {
+    try {
+      parts.push(JSON.stringify(err.error))
+    } catch {
+      parts.push(String(err.error))
+    }
+  }
+  return parts.join("\n")
+}
+
+function shouldRetryWithAutoToolChoice(err: unknown): boolean {
   if (!(err instanceof OpenAI.APIError)) return false
-  return /no endpoints found that support the provided 'tool_choice' value/i.test(err.message)
+  const text = apiErrorSearchText(err)
+  return /no endpoints found that support the provided 'tool_choice' value|does not support this tool_choice/i.test(text)
+}
+
+function shouldRetryWithoutReasoningForTools(err: unknown): boolean {
+  if (!(err instanceof OpenAI.APIError)) return false
+  return /function call should not be used with prefix/i.test(apiErrorSearchText(err))
+}
+
+function openRouterToolRequestExtras(baseUrl: string): Partial<CompletionRequest> {
+  if (!baseUrl.includes("openrouter.ai")) return {}
+  return {
+    include_reasoning: false,
+    reasoning: { enabled: false, exclude: true, effort: "none" },
+    provider: { require_parameters: true },
+  }
 }
 
 function shouldRetryWithoutStreamUsage(err: unknown): boolean {
@@ -298,21 +337,69 @@ async function createFallbackCompletion(messages: OpenAI.Chat.ChatCompletionMess
     messages,
     tools: TOOLS,
     tool_choice: FALLBACK_TOOL_CHOICE,
+    ...openRouterToolRequestExtras(FALLBACK_BASE),
   }
 
-  try {
-    return await createStreamedCompletion(fallbackClient, request)
-  } catch (err) {
-    if (request.tool_choice !== "auto" && shouldRetryFallbackWithAutoToolChoice(err)) {
-      console.warn(
-        `[fallback] provider rejected tool_choice=${request.tool_choice}; retrying with tool_choice=auto`,
-      )
-      return createStreamedCompletion(fallbackClient, {
-        ...request,
-        tool_choice: "auto",
-      })
+  let currentRequest = request
+  let retriedAutoToolChoice = false
+  while (true) {
+    try {
+      return await createStreamedCompletion(fallbackClient, currentRequest)
+    } catch (err) {
+      if (currentRequest.tool_choice !== "auto" && !retriedAutoToolChoice && shouldRetryWithAutoToolChoice(err)) {
+        retriedAutoToolChoice = true
+        console.warn(
+          `[fallback] provider rejected tool_choice=${currentRequest.tool_choice}; retrying with tool_choice=auto`,
+        )
+        currentRequest = {
+          ...currentRequest,
+          tool_choice: "auto",
+        }
+        continue
+      }
+      throw err
     }
-    throw err
+  }
+}
+
+async function createPrimaryCompletion(messages: OpenAI.Chat.ChatCompletionMessageParam[]): Promise<CompletionTurnResult> {
+  const request: CompletionRequest = {
+    model: MODEL,
+    messages,
+    tools: TOOLS,
+    tool_choice: PRIMARY_TOOL_CHOICE,
+    ...openRouterToolRequestExtras(API_BASE),
+  }
+
+  let currentRequest = request
+  let retriedAutoToolChoice = false
+  let retriedWithoutReasoning = false
+  while (true) {
+    try {
+      return await createStreamedCompletion(client!, currentRequest)
+    } catch (err) {
+      if (currentRequest.tool_choice !== "auto" && !retriedAutoToolChoice && shouldRetryWithAutoToolChoice(err)) {
+        retriedAutoToolChoice = true
+        console.warn(`[api] provider rejected tool_choice=${currentRequest.tool_choice}; retrying primary with tool_choice=auto`)
+        currentRequest = {
+          ...currentRequest,
+          tool_choice: "auto",
+        }
+        continue
+      }
+      if (!retriedWithoutReasoning && shouldRetryWithoutReasoningForTools(err)) {
+        retriedWithoutReasoning = true
+        console.warn("[api] provider rejected function calling in reasoning/prefix mode; retrying primary with reasoning disabled")
+        currentRequest = {
+          ...currentRequest,
+          include_reasoning: false,
+          reasoning: { enabled: false, exclude: true, effort: "none" },
+          provider: { ...currentRequest.provider, require_parameters: true },
+        }
+        continue
+      }
+      throw err
+    }
   }
 }
 
@@ -623,17 +710,13 @@ async function fetchCompletion(
           promptTooLargeAttempts++
           if (recovered) continue
         }
+        logApiError(fallbackErr, `model=${FALLBACK_MODEL} api=${FALLBACK_BASE}`)
         throw fallbackErr
       }
     }
 
     try {
-      const completion = await createStreamedCompletion(client!, {
-        model: MODEL,
-        messages: requestMessages,
-        tools: TOOLS,
-        tool_choice: "required",
-      })
+      const completion = await createPrimaryCompletion(requestMessages)
       state.memoryRecallCooldowns = rememberRecalledMemoryChunks(
         state.memoryRecallCooldowns,
         requestContext.recalledChunkIds,
@@ -647,16 +730,12 @@ async function fetchCompletion(
         promptTooLargeAttempts++
         if (recovered) continue
         // Recovery failed — don't try fallback for this; the prompt is simply too large.
-        if (primaryErr instanceof OpenAI.APIError) {
-          console.error(`[api] ${primaryErr.status} ${primaryErr.message} - model=${MODEL} api=${API_BASE}`)
-        }
+        logApiError(primaryErr, `model=${MODEL} api=${API_BASE}`)
         throw primaryErr
       }
 
       if (!shouldFallback(primaryErr)) {
-        if (primaryErr instanceof OpenAI.APIError) {
-          console.error(`[api] ${primaryErr.status} ${primaryErr.message} - model=${MODEL} api=${API_BASE}`)
-        }
+        logApiError(primaryErr, `model=${MODEL} api=${API_BASE}`)
         throw primaryErr
       }
 
@@ -706,24 +785,6 @@ async function fetchCompletion(
       }
     }
   }
-}
-
-function needsVisibleReplyRepair(message: OpenAI.Chat.ChatCompletionMessage): boolean {
-  if (assistantContentText(message.content).length > 0) return false
-  return Array.isArray(message.tool_calls) && message.tool_calls.length > 0
-}
-
-function buildVisibleReplyRepairConversation(
-  conversation: OpenAI.Chat.ChatCompletionMessageParam[],
-): OpenAI.Chat.ChatCompletionMessageParam[] {
-  return [
-    ...conversation,
-    {
-      role: "user",
-      content:
-        "[system] Your previous draft had no user-visible assistant content. Retry this turn. Write 1-2 brief sentences addressed to the person before any tool calls. Keep the overall intent, but you may choose different tools if needed. Do not output a tool-only turn.",
-    },
-  ]
 }
 
 /**
@@ -1107,13 +1168,7 @@ async function processToolCalls(
  */
 async function processAssistantTurn(convId: number, state: LoopState, hooks: LoopHooks): Promise<CycleOutcome> {
   state.memoryRecallTurn += 1
-  let response = await fetchCompletion(state)
-  let repairAttempts = 0
-  while (needsVisibleReplyRepair(response.message) && repairAttempts < 2) {
-    repairAttempts++
-    console.warn(`[runner] assistant emitted tool-only turn with empty content; retrying for visible reply (${repairAttempts}/2)`)
-    response = await fetchCompletion(state, buildVisibleReplyRepairConversation(state.conversation))
-  }
+  const response = await fetchCompletion(state)
   applyUsage(state, response.usage)
 
   const msg = response.message
