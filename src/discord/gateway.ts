@@ -21,6 +21,10 @@ function buildIngressPayload(message: Message): Record<string, unknown> {
     message.channel && "name" in message.channel && typeof message.channel.name === "string"
       ? message.channel.name
       : null
+  const channelTopic =
+    message.channel && "topic" in message.channel && typeof message.channel.topic === "string"
+      ? message.channel.topic
+      : null
 
   return {
     message: {
@@ -53,7 +57,9 @@ function buildIngressPayload(message: Message): Record<string, unknown> {
       type: message.channel?.type ?? null,
       guild_id: message.guildId ?? null,
       name: channelName,
+      topic: channelTopic,
     },
+    guild_name: message.guild?.name ?? null,
     is_dm: message.guildId == null,
   }
 }

@@ -4,7 +4,7 @@ import { existsSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { wake, isRunning, enqueueEvent } from "./runner/index.js"
-import { buildDiscordBatchDigest, scanDiscordChannels } from "./discord/state.js"
+import { buildDiscordBatchDigest } from "./discord/state.js"
 import { handleDiscordIngress } from "./discord/pipeline.js"
 import { fromBsky } from "./triggers/bsky.js"
 import { fromWebhook } from "./triggers/webhook.js"
@@ -24,7 +24,6 @@ const DISCORD_BATCH_MAX_MESSAGES = Math.max(
   5,
   Math.min(200, parseInt(process.env.DISCORD_BATCH_MAX_MESSAGES ?? "40", 10) || 40),
 )
-const DISCORD_BATCH_SCAN = (process.env.DISCORD_BATCH_SCAN ?? "true").trim().toLowerCase() !== "false"
 
 export function createServer() {
   const app = Fastify({ logger: false })
@@ -45,37 +44,16 @@ export function createServer() {
     if (discordBatchInFlight) return
     discordBatchInFlight = true
     try {
-      let scanSummary: Record<string, unknown> | null = null
-      let scanError: string | null = null
-
-      if (DISCORD_BATCH_SCAN) {
-        try {
-          scanSummary = await scanDiscordChannels({
-            limit: Math.min(100, DISCORD_BATCH_MAX_MESSAGES),
-          })
-        } catch (err) {
-          scanError = err instanceof Error ? err.message : String(err)
-          console.warn("[discord batch] scan failed:", scanError)
-        }
-      }
-
       const digest = buildDiscordBatchDigest({
         maxMessages: DISCORD_BATCH_MAX_MESSAGES,
         intervalMs: DISCORD_BATCH_INTERVAL_MS,
       })
       if (!digest) return
 
-      const scanNote = scanSummary
-        ? `\n\nscan snapshot: ${JSON.stringify(scanSummary)}`
-        : scanError
-          ? `\n\nscan snapshot error: ${scanError}`
-          : ""
-
-      emitDiscordBatchEvent(`${digest.content}${scanNote}`, {
+      emitDiscordBatchEvent(digest.content, {
         type: "discord_batch",
         digest,
-        ...(scanSummary ? { scan: scanSummary } : {}),
-        ...(scanError ? { scan_error: scanError } : {}),
+        source: "gateway_cache",
       })
     } finally {
       discordBatchInFlight = false
