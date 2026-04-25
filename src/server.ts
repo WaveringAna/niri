@@ -35,12 +35,12 @@ export function createServer() {
     if (discordBatchInFlight) return
     discordBatchInFlight = true
     try {
+      if (!isRunning()) return
+      if (!isWaitingForEvent()) return
+
       if (DISCORD_BATCH_SCAN) {
         await scanDiscordChannels({ limit: DISCORD_BATCH_MAX_MESSAGES })
       }
-
-      if (!isRunning()) return
-      if (!isWaitingForEvent()) return
 
       const digest = buildDiscordBatchDigest({
         maxMessages: DISCORD_BATCH_MAX_MESSAGES,
