@@ -56,6 +56,14 @@ export type DiscordBatchDigest = {
 
 const DEFAULT_SCAN_LIMIT = 50
 const AUTO_REPLY_STALE_MINUTES = 10
+const DISCORD_REST_MAX_ATTEMPTS = Math.max(
+  1,
+  Math.min(10, Number.parseInt(process.env.DISCORD_REST_MAX_ATTEMPTS ?? "3", 10) || 3),
+)
+const DISCORD_REST_RETRY_BASE_MS = Math.max(
+  100,
+  Math.min(30_000, Number.parseInt(process.env.DISCORD_REST_RETRY_BASE_MS ?? "1000", 10) || 1000),
+)
 
 const VALID_STATUS = new Set<InboxStatus>(["pending", "seen", "acted", "ignored"])
 const VALID_ACTION = new Set<InboxAction>(["none", "replied", "messaged", "dismissed", "noted"])
@@ -126,8 +134,73 @@ function makeRestClient(): REST {
   return new REST({ version: "10" }).setToken(getBotToken())
 }
 
+function errorCode(err: unknown): string {
+  const value = err as { code?: unknown; cause?: unknown }
+  if (typeof value?.code === "string") return value.code
+  const cause = value?.cause as { code?: unknown } | undefined
+  return typeof cause?.code === "string" ? cause.code : ""
+}
+
+function errorStatus(err: unknown): number | null {
+  const value = err as { status?: unknown }
+  return typeof value?.status === "number" && Number.isFinite(value.status) ? value.status : null
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+function isRetryableDiscordRestError(err: unknown): boolean {
+  const code = errorCode(err)
+  if (
+    code === "UND_ERR_CONNECT_TIMEOUT" ||
+    code === "UND_ERR_HEADERS_TIMEOUT" ||
+    code === "UND_ERR_SOCKET" ||
+    code === "ECONNRESET" ||
+    code === "ETIMEDOUT" ||
+    code === "ENOTFOUND" ||
+    code === "EAI_AGAIN" ||
+    code === "ENETUNREACH" ||
+    code === "ECONNREFUSED"
+  ) {
+    return true
+  }
+
+  const status = errorStatus(err)
+  return status === 429 || status === 502 || status === 503 || status === 504
+}
+
+function retryDelayMs(attempt: number): number {
+  return DISCORD_REST_RETRY_BASE_MS * 2 ** attempt
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function withDiscordRestRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  let lastErr: unknown
+
+  for (let attempt = 0; attempt < DISCORD_REST_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await fn()
+    } catch (err) {
+      lastErr = err
+      if (!isRetryableDiscordRestError(err) || attempt + 1 >= DISCORD_REST_MAX_ATTEMPTS) break
+
+      const delayMs = retryDelayMs(attempt)
+      console.warn(
+        `[discord rest] ${label} failed (${errorCode(err) || errorStatus(err) || "unknown"}: ${errorMessage(err)}); retrying in ${delayMs}ms`,
+      )
+      await sleep(delayMs)
+    }
+  }
+
+  throw lastErr
+}
+
 async function getBotUserId(rest: REST): Promise<string> {
-  const me = (await rest.get(Routes.user("@me"))) as { id?: unknown }
+  const me = (await withDiscordRestRetry("get current user", () => rest.get(Routes.user("@me")))) as { id?: unknown }
   const id = asString(me?.id)
   if (!id) throw new Error("failed to resolve bot user id")
   return id
@@ -1052,7 +1125,9 @@ export async function scanDiscordChannels(params?: {
   const guildNameCache = new Map<string, string | null>()
 
   for (const channelId of channelIds) {
-    const channel = (await rest.get(Routes.channel(channelId))) as DiscordObject
+    const channel = (await withDiscordRestRetry(`get channel ${channelId}`, () =>
+      rest.get(Routes.channel(channelId)),
+    )) as DiscordObject
     const channelType = asNumber(channel.type)
     const guildId = asString(channel.guild_id)
     let guildName: string | null = null
@@ -1061,10 +1136,13 @@ export async function scanDiscordChannels(params?: {
         guildName = guildNameCache.get(guildId) ?? null
       } else {
         try {
-          const guild = (await rest.get(Routes.guild(guildId))) as DiscordObject
+          const guild = (await withDiscordRestRetry(`get guild ${guildId}`, () =>
+            rest.get(Routes.guild(guildId)),
+          )) as DiscordObject
           guildName = asString(guild.name)
           guildNameCache.set(guildId, guildName)
-        } catch {
+        } catch (err) {
+          console.warn(`[discord scan] failed to resolve guild ${guildId}: ${errorMessage(err)}`)
           guildNameCache.set(guildId, null)
         }
       }
@@ -1084,9 +1162,11 @@ export async function scanDiscordChannels(params?: {
     const query = new URLSearchParams({ limit: String(limit) })
     if (before) query.set("before", before)
 
-    const messages = (await rest.get(Routes.channelMessages(channelId), {
-      query,
-    })) as unknown[]
+    const messages = (await withDiscordRestRetry(`get channel messages ${channelId}`, () =>
+      rest.get(Routes.channelMessages(channelId), {
+        query,
+      }),
+    )) as unknown[]
 
     fetchedMessages += messages.length
 
@@ -1157,21 +1237,23 @@ export async function sendDiscordMessage(params: {
   const rest = makeRestClient()
   const botUserId = await getBotUserId(rest)
 
-  const message = (await rest.post(Routes.channelMessages(channelId), {
-    body: {
-      content,
-      ...(referenceMessageId
-        ? {
-            message_reference: {
-              message_id: referenceMessageId,
-              channel_id: channelId,
-              fail_if_not_exists: false,
-            },
-            allowed_mentions: { replied_user: false },
-          }
-        : {}),
-    },
-  })) as DiscordObject
+  const message = (await withDiscordRestRetry(`send message ${channelId}`, () =>
+    rest.post(Routes.channelMessages(channelId), {
+      body: {
+        content,
+        ...(referenceMessageId
+          ? {
+              message_reference: {
+                message_id: referenceMessageId,
+                channel_id: channelId,
+                fail_if_not_exists: false,
+              },
+              allowed_mentions: { replied_user: false },
+            }
+          : {}),
+      },
+    }),
+  )) as DiscordObject
 
   const ingest = ingestDiscordEvent(
     {

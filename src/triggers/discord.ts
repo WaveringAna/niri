@@ -1,5 +1,11 @@
 import type { UserMessage } from "../types.js"
 
+function asIsoTimestamp(value: unknown, fallback: string): string {
+  if (typeof value !== "string" && typeof value !== "number") return fallback
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? fallback : parsed.toISOString()
+}
+
 export function fromDiscord(body: unknown): UserMessage {
   const b = body as Record<string, unknown>
   const message = (typeof b.message === "object" && b.message
@@ -27,6 +33,8 @@ export function fromDiscord(body: unknown): UserMessage {
   const content =
     String(message.content ?? b.content ?? "").trim() ||
     "(no text content)"
+  const triggeredAt = new Date().toISOString()
+  const timestamp = asIsoTimestamp(message.timestamp ?? b.timestamp, triggeredAt)
   const authorName = String(author?.global_name ?? author?.username ?? b.author_username ?? b.author ?? "unknown")
   const channelId = String(message.channel_id ?? b.channel_id ?? channel?.id ?? "unknown")
   const messageId = String(message.id ?? b.message_id ?? "unknown")
@@ -40,8 +48,8 @@ export function fromDiscord(body: unknown): UserMessage {
 
   return {
     source: "discord",
-    triggeredAt: new Date().toISOString(),
-    content: `${header} @${authorName}\ncontext: ${location}\nmessage_id: ${messageId}\naction: ${action}\n\n${content}`,
+    triggeredAt,
+    content: `${header} @${authorName}\ncontext: ${location}\nmessage_id: ${messageId}\ntimestamp: ${timestamp}\naction: ${action}\n\n${content}`,
     raw: body,
   }
 }

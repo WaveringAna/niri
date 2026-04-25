@@ -61,6 +61,8 @@ export function createServer() {
         },
         { onlyIfWaiting: true },
       )
+    } catch (err) {
+      console.warn("[discord batch] failed:", err instanceof Error ? err.message : String(err))
     } finally {
       discordBatchInFlight = false
     }

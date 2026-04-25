@@ -39,6 +39,7 @@ import {
   parseImageDetail,
   parseToolArguments,
   retryDelayMs,
+  sanitizeMessages,
   shouldFallback,
   summaryClient,
   summarizeConversationViaLLM,
@@ -105,6 +106,8 @@ type CompletionRequest = {
   include_reasoning?: boolean
   reasoning?: { enabled?: boolean; exclude?: boolean; effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" }
   provider?: { require_parameters?: boolean }
+  enable_thinking?: boolean
+  chat_template_kwargs?: { enable_thinking?: boolean }
 }
 type ToolCallAssembly = {
   id: string
@@ -226,13 +229,39 @@ function shouldRetryWithoutReasoningForTools(err: unknown): boolean {
   return /function call should not be used with prefix/i.test(apiErrorSearchText(err))
 }
 
-function openRouterToolRequestExtras(baseUrl: string): Partial<CompletionRequest> {
-  if (!baseUrl.includes("openrouter.ai")) return {}
+function toolCompatibleReasoningExtras(
+  request?: Pick<CompletionRequest, "provider" | "chat_template_kwargs">,
+): Partial<CompletionRequest> {
   return {
     include_reasoning: false,
     reasoning: { enabled: false, exclude: true, effort: "none" },
-    provider: { require_parameters: true },
+    provider: { ...request?.provider, require_parameters: true },
   }
+}
+
+function prefixModeToolCallExtras(request?: Pick<CompletionRequest, "provider" | "chat_template_kwargs">): Partial<CompletionRequest> {
+  return {
+    ...toolCompatibleReasoningExtras(request),
+    // Qwen/vLLM-compatible servers can raise "Function call should not be used
+    // with prefix" when their thinking/prefix mode is active with tools.
+    enable_thinking: false,
+    chat_template_kwargs: {
+      ...request?.chat_template_kwargs,
+      enable_thinking: false,
+    },
+  }
+}
+
+function disableReasoningForToolCalls(request: CompletionRequest): CompletionRequest {
+  return {
+    ...request,
+    ...prefixModeToolCallExtras(request),
+  }
+}
+
+function openRouterToolRequestExtras(baseUrl: string): Partial<CompletionRequest> {
+  if (!baseUrl.includes("openrouter.ai")) return {}
+  return toolCompatibleReasoningExtras()
 }
 
 function shouldRetryWithoutStreamUsage(err: unknown): boolean {
@@ -353,6 +382,7 @@ async function createFallbackCompletion(messages: OpenAI.Chat.ChatCompletionMess
 
   let currentRequest = request
   let retriedAutoToolChoice = false
+  let retriedWithoutReasoning = false
   while (true) {
     try {
       return await createStreamedCompletion(fallbackClient, currentRequest)
@@ -366,6 +396,12 @@ async function createFallbackCompletion(messages: OpenAI.Chat.ChatCompletionMess
           ...currentRequest,
           tool_choice: "auto",
         }
+        continue
+      }
+      if (!retriedWithoutReasoning && shouldRetryWithoutReasoningForTools(err)) {
+        retriedWithoutReasoning = true
+        console.warn("[fallback] provider rejected function calling in reasoning/prefix mode; retrying fallback with tool-compatible reasoning disabled")
+        currentRequest = disableReasoningForToolCalls(currentRequest)
         continue
       }
       throw err
@@ -400,13 +436,8 @@ async function createPrimaryCompletion(messages: OpenAI.Chat.ChatCompletionMessa
       }
       if (!retriedWithoutReasoning && shouldRetryWithoutReasoningForTools(err)) {
         retriedWithoutReasoning = true
-        console.warn("[api] provider rejected function calling in reasoning/prefix mode; retrying primary with reasoning disabled")
-        currentRequest = {
-          ...currentRequest,
-          include_reasoning: false,
-          reasoning: { enabled: false, exclude: true, effort: "none" },
-          provider: { ...currentRequest.provider, require_parameters: true },
-        }
+        console.warn("[api] provider rejected function calling in reasoning/prefix mode; retrying primary with tool-compatible reasoning disabled")
+        currentRequest = disableReasoningForToolCalls(currentRequest)
         continue
       }
       throw err
@@ -486,6 +517,14 @@ function pushToolMessage(convId: number, state: LoopState, call: FunctionToolCal
   state.conversation.push(toolMsg)
   logMessage(convId, "tool", toolMsg.content, undefined, call.id)
   return toolMsg.content
+}
+
+function hasToolResponse(state: LoopState, call: FunctionToolCall): boolean {
+  return state.conversation.some(
+    (message) =>
+      message.role === "tool" &&
+      (message as OpenAI.Chat.ChatCompletionToolMessageParam).tool_call_id === call.id,
+  )
 }
 
 /**
@@ -690,6 +729,13 @@ async function fetchCompletion(
 ): Promise<CompletionTurnResult> {
   let promptTooLargeAttempts = 0
   while (true) {
+    if (baseConversation === state.conversation) {
+      state.conversation = sanitizeMessages(state.conversation)
+      baseConversation = state.conversation
+    } else {
+      baseConversation = sanitizeMessages(baseConversation)
+    }
+
     const requestContext = await buildCompletionMessages(
       baseConversation,
       state.memoryRecallCooldowns,
@@ -1126,8 +1172,20 @@ async function executeToolCall(
 
   try {
     const handler = handlers[call.function.name]
-    if (!handler) return {}
+    if (!handler) {
+      const errorText = `error: unknown tool ${call.function.name}`
+      recordToolResult(convId, state, call, call.function.name, { _unknown_tool: call.function.name }, errorText)
+      return {}
+    }
     return await handler({ convId, state, hooks, call, args: parsed.args })
+  } catch (err) {
+    const errorText = toolError(err)
+    if (!hasToolResponse(state, call)) {
+      recordToolResult(convId, state, call, call.function.name, { _handler_error: true }, errorText)
+    } else {
+      console.warn(`[runner] ${call.function.name} failed after recording tool response: ${errorText}`)
+    }
+    return {}
   } finally {
     if (!isWaitTool) {
       state.toolInFlight = false

@@ -483,14 +483,15 @@ export async function clearSession(): Promise<void> {
   await fs.unlink(SESSION_FILE).catch(() => {})
 }
 
-/** Move any mis-ordered tool responses back to immediately after their assistant message. */
-function sanitizeMessages(msgs: Message[]): Message[] {
+/** Move mis-ordered tool responses back into place and synthesize missing ones. */
+export function sanitizeMessages(msgs: Message[]): Message[] {
   let i = 0
   while (i < msgs.length) {
     const msg = msgs[i]
     if (msg.role === "assistant" && Array.isArray((msg as OpenAI.Chat.ChatCompletionMessage).tool_calls)) {
       const toolCalls = (msg as OpenAI.Chat.ChatCompletionMessage).tool_calls!
-      const needed = new Set(toolCalls.map((tc) => tc.id))
+      const expectedIds = toolCalls.map((tc) => tc.id).filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+      const needed = new Set(expectedIds)
       let j = i + 1
       // Skip tool messages that are already in place
       while (j < msgs.length && msgs[j].role === "tool" && needed.has((msgs[j] as OpenAI.Chat.ChatCompletionToolMessageParam).tool_call_id)) {
@@ -498,23 +499,45 @@ function sanitizeMessages(msgs: Message[]): Message[] {
         j++
       }
       if (needed.size > 0) {
-        // Collect stray tool responses and non-tool messages from the rest of the array
-        const toolResponses: Message[] = []
+        // Collect stray tool responses and non-tool messages from the rest of the array.
+        const toolResponses = new Map<string, Message>()
         const others: Message[] = []
         for (let k = j; k < msgs.length; k++) {
           const m = msgs[k]
-          if (m.role === "tool" && needed.has((m as OpenAI.Chat.ChatCompletionToolMessageParam).tool_call_id)) {
-            toolResponses.push(m)
-            needed.delete((m as OpenAI.Chat.ChatCompletionToolMessageParam).tool_call_id)
+          const id = m.role === "tool" ? (m as OpenAI.Chat.ChatCompletionToolMessageParam).tool_call_id : undefined
+          if (typeof id === "string" && needed.has(id)) {
+            toolResponses.set(id, m)
+            needed.delete(id)
           } else {
             others.push(m)
           }
-          if (needed.size === 0) {
-            const rest = msgs.slice(k + 1)
-            msgs = [...msgs.slice(0, j), ...toolResponses, ...others, ...rest]
-            console.log(`[runner] repaired orphaned tool_calls at message ${i}`)
-            break
+        }
+
+        const inserted: Message[] = []
+        let synthesized = 0
+        for (const id of expectedIds) {
+          if (!toolResponses.has(id)) {
+            if (msgs.slice(i + 1, j).some((m) => m.role === "tool" && (m as OpenAI.Chat.ChatCompletionToolMessageParam).tool_call_id === id)) {
+              continue
+            }
+            inserted.push({
+              role: "tool",
+              tool_call_id: id,
+              content: "error: missing tool response recovered by runner before API request.",
+            })
+            synthesized++
+            continue
           }
+          inserted.push(toolResponses.get(id)!)
+        }
+
+        if (inserted.length > 0) {
+          msgs = [...msgs.slice(0, j), ...inserted, ...others]
+          console.log(
+            synthesized > 0
+              ? `[runner] repaired tool_calls at message ${i}; synthesized ${synthesized} missing tool response(s)`
+              : `[runner] repaired orphaned tool_calls at message ${i}`,
+          )
         }
       }
     }
