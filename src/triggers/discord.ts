@@ -1,9 +1,71 @@
 import type { UserMessage } from "../types.js"
+import { getDb } from "../db.js"
 
 function asIsoTimestamp(value: unknown, fallback: string): string {
   if (typeof value !== "string" && typeof value !== "number") return fallback
   const parsed = new Date(value)
   return Number.isNaN(parsed.getTime()) ? fallback : parsed.toISOString()
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null
+}
+
+function asString(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : null
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return String(value)
+  return null
+}
+
+function referencedMessageId(message: Record<string, unknown>, body: Record<string, unknown>): string | null {
+  const reference =
+    asRecord(message.message_reference) ??
+    asRecord(body.message_reference) ??
+    asRecord(message.reference) ??
+    asRecord(body.reference)
+  return asString(reference?.message_id) ?? asString(reference?.messageId) ?? asString(reference?.id)
+}
+
+function embeddedReferencedMessage(
+  message: Record<string, unknown>,
+  body: Record<string, unknown>,
+): { message_id: string; author_username: string | null; content: string } | null {
+  const referenced = asRecord(message.referenced_message) ?? asRecord(body.referenced_message)
+  if (!referenced) return null
+
+  const messageId = asString(referenced.id)
+  if (!messageId) return null
+
+  const author = asRecord(referenced.author)
+  return {
+    message_id: messageId,
+    author_username: asString(author?.global_name) ?? asString(author?.username),
+    content: String(referenced.content ?? ""),
+  }
+}
+
+function replyContextLine(message: Record<string, unknown>, body: Record<string, unknown>): string | null {
+  const refId = referencedMessageId(message, body)
+  if (!refId) return null
+
+  const db = getDb()
+  const stored = db
+    .prepare(
+      `select message_id, author_username, content
+       from discord_messages
+       where message_id = ?`,
+    )
+    .get(refId) as { message_id: string; author_username: string | null; content: string } | undefined
+  const reply = stored ?? embeddedReferencedMessage(message, body) ?? {
+    message_id: refId,
+    author_username: null,
+    content: "",
+  }
+  const author = reply.author_username ? `@${reply.author_username}` : "unknown"
+  return `reply_to: ${author} msg/${reply.message_id}: ${JSON.stringify(reply.content)}`
 }
 
 export function fromDiscord(body: unknown): UserMessage {
@@ -45,11 +107,12 @@ export function fromDiscord(body: unknown): UserMessage {
   const action = isDm
     ? "This is a direct message. Reply if it needs a response."
     : "This is a server channel message, not a DM. You may choose not to reply; only respond if useful."
+  const replyLine = replyContextLine(message, b)
 
   return {
     source: "discord",
     triggeredAt,
-    content: `${header} @${authorName}\ncontext: ${location}\nmessage_id: ${messageId}\ntimestamp: ${timestamp}\naction: ${action}\n\n${content}`,
+    content: `${header} @${authorName}\ncontext: ${location}\nmessage_id: ${messageId}\ntimestamp: ${timestamp}${replyLine ? `\n${replyLine}` : ""}\naction: ${action}\n\n${content}`,
     raw: body,
   }
 }
