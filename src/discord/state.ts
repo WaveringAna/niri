@@ -234,7 +234,7 @@ function parseMessageRecord(payload: unknown, botUserId?: string): DiscordMessag
     asBoolean(root.is_dm) ||
     channelType === 1 ||
     channelType === 3 ||
-    (guildId == null && channelType == null)
+    guildId == null
   const isFromSelf = Boolean(botId && authorId === botId)
   const isFromBot = asBoolean(author?.bot ?? root.author_is_bot) || isFromSelf
 
@@ -283,7 +283,7 @@ function parseChannelRecord(
 
   const guildId = asString(channel.guild_id ?? root.guild_id ?? fallback?.guildId)
   const channelType = asNumber(channel.type ?? root.channel_type ?? fallback?.channelType)
-  const isDm = asBoolean(root.is_dm) || channelType === 1 || channelType === 3 || fallback?.isDm === true
+  const isDm = asBoolean(root.is_dm) || channelType === 1 || channelType === 3 || fallback?.isDm === true || guildId == null
   const configured = configuredChannelIdSet().has(channelId)
 
   return {
@@ -500,6 +500,12 @@ function compactText(value: unknown, maxChars = 180): string {
   return `${text.slice(0, maxChars - 1)}...`
 }
 
+function fullMessageText(value: unknown): string {
+  const text = String(value ?? "").replace(/\r\n/g, "\n").trim()
+  if (!text) return "(no text)"
+  return text.replace(/\n/g, "\n  ")
+}
+
 function formatBatchTimestamp(value: string | null | undefined): string {
   if (!value) return "unknown-time"
   const parsed = new Date(value)
@@ -630,7 +636,33 @@ function autoDemoteStalePendingItems(staleMinutes: number): number {
 
 function repairDiscordMessageChannelFlags(): number {
   const db = getDb()
-  const result = db.prepare(
+  const dmMessageResult = db.prepare(
+    `update discord_messages
+     set is_dm = 1,
+         channel_type = coalesce(channel_type, 1),
+         last_seen_at = ?
+     where guild_id is null
+       and is_dm = 0`,
+  ).run(new Date().toISOString())
+
+  const dmChannelResult = db.prepare(
+    `update discord_channels
+     set is_dm = 1,
+         channel_type = case
+           when channel_type is null or channel_type = 0 then 1
+           else channel_type
+         end,
+         last_seen_at = ?
+     where is_dm = 0
+       and exists (
+         select 1 from discord_messages m
+         where m.channel_id = discord_channels.channel_id
+           and m.guild_id is null
+           and m.is_dm = 1
+       )`,
+  ).run(new Date().toISOString())
+
+  const guildMessageResult = db.prepare(
     `update discord_messages
      set guild_id = (
            select c.guild_id from discord_channels c
@@ -651,7 +683,7 @@ function repairDiscordMessageChannelFlags(): number {
        )`,
   ).run(new Date().toISOString())
 
-  return Number(result.changes ?? 0)
+  return Number(dmMessageResult.changes ?? 0) + Number(dmChannelResult.changes ?? 0) + Number(guildMessageResult.changes ?? 0)
 }
 
 function channelLabel(row: {
@@ -770,6 +802,9 @@ export function markDiscordItem(itemId: string, status: InboxStatus, note = "", 
 export function listDiscordChannels(): unknown[] {
   ensureConfiguredChannelsMaterialized()
   const db = getDb()
+  const configuredIds = parseChannelIds()
+  const configuredPlaceholders = configuredIds.map(() => "?").join(", ")
+  const configuredClause = configuredIds.length > 0 ? `channel_id in (${configuredPlaceholders})` : "0"
 
   return db
     .prepare(
@@ -786,8 +821,7 @@ export function listDiscordChannels(): unknown[] {
         last_note_at,
         last_seen_at
        from discord_channels
-       where configured = 1
-          or note is not null
+       where ${configuredClause}
           or (
             is_dm = 1
             and exists (
@@ -797,7 +831,7 @@ export function listDiscordChannels(): unknown[] {
           )
        order by configured desc, coalesce(guild_name, ''), coalesce(channel_name, channel_id)`,
     )
-    .all()
+    .all(...configuredIds)
 }
 
 export function setDiscordChannelNote(channelId: string, note: string): Record<string, unknown> {
@@ -851,8 +885,12 @@ export function buildDiscordBatchDigest(params?: {
     0,
     Number.parseInt(process.env.DISCORD_PENDING_AUTO_SEEN_MINUTES ?? "10", 10) || 10,
   )
+  const configuredIds = parseChannelIds()
+  const configuredPlaceholders = configuredIds.map(() => "?").join(", ")
   const channelScopeClause = batchOnlyConfigured
-    ? "and (m.is_dm = 1 or coalesce(c.configured, 0) = 1)"
+    ? configuredIds.length > 0
+      ? `and (m.is_dm = 1 or m.channel_id in (${configuredPlaceholders}))`
+      : "and m.is_dm = 1"
     : ""
   const botUserId = process.env.DISCORD_BOT_USER_ID?.trim() ?? ""
 
@@ -887,7 +925,7 @@ export function buildDiscordBatchDigest(params?: {
        order by m.first_seen_at asc
        limit ?`,
     )
-    .all(botUserId, botUserId, from, maxMessages + 1) as Array<{
+    .all(botUserId, botUserId, from, ...configuredIds, maxMessages + 1) as Array<{
       message_id: string
       channel_id: string
       guild_id: string | null
@@ -916,7 +954,7 @@ export function buildDiscordBatchDigest(params?: {
        and (? = '' or coalesce(m.author_id, '') != ?)
        ${channelScopeClause}`,
     )
-    .get(botUserId, botUserId) as { count?: number } | undefined
+    .get(botUserId, botUserId, ...configuredIds) as { count?: number } | undefined
   const pendingCount = pendingCountRow?.count ?? 0
 
   const pendingPreview = db
@@ -943,7 +981,7 @@ export function buildDiscordBatchDigest(params?: {
        order by i.last_seen_at desc
        limit ?`,
     )
-    .all(botUserId, botUserId, previewLimit) as Array<{
+    .all(botUserId, botUserId, ...configuredIds, previewLimit) as Array<{
       item_id: string
       bucket: string
       channel_id: string
@@ -976,7 +1014,7 @@ export function buildDiscordBatchDigest(params?: {
     const author = row.author_username ? `@${row.author_username}` : "@unknown"
     const ts = formatBatchTimestamp(row.created_at)
     const replyTo = replyContextByMessageId.get(row.message_id)
-    lines.push(`- [${label}] [${ts}] ${author}${formatReplyContext(replyTo)}: ${compactText(row.content)}`)
+    lines.push(`- [${label}] [${ts}] ${author}${formatReplyContext(replyTo)}: ${fullMessageText(row.content)}`)
   }
 
   if (truncated) {
@@ -1293,9 +1331,10 @@ export async function sendDiscordMessage(params: {
       message,
       channel: {
         id: channelId,
-        type: message.type,
+        type: message.guild_id == null ? 1 : null,
         guild_id: message.guild_id,
       },
+      is_dm: message.guild_id == null,
       author_is_bot: true,
     },
     { botUserId },

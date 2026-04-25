@@ -169,7 +169,8 @@ export async function startDiscordGateway(): Promise<DiscordGatewayHandle | null
     const cachedType = typeof cachedChannel?.type === "number" ? cachedChannel.type : null
     const isDm =
       !guildId &&
-      (channelType === ChannelType.DM ||
+      (channelType == null ||
+        channelType === ChannelType.DM ||
         channelType === ChannelType.GroupDM ||
         cachedType === ChannelType.DM ||
         cachedType === ChannelType.GroupDM)
