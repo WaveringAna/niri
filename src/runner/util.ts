@@ -399,7 +399,7 @@ export const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
         properties: {
           include_unconfigured: {
             type: "boolean",
-            description: "When true (default), include channels seen in history even if not in DISCORD_SCAN_CHANNEL_IDS.",
+            description: "When true, include channels seen in history even if not in DISCORD_SCAN_CHANNEL_IDS. Defaults to false.",
           },
         },
       },

@@ -741,7 +741,7 @@ export function markDiscordItem(itemId: string, status: InboxStatus, note = "", 
   ).run(status, action, note || null, now, now, safeItemId)
 }
 
-export function listDiscordChannels(includeUnconfigured = true): unknown[] {
+export function listDiscordChannels(includeUnconfigured = false): unknown[] {
   ensureConfiguredChannelsMaterialized()
   const db = getDb()
 

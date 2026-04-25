@@ -1119,7 +1119,7 @@ function buildToolHandlers(): Record<string, ToolHandler> {
         logArgKeys: ["include_unconfigured"] as const,
         runArgKeys: ["include_unconfigured"] as const,
         run: async (include_unconfigured) =>
-          JSON.stringify(listDiscordChannels(include_unconfigured !== false), null, 2),
+          JSON.stringify(listDiscordChannels(include_unconfigured === true), null, 2),
       }),
 
     discord_channel_note: (ctx) =>
