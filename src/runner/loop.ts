@@ -87,7 +87,6 @@ type ToolArgs = {
   source_item_id?: string
   reference_message?: string
   reply_mode?: string
-  include_unconfigured?: boolean
   [key: string]: unknown
 }
 type ToolExecutionOutcome = { shouldRest?: boolean; isWait?: boolean }
@@ -1116,10 +1115,9 @@ function buildToolHandlers(): Record<string, ToolHandler> {
     discord_channels: (ctx) =>
       runStandardTool(ctx, {
         name: "discord_channels",
-        logArgKeys: ["include_unconfigured"] as const,
-        runArgKeys: ["include_unconfigured"] as const,
-        run: async (include_unconfigured) =>
-          JSON.stringify(listDiscordChannels(include_unconfigured === true), null, 2),
+        logArgKeys: [] as const,
+        runArgKeys: [] as const,
+        run: async () => JSON.stringify(listDiscordChannels(), null, 2),
       }),
 
     discord_channel_note: (ctx) =>

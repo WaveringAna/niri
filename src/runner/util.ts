@@ -393,15 +393,10 @@ export const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: "discord_channels",
       description:
-        "List known Discord channels with id-to-name mapping, guild context, and optional channel notes.",
+        "List configured Discord channels and DM channels with stored interactions, including id-to-name mapping, guild context, and optional channel notes.",
       parameters: {
         type: "object",
-        properties: {
-          include_unconfigured: {
-            type: "boolean",
-            description: "When true, include channels seen in history even if not in DISCORD_SCAN_CHANNEL_IDS. Defaults to false.",
-          },
-        },
+        properties: {},
       },
     },
   },

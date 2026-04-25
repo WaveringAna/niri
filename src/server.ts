@@ -17,7 +17,7 @@ import type { UserMessage } from "./types.js"
 const SRC_DIR = dirname(fileURLToPath(import.meta.url))
 const WEB_DIST_DIR = join(SRC_DIR, "..", "apps", "web", "dist")
 const DISCORD_BATCH_INTERVAL_MS = Math.max(
-  60_000,
+  1_000,
   parseInt(process.env.DISCORD_BATCH_INTERVAL_MS ?? "60000", 10) || 60_000,
 )
 const DISCORD_BATCH_MAX_MESSAGES = Math.max(

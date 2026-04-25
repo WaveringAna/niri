@@ -741,11 +741,10 @@ export function markDiscordItem(itemId: string, status: InboxStatus, note = "", 
   ).run(status, action, note || null, now, now, safeItemId)
 }
 
-export function listDiscordChannels(includeUnconfigured = false): unknown[] {
+export function listDiscordChannels(): unknown[] {
   ensureConfiguredChannelsMaterialized()
   const db = getDb()
 
-  const whereClause = includeUnconfigured ? "" : "where configured = 1 or note is not null"
   return db
     .prepare(
       `select
@@ -761,7 +760,15 @@ export function listDiscordChannels(includeUnconfigured = false): unknown[] {
         last_note_at,
         last_seen_at
        from discord_channels
-       ${whereClause}
+       where configured = 1
+          or note is not null
+          or (
+            is_dm = 1
+            and exists (
+              select 1 from discord_messages m
+              where m.channel_id = discord_channels.channel_id
+            )
+          )
        order by configured desc, coalesce(guild_name, ''), coalesce(channel_name, channel_id)`,
     )
     .all()
@@ -807,10 +814,10 @@ export function buildDiscordBatchDigest(params?: {
   const now = new Date()
   const nowIso = now.toISOString()
   const defaultIntervalMs = Math.max(
-    60_000,
+    1_000,
     Number.parseInt(process.env.DISCORD_BATCH_INTERVAL_MS ?? "60000", 10) || 60_000,
   )
-  const intervalMs = Math.max(60_000, Math.trunc(params?.intervalMs ?? defaultIntervalMs))
+  const intervalMs = Math.max(1_000, Math.trunc(params?.intervalMs ?? defaultIntervalMs))
   const maxMessages = Math.max(1, Math.min(200, Math.trunc(params?.maxMessages ?? 40) || 40))
   const previewLimit = Math.max(1, Math.min(50, Math.trunc(params?.pendingPreviewLimit ?? 6) || 6))
   const batchOnlyConfigured = (process.env.DISCORD_BATCH_ONLY_CONFIGURED ?? "true").trim().toLowerCase() !== "false"
