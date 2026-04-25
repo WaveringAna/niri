@@ -531,37 +531,79 @@ function extractReferencedMessageId(rawJson: string): string | null {
   }
 }
 
-function buildReplyTargetLabelMap(rows: Array<{ message_id: string; raw_json: string }>): Map<string, string> {
-  const refsByMessage = new Map<string, string>()
+type DiscordReplyContext = {
+  message_id: string
+  author_id: string | null
+  author_username: string | null
+  content: string
+}
+
+function extractEmbeddedReferencedMessage(rawJson: string): DiscordReplyContext | null {
+  try {
+    const root = asObject(JSON.parse(rawJson))
+    if (!root) return null
+    const message = asObject(root.message) ?? root
+    const referenced = asObject(message.referenced_message) ?? asObject(root.referenced_message)
+    if (!referenced) return null
+
+    const messageId = asString(referenced.id)
+    if (!messageId) return null
+
+    const author = asObject(referenced.author)
+    return {
+      message_id: messageId,
+      author_id: asString(author?.id),
+      author_username: asString(author?.username ?? author?.global_name),
+      content: String(referenced.content ?? ""),
+    }
+  } catch {
+    return null
+  }
+}
+
+function buildReplyTargetContextMap(rows: Array<{ message_id: string; raw_json: string }>): Map<string, DiscordReplyContext> {
+  const refsByMessage = new Map<string, { refId: string; embedded: DiscordReplyContext | null }>()
   for (const row of rows) {
     const refId = extractReferencedMessageId(row.raw_json)
-    if (refId) refsByMessage.set(row.message_id, refId)
+    if (refId) refsByMessage.set(row.message_id, { refId, embedded: extractEmbeddedReferencedMessage(row.raw_json) })
   }
 
   if (refsByMessage.size === 0) return new Map()
 
-  const refIds = Array.from(new Set(refsByMessage.values()))
+  const refIds = Array.from(new Set([...refsByMessage.values()].map((ref) => ref.refId)))
   const db = getDb()
   const placeholders = refIds.map(() => "?").join(", ")
   const targetRows = db
     .prepare(
-      `select message_id, author_username
+      `select message_id, author_id, author_username, content
        from discord_messages
        where message_id in (${placeholders})`,
     )
-    .all(...refIds) as Array<{ message_id: string; author_username: string | null }>
+    .all(...refIds) as DiscordReplyContext[]
 
-  const labelById = new Map<string, string>()
+  const contextById = new Map<string, DiscordReplyContext>()
   for (const row of targetRows) {
-    labelById.set(row.message_id, row.author_username ? `@${row.author_username}` : `msg/${row.message_id}`)
+    contextById.set(row.message_id, row)
   }
 
-  const out = new Map<string, string>()
-  for (const [messageId, refId] of refsByMessage.entries()) {
-    out.set(messageId, labelById.get(refId) ?? `msg/${refId}`)
+  const out = new Map<string, DiscordReplyContext>()
+  for (const [messageId, ref] of refsByMessage.entries()) {
+    const fallback = ref.embedded ?? {
+      message_id: ref.refId,
+      author_id: null,
+      author_username: null,
+      content: "",
+    }
+    out.set(messageId, contextById.get(ref.refId) ?? fallback)
   }
 
   return out
+}
+
+function formatReplyContext(reply: DiscordReplyContext | undefined): string {
+  if (!reply) return ""
+  const author = reply.author_username ? `@${reply.author_username}` : "unknown"
+  return ` [reply_to ${author} msg/${reply.message_id}: ${JSON.stringify(reply.content)}]`
 }
 
 function autoDemoteStalePendingItems(staleMinutes: number): number {
@@ -680,30 +722,7 @@ export function listDiscordBackread(channelId: string, limit = 40, beforeMessage
 
   const safeLimit = Math.max(1, Math.min(200, Math.trunc(limit) || 40))
   const before = String(beforeMessageId ?? "").trim()
-
-  if (!before) {
-    return db
-      .prepare(
-        `select
-          message_id,
-          channel_id,
-          guild_id,
-          author_id,
-          author_username,
-          content,
-          created_at,
-          is_dm,
-          mentions_bot,
-          is_from_bot
-         from discord_messages
-         where channel_id = ?
-         order by cast(message_id as integer) desc
-         limit ?`,
-      )
-      .all(safeChannelId, safeLimit)
-  }
-
-  return db
+  const rows = db
     .prepare(
       `select
         message_id,
@@ -715,14 +734,21 @@ export function listDiscordBackread(channelId: string, limit = 40, beforeMessage
         created_at,
         is_dm,
         mentions_bot,
-        is_from_bot
+        is_from_bot,
+        raw_json
        from discord_messages
        where channel_id = ?
-         and cast(message_id as integer) < cast(? as integer)
+         and (? = '' or cast(message_id as integer) < cast(? as integer))
        order by cast(message_id as integer) desc
        limit ?`,
     )
-    .all(safeChannelId, before, safeLimit)
+    .all(safeChannelId, before, before, safeLimit) as Array<Record<string, unknown> & { message_id: string; raw_json: string }>
+
+  const replyByMessageId = buildReplyTargetContextMap(rows)
+  return rows.map(({ raw_json: _rawJson, ...row }) => ({
+    ...row,
+    ...(replyByMessageId.has(row.message_id) ? { reply_to: replyByMessageId.get(row.message_id) } : {}),
+  }))
 }
 
 export function markDiscordItem(itemId: string, status: InboxStatus, note = "", action: InboxAction = "none"): void {
@@ -933,7 +959,7 @@ export function buildDiscordBatchDigest(params?: {
     }>
 
   const uniqueChannels = new Set(recentMessages.map((row) => row.channel_id))
-  const replyLabelByMessageId = buildReplyTargetLabelMap([...recentMessages, ...pendingPreview])
+  const replyContextByMessageId = buildReplyTargetContextMap([...recentMessages, ...pendingPreview])
 
   const lines: string[] = [
     `[discord batch] ${from} -> ${nowIso}`,
@@ -949,8 +975,8 @@ export function buildDiscordBatchDigest(params?: {
     const label = channelLabel(row)
     const author = row.author_username ? `@${row.author_username}` : "@unknown"
     const ts = formatBatchTimestamp(row.created_at)
-    const replyTo = replyLabelByMessageId.get(row.message_id)
-    lines.push(`- [${label}] [${ts}] ${author}${replyTo ? ` [reply_to ${replyTo}]` : ""}: ${compactText(row.content)}`)
+    const replyTo = replyContextByMessageId.get(row.message_id)
+    lines.push(`- [${label}] [${ts}] ${author}${formatReplyContext(replyTo)}: ${compactText(row.content)}`)
   }
 
   if (truncated) {
@@ -966,8 +992,8 @@ export function buildDiscordBatchDigest(params?: {
       const label = channelLabel(row)
       const author = row.author_username ? `@${row.author_username}` : "@unknown"
       const ts = formatBatchTimestamp(row.created_at)
-      const replyTo = replyLabelByMessageId.get(row.message_id)
-      lines.push(`- ${row.item_id} [${row.bucket}] [${label}] [${ts}] ${author}${replyTo ? ` [reply_to ${replyTo}]` : ""}: ${compactText(row.content, 120)}`)
+      const replyTo = replyContextByMessageId.get(row.message_id)
+      lines.push(`- ${row.item_id} [${row.bucket}] [${label}] [${ts}] ${author}${formatReplyContext(replyTo)}: ${compactText(row.content, 120)}`)
     }
   }
 
