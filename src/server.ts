@@ -11,7 +11,8 @@ import { fromWebhook } from "./triggers/webhook.js"
 import { fromCron } from "./triggers/cron.js"
 import { fromChat } from "./triggers/chat.js"
 import { subscribe } from "./stream.js"
-import { getMetrics, getMetricDetail } from "./metrics.js"
+import { getMetrics, getMetricDetail, getDiscordMetricDetail } from "./metrics.js"
+import type { MetricListType } from "./metrics.js"
 import type { UserMessage } from "./types.js"
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url))
@@ -25,6 +26,30 @@ const DISCORD_BATCH_MAX_MESSAGES = Math.max(
   Math.min(200, parseInt(process.env.DISCORD_BATCH_MAX_MESSAGES ?? "40", 10) || 40),
 )
 const DISCORD_BATCH_SCAN = (process.env.DISCORD_BATCH_SCAN ?? "true").trim().toLowerCase() !== "false"
+const METRIC_LIST_TYPES = new Set<MetricListType>(["prompt_response", "summarization", "memory", "prompt", "usage", "discord"])
+const METRIC_TYPE_ALIASES: Record<string, MetricListType> = {
+  compaction: "summarization",
+  memory: "memory",
+  memories: "memory",
+  summary: "summarization",
+  summaries: "summarization",
+  prompt_response: "prompt_response",
+  "prompt-response": "prompt_response",
+  completion: "prompt_response",
+}
+
+function parseMetricTypes(raw: string | undefined): MetricListType[] | undefined {
+  if (!raw?.trim()) return undefined
+
+  const types: MetricListType[] = []
+  for (const item of raw.split(",")) {
+    const normalized = item.trim().toLowerCase()
+    const type = METRIC_TYPE_ALIASES[normalized] ?? normalized
+    if (!METRIC_LIST_TYPES.has(type as MetricListType)) continue
+    if (!types.includes(type as MetricListType)) types.push(type as MetricListType)
+  }
+  return types.length ? types : undefined
+}
 
 export function createServer() {
   const app = Fastify({ logger: false })
@@ -179,8 +204,45 @@ export function createServer() {
   }))
 
   app.get("/metrics", async (req) => {
-    const { limit } = req.query as { limit?: string }
-    return getMetrics(limit ? parseInt(limit, 10) : 100)
+    const query = req.query as {
+      limit?: string
+      cursor?: string
+      type?: string
+      includeRaw?: string
+      q?: string
+      from?: string
+      to?: string
+      cursor_memories?: string
+      cursor_summarization?: string
+      cursor_prompt_response?: string
+      cursor_prompt?: string
+      cursor_usage?: string
+      cursor_discord?: string
+    }
+    return getMetrics({
+      limit: query.limit ? parseInt(query.limit, 10) : undefined,
+      cursor: query.cursor ? parseInt(query.cursor, 10) : undefined,
+      cursors: {
+        memories: query.cursor_memories,
+        summarization: query.cursor_summarization,
+        prompt_response: query.cursor_prompt_response,
+        prompt: query.cursor_prompt,
+        usage: query.cursor_usage,
+        discord: query.cursor_discord,
+      },
+      type: parseMetricTypes(query.type),
+      includeRaw: query.includeRaw === "true" || query.includeRaw === "1",
+      q: query.q,
+      from: query.from,
+      to: query.to,
+    })
+  })
+
+  app.get("/metrics/discord/:id", async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const metric = getDiscordMetricDetail(id)
+    if (!metric) return reply.code(404).send({ error: "discord metric not found" })
+    return metric
   })
 
   app.get("/metrics/:id", async (req, reply) => {

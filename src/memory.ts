@@ -308,6 +308,78 @@ function latestUserMessage(conversation: Message[]): string | null {
   return last.content
 }
 
+function discordChannelLabel(channelId: string | null, fallbackContext: string | null, isDm: boolean): string {
+  if (isDm) return "DM"
+
+  const fallback = fallbackContext
+    ?.replace(/^context:\s*/i, "")
+    .replace(/\s*\(\d+\)\s*$/, "")
+    .trim()
+
+  if (channelId) {
+    try {
+      const row = getDb()
+        .prepare("select guild_id, guild_name, channel_name, is_dm from discord_channels where channel_id = ?")
+        .get(channelId) as
+        | {
+            guild_id: string | null
+            guild_name: string | null
+            channel_name: string | null
+            is_dm: number
+          }
+        | undefined
+
+      if (row?.is_dm) return "DM"
+      if (row) {
+        const guild = row.guild_name ?? row.guild_id
+        const channel = row.channel_name ?? channelId
+        if (guild && channel) return `${guild}/#${channel}`
+        if (channel) return `#${channel}`
+      }
+    } catch {
+      // If the main db is unavailable in tests or scripts, keep the parsed context.
+    }
+  }
+
+  if (fallback) return fallback
+  return channelId ? `#${channelId}` : "channel"
+}
+
+function conciseDiscordMemoryQuery(raw: string): string | null {
+  const withoutWakeEnvelope = raw.replace(/^\[(wake|incoming|harness restarted)[^\n]*\]\s*/gi, "").trim()
+  if (!/\[discord\/(?:dm|channel)\]/i.test(withoutWakeEnvelope)) return null
+
+  const blocks = withoutWakeEnvelope
+    .split(/\n\s*\n/g)
+    .map((block) => block.trim())
+    .filter(Boolean)
+  const headerBlock = blocks[0] ?? withoutWakeEnvelope
+  const message = blocks.length > 1 ? blocks.slice(1).join("\n\n").trim() : ""
+
+  const lines = headerBlock.split("\n").map((line) => line.trim()).filter(Boolean)
+  const discordLine = lines.find((line) => /^\[discord\/(?:dm|channel)\]/i.test(line)) ?? ""
+  const contextLine = lines.find((line) => /^context:\s*/i.test(line)) ?? null
+  const isDm = /\[discord\/dm\]/i.test(discordLine)
+  const author = discordLine.match(/@(\S+)/)?.[1]
+  const context = contextLine?.replace(/^context:\s*/i, "").trim() ?? ""
+  const dmChannelId = context.match(/^DM\s+(\d+)/i)?.[1] ?? null
+  const namedChannelId = context.match(/\((\d+)\)\s*$/)?.[1] ?? null
+  const channelId = dmChannelId ?? namedChannelId
+  const location = discordChannelLabel(channelId, contextLine, isDm)
+
+  const parts = [
+    author ? `@${author}` : null,
+    location,
+    message || null,
+  ].filter((part): part is string => Boolean(part?.trim()))
+
+  return parts.length ? parts.join("\n") : null
+}
+
+function memoryQueryForUserMessage(raw: string): string {
+  return conciseDiscordMemoryQuery(raw) ?? raw
+}
+
 function normalizeSearchInput(raw: string): string {
   const withoutWakeEnvelope = raw.replace(/^\[(wake|incoming|harness restarted)[^\n]*\]\s*/gi, "").trim()
 
@@ -321,7 +393,7 @@ function normalizeSearchInput(raw: string): string {
   return bodyCandidate
     .replace(/^\[discord\/[^\]]+\]\s*@\S+\s+in\s+\d+(?:\s+\(\d+\))?\s*/gi, "")
     .replace(/^\[[^\]]+\]\s*/g, "")
-    .replace(/@[a-z0-9_.-]+/gi, " ")
+    .replace(/@([a-z0-9_.-]+)/gi, " $1 ")
     .replace(/\b\d{6,}\b/g, " ")
     .replace(/[^\p{L}\p{N}\s'-]+/gu, " ")
     .toLowerCase()
@@ -636,29 +708,30 @@ export async function buildCompletionMessages(
 ): Promise<{ messages: Message[]; recalledChunkIds: number[] }> {
   const latestUser = latestUserMessage(conversation)
   if (!latestUser) return { messages: conversation, recalledChunkIds: [] }
+  const memoryQuery = memoryQueryForUserMessage(latestUser)
 
   await syncMemoryIndex()
 
-  const profile = buildSearchProfile(latestUser)
+  const profile = buildSearchProfile(memoryQuery)
   if (profile.tokens.length === 0) return { messages: conversation, recalledChunkIds: [] }
 
   const hits = searchMemory(profile, cooldowns, currentTurn, MEMORY_RECALL_MAX_CHUNKS)
   if (hits.length === 0) return { messages: conversation, recalledChunkIds: [] }
   if (!shouldInjectHits(hits, profile)) {
     console.log(
-      `[memory] skipped query=${JSON.stringify(trimForPrompt(normalizeText(latestUser), 120))} personQuery=${profile.personQuery} eventQuery=${profile.eventQuery} reason=weak-match`,
+      `[memory] skipped query=${JSON.stringify(trimForPrompt(normalizeText(memoryQuery), 120))} personQuery=${profile.personQuery} eventQuery=${profile.eventQuery} reason=weak-match`,
     )
     return { messages: conversation, recalledChunkIds: [] }
   }
 
   const recallContent = buildMemoryRecallMessage(hits)
   console.log(
-    `[memory] recalled query=${JSON.stringify(trimForPrompt(normalizeText(latestUser), 120))} personQuery=${profile.personQuery} eventQuery=${profile.eventQuery}\n${recallContent}`,
+    `[memory] recalled query=${JSON.stringify(trimForPrompt(normalizeText(memoryQuery), 120))} personQuery=${profile.personQuery} eventQuery=${profile.eventQuery}\n${recallContent}`,
   )
 
   recordMetric({
     type: "memory",
-    query: latestUser,
+    query: memoryQuery,
     results: hits.map(toMemorySearchResult),
   })
 

@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createChatClient, type StreamEvent } from "@niri/chat-client"
 import { MarkdownBlock } from "./MarkdownBlock"
+import { MetricsWorkbench } from "./MetricsWorkbench"
 
 type Entry =
   | { id: number; kind: "info"; text: string }
@@ -59,6 +60,7 @@ const createClientId = (): string => {
 export function App() {
   const clientId = useMemo(() => createClientId(), [])
   const client = useMemo(() => createChatClient({ baseUrl, clientId }), [clientId])
+  const [view, setView] = useState<"metrics" | "chat">(() => (window.location.hash === "#chat" ? "chat" : "metrics"))
 
   const [entries, setEntries] = useState<Entry[]>([])
   const [running, setRunning] = useState<boolean | null>(null)
@@ -105,6 +107,11 @@ export function App() {
 
   const expandAllTools = useCallback(() => {
     setCollapsedToolIds(new Set<number>())
+  }, [])
+
+  const switchView = useCallback((next: "metrics" | "chat") => {
+    setView(next)
+    window.history.replaceState(null, "", next === "chat" ? "#chat" : "#metrics")
   }, [])
 
   useEffect(() => {
@@ -175,7 +182,20 @@ export function App() {
   )
 
   return (
-    <main className="app">
+    <div className="shell">
+      <nav className="top-nav" aria-label="primary">
+        <button type="button" className={view === "metrics" ? "is-active" : ""} onClick={() => switchView("metrics")}>
+          metrics
+        </button>
+        <button type="button" className={view === "chat" ? "is-active" : ""} onClick={() => switchView("chat")}>
+          chat
+        </button>
+      </nav>
+
+      {view === "metrics" ? (
+        <MetricsWorkbench />
+      ) : (
+        <main className="app">
       <header className="header">
         <h1>niri chat</h1>
         <p className="status">
@@ -275,5 +295,7 @@ export function App() {
         </button>
       </form>
     </main>
+      )}
+    </div>
   )
 }

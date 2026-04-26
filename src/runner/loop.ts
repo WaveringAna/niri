@@ -353,18 +353,22 @@ async function createStreamedCompletion(
     stream_options: { include_usage: true },
   } as const
 
-  recordMetric({ type: "prompt", messages: request.messages })
+  const promptMetricId = recordMetric({ type: "prompt", messages: request.messages })
 
   try {
     const stream = await apiClient.chat.completions.create(streamedRequest)
-    return consumeCompletionStream(stream as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>)
+    const result = await consumeCompletionStream(stream as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>)
+    recordPromptResponse(request, result, promptMetricId)
+    return result
   } catch (err) {
     if (shouldRetryWithoutStreamUsage(err)) {
       const stream = await apiClient.chat.completions.create({
         ...request,
         stream: true,
       } as const)
-      return consumeCompletionStream(stream as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>)
+      const result = await consumeCompletionStream(stream as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>)
+      recordPromptResponse(request, result, promptMetricId)
+      return result
     }
     throw err
   }
@@ -454,6 +458,18 @@ async function createPrimaryCompletion(messages: OpenAI.Chat.ChatCompletionMessa
 function addAssistantMessage(convId: number, state: LoopState, msg: OpenAI.Chat.ChatCompletionMessage): void {
   state.conversation.push(msg)
   logMessage(convId, msg.role, msg.content ?? "", msg.tool_calls ?? undefined)
+}
+
+function recordPromptResponse(request: CompletionRequest, result: CompletionTurnResult, promptMetricId: number | null): void {
+  recordMetric({
+    type: "prompt_response",
+    promptMetricId: promptMetricId ?? undefined,
+    model: request.model,
+    toolChoice: request.tool_choice,
+    messages: request.messages,
+    response: result.message,
+    usage: result.usage,
+  })
 }
 
 /**

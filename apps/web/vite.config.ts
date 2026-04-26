@@ -20,6 +20,7 @@ export default defineConfig(({ mode }) => {
         "/trigger": backendTarget,
         "/chat": backendTarget,
         "/status": backendTarget,
+        "/metrics": backendTarget,
       },
     },
     preview: {
