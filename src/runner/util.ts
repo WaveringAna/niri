@@ -11,11 +11,7 @@ const SESSION_FILE = path.join(PROJECT_ROOT, "session.json")
 
 export const TOKEN_NUDGE_THRESHOLD = parseInt(process.env.TOKEN_NUDGE_THRESHOLD ?? "120000")
 export const FALLBACK_TOKEN_NUDGE_THRESHOLD = parseInt(process.env.FALLBACK_TOKEN_NUDGE_THRESHOLD ?? "50000")
-export const CONTEXT_COMPACT_TARGET_TOKENS = parseInt(process.env.CONTEXT_COMPACT_TARGET_TOKENS ?? "65000")
 export const CONTEXT_COMPACT_TRIGGER_TOKENS = parseInt(process.env.CONTEXT_COMPACT_TRIGGER_TOKENS ?? "90000")
-export const CONTEXT_COMPACT_RECENT_MESSAGES = parseInt(process.env.CONTEXT_COMPACT_RECENT_MESSAGES ?? "80")
-export const CONTEXT_COMPACT_CHUNK_MESSAGES = parseInt(process.env.CONTEXT_COMPACT_CHUNK_MESSAGES ?? "32")
-export const CONTEXT_COMPACT_SUMMARY_MAX_CHARS = parseInt(process.env.CONTEXT_COMPACT_SUMMARY_MAX_CHARS ?? "16000")
 
 const NIRI_ENV = (process.env.NIRI_ENV ?? "default").trim().toLowerCase()
 export const USE_FALLBACK = NIRI_ENV === "local"
@@ -882,7 +878,6 @@ const CONTEXT_SUMMARY_HEADER = "[context summary v1]"
 const CONTEXT_SUMMARY_NOTE =
   "Compressed notes of older conversation turns. If anything conflicts, trust newer raw messages."
 const CONTEXT_SUMMARY_SEGMENTS_MARKER = "[segments]"
-const CONTEXT_SUMMARY_DELIMITER = "\n\n===\n\n"
 const SUMMARY_LINE_MAX_CHARS = 180
 const SUMMARY_LINE_DEFAULT_EMPTY = "(no text)"
 
@@ -940,19 +935,6 @@ function assistantToolNames(message: Message): string[] {
   return names
 }
 
-function assistantToolCallIds(message: Message): Set<string> {
-  const ids = new Set<string>()
-  const record = asRecord(message)
-  const calls = record?.tool_calls
-  if (!Array.isArray(calls)) return ids
-
-  for (const call of calls) {
-    const callRecord = asRecord(call)
-    if (typeof callRecord?.id === "string" && callRecord.id.trim()) ids.add(callRecord.id.trim())
-  }
-  return ids
-}
-
 function toolCallId(message: Message): string | null {
   const record = asRecord(message)
   return typeof record?.tool_call_id === "string" && record.tool_call_id.trim() ? record.tool_call_id.trim() : null
@@ -978,52 +960,6 @@ function summarizeMessageLine(message: Message): string {
   return `- ${role || "message"}: ${safeContent}`
 }
 
-function buildCompactionSegment(messages: Message[]): string {
-  const lines = messages.map((message) => summarizeMessageLine(message))
-  const summaryLines = lines.length > 0 ? lines.join("\n") : `- ${SUMMARY_LINE_DEFAULT_EMPTY}`
-  return `[${new Date().toISOString()}] compacted ${messages.length} messages\n${summaryLines}`
-}
-
-function buildSummaryMessageContent(segments: string[]): string {
-  const body = segments.join(CONTEXT_SUMMARY_DELIMITER)
-  return `${CONTEXT_SUMMARY_HEADER}\n${CONTEXT_SUMMARY_NOTE}\n${CONTEXT_SUMMARY_SEGMENTS_MARKER}\n${body}`
-}
-
-function parseSummarySegments(content: string): string[] {
-  if (!content.startsWith(CONTEXT_SUMMARY_HEADER)) return []
-
-  const marker = `\n${CONTEXT_SUMMARY_SEGMENTS_MARKER}\n`
-  const markerIndex = content.indexOf(marker)
-  if (markerIndex === -1) return []
-
-  const body = content.slice(markerIndex + marker.length).trim()
-  if (!body) return []
-
-  return body
-    .split(CONTEXT_SUMMARY_DELIMITER)
-    .map((segment) => segment.trim())
-    .filter((segment) => segment.length > 0)
-}
-
-function trimSummarySegments(segments: string[], maxChars: number): string[] {
-  const safeMaxChars = Math.max(1024, maxChars)
-  const next = [...segments]
-
-  while (next.length > 1 && buildSummaryMessageContent(next).length > safeMaxChars) {
-    next.shift()
-  }
-
-  if (next.length === 0) return next
-
-  const current = buildSummaryMessageContent(next)
-  if (current.length <= safeMaxChars) return next
-
-  const fixedPrefix = buildSummaryMessageContent([]).length
-  const available = Math.max(0, safeMaxChars - fixedPrefix)
-  next[0] = truncateSummaryText(next[0]!, available)
-  return next
-}
-
 function countLeadingSystemMessages(messages: Message[]): number {
   let count = 0
   while (count < messages.length && messageRole(messages[count]!) === "system") count++
@@ -1045,172 +981,6 @@ export function findSummaryMessageIndex(messages: Message[]): number {
 export function estimatePromptTokens(messages: Message[]): number {
   const jsonChars = JSON.stringify({ messages, tools: TOOLS }).length
   return Math.ceil(jsonChars / 4)
-}
-
-export type ContextCompactionResult = {
-  compacted: boolean
-  messages: Message[]
-  estimateBefore: number
-  estimateAfter: number
-  messagesRemoved: number
-  chunks: number
-}
-
-function normalizedObservedPromptTokens(value: number | undefined): number | null {
-  if (!Number.isFinite(value)) return null
-  const tokens = Math.ceil(value as number)
-  return tokens > 0 ? tokens : null
-}
-
-export type ContextCompactionOptions = {
-  targetTokens?: number
-  triggerTokens?: number
-  recentMessages?: number
-  chunkMessages?: number
-}
-
-/**
- * Applies rolling context compaction when estimated prompt size exceeds threshold.
- *
- * Keeps leading bootstrap system messages and recent raw turns, while replacing
- * older slices with a durable summary message.
- */
-export function maybeCompactConversation(
-  messages: Message[],
-  observedPromptTokens?: number,
-  options?: ContextCompactionOptions,
-): ContextCompactionResult {
-  const estimateBefore = estimatePromptTokens(messages)
-  const observedBefore = normalizedObservedPromptTokens(observedPromptTokens)
-  // Calibrate the rough chars/4 heuristic with real API prompt usage when available.
-  const estimateScale = observedBefore ? Math.max(1, observedBefore / Math.max(1, estimateBefore)) : 1
-  const effectiveBefore = Math.ceil(estimateBefore * estimateScale)
-
-  const targetTokens = options?.targetTokens ?? CONTEXT_COMPACT_TARGET_TOKENS
-  const triggerTokens = options?.triggerTokens ?? CONTEXT_COMPACT_TRIGGER_TOKENS
-  const chunkSize = Math.max(1, options?.chunkMessages ?? CONTEXT_COMPACT_CHUNK_MESSAGES)
-  const minRecentMessages = Math.max(1, options?.recentMessages ?? CONTEXT_COMPACT_RECENT_MESSAGES)
-
-  if (effectiveBefore < triggerTokens) {
-    return {
-      compacted: false,
-      messages,
-      estimateBefore: effectiveBefore,
-      estimateAfter: effectiveBefore,
-      messagesRemoved: 0,
-      chunks: 0,
-    }
-  }
-
-  let next = [...messages]
-  let summaryIndex = findSummaryMessageIndex(next)
-  let summaryInserted = false
-  let summarySegments: string[] = []
-
-  if (summaryIndex >= 0) {
-    const existingContent = messageStringContent(next[summaryIndex]!)
-    summarySegments = parseSummarySegments(existingContent)
-  } else {
-    const baseLayerEnd = (() => {
-      const leadingSystems = countLeadingSystemMessages(next)
-      if (leadingSystems > 0) return leadingSystems
-      return next.length > 0 ? 1 : 0
-    })()
-    summaryIndex = Math.min(baseLayerEnd, next.length)
-    next.splice(summaryIndex, 0, {
-      role: "user",
-      content: buildSummaryMessageContent([]),
-    })
-    summaryInserted = true
-  }
-
-  let estimateAfter = estimatePromptTokens(next)
-  let effectiveAfter = Math.ceil(estimateAfter * estimateScale)
-  let messagesRemoved = 0
-  let chunks = 0
-
-  while (effectiveAfter > targetTokens) {
-    const compactStart = summaryIndex + 1
-    const protectedTailStart = Math.max(compactStart, next.length - minRecentMessages)
-    if (protectedTailStart <= compactStart) break
-
-    let compactEnd = Math.min(protectedTailStart, compactStart + chunkSize)
-    if (compactEnd <= compactStart) break
-
-    while (compactEnd < protectedTailStart && messageRole(next[compactEnd]!) === "tool") {
-      compactEnd++
-    }
-
-    const unresolvedToolCalls = assistantToolCallIds(next[compactEnd - 1]!)
-    if (unresolvedToolCalls.size > 0) {
-      let scan = compactEnd
-      while (scan < protectedTailStart && messageRole(next[scan]!) === "tool") {
-        const id = toolCallId(next[scan]!)
-        if (id) unresolvedToolCalls.delete(id)
-        scan++
-        if (unresolvedToolCalls.size === 0) break
-      }
-      compactEnd = scan
-    }
-
-    while (compactEnd < protectedTailStart && messageRole(next[compactEnd]!) === "tool") {
-      compactEnd++
-    }
-
-    if (compactEnd <= compactStart) break
-
-    const removed = next.slice(compactStart, compactEnd)
-    if (removed.length === 0) break
-
-    summarySegments.push(buildCompactionSegment(removed))
-    summarySegments = trimSummarySegments(summarySegments, CONTEXT_COMPACT_SUMMARY_MAX_CHARS)
-
-    next[summaryIndex] = {
-      role: "user",
-      content: buildSummaryMessageContent(summarySegments),
-    }
-    next.splice(compactStart, removed.length)
-
-    messagesRemoved += removed.length
-    chunks += 1
-    estimateAfter = estimatePromptTokens(next)
-    effectiveAfter = Math.ceil(estimateAfter * estimateScale)
-  }
-
-  if (messagesRemoved === 0 && summaryInserted) {
-    next.splice(summaryIndex, 1)
-    estimateAfter = estimatePromptTokens(next)
-    effectiveAfter = Math.ceil(estimateAfter * estimateScale)
-  }
-
-  return {
-    compacted: messagesRemoved > 0,
-    messages: next,
-    estimateBefore: effectiveBefore,
-    estimateAfter: effectiveAfter,
-    messagesRemoved,
-    chunks,
-  }
-}
-
-/**
- * Aggressively compacts a conversation down to a tight token target.
- *
- * Bypasses the normal trigger threshold so recovery paths can shrink the prompt
- * even when the rough estimator is below the usual compaction trigger.
- */
-export function forceCompactConversation(
-  messages: Message[],
-  targetTokens: number,
-  observedPromptTokens?: number,
-): ContextCompactionResult {
-  const recentMessages = Math.max(4, Math.min(CONTEXT_COMPACT_RECENT_MESSAGES, 20))
-  return maybeCompactConversation(messages, observedPromptTokens, {
-    triggerTokens: 0,
-    targetTokens: Math.max(1024, targetTokens),
-    recentMessages,
-    chunkMessages: Math.max(16, CONTEXT_COMPACT_CHUNK_MESSAGES),
-  })
 }
 
 function findSafeTailStart(messages: Message[], desired: number): number {

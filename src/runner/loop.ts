@@ -33,9 +33,7 @@ import {
   fallbackClient,
   fallbackContextWindow,
   findSummaryMessageIndex,
-  forceCompactConversation,
   isPromptTooLargeError,
-  maybeCompactConversation,
   parseImageDetail,
   parseToolArguments,
   retryDelayMs,
@@ -654,7 +652,7 @@ function logPromptSizeDebug(state: LoopState, err: unknown, label: string): void
 }
 
 /**
- * Recovers from a prompt-too-large error by compacting and optionally LLM-summarizing.
+ * Recovers from a prompt-too-large error by LLM-summarizing older context.
  *
  * Mutates `state.conversation` in place on success.
  *
@@ -664,41 +662,13 @@ async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Pro
   const beforeCount = state.conversation.length
   const beforeEstimate = estimatePromptTokens(state.conversation)
 
-  // First attempt: aggressive heuristic compaction.
-  if (attempt === 0) {
-    const targetTokens = Math.max(4096, Math.floor(beforeEstimate * 0.5))
-    const result = forceCompactConversation(state.conversation, targetTokens, state.contextSize)
-    if (result.compacted) {
-      state.conversation = result.messages
-      state.contextSize = result.estimateAfter
-
-      const summaryIdx = findSummaryMessageIndex(state.conversation)
-      const summary = summaryIdx >= 0 ? (state.conversation[summaryIdx]?.content as string) : undefined
-
-      console.warn(
-        `[context] recovery: force-compacted ${result.messagesRemoved} msgs across ${result.chunks} chunks (${result.estimateBefore} -> ${result.estimateAfter}, target=${targetTokens})`,
-      )
-
-      recordMetric({
-        type: "compaction",
-        before: result.estimateBefore,
-        after: result.estimateAfter,
-        method: "force-heuristic",
-        summary,
-      })
-      return true
-    }
-    console.warn(`[context] recovery: force-compaction produced no changes (messages=${beforeCount}, est=${beforeEstimate})`)
-  }
-
-  // Second attempt: LLM-based summarization via the configured summary provider.
   const summaryProvider = configuredSummaryProvider()
   if (!summaryProvider.client || !summaryProvider.model) {
     console.warn(`[context] recovery: no summary client available; cannot llm-summarize`)
     return false
   }
 
-  console.warn(`[context] recovery: attempting llm summarization via ${summaryProvider.model}`)
+  console.warn(`[context] recovery: attempting llm summarization via ${summaryProvider.model} (attempt=${attempt + 1})`)
   const summarized = await summarizeConversationViaLLM(state.conversation, summaryProvider.client, summaryProvider.model)
   if (!summarized) {
     console.warn(`[context] recovery: llm summarization returned no changes`)
@@ -1287,86 +1257,57 @@ function applyContextNudge(state: LoopState): void {
 }
 
 /**
- * Compacts older context into a rolling summary when prompt size is too large.
- *
- * @param state - Mutable loop state.
- * @param phase - Log label for pre/post-turn compaction runs.
- * @returns `true` when conversation messages were compacted.
+ * When observed context crosses the compaction trigger, replace the middle of
+ * the conversation with a single LLM-generated summary so older history keeps
+ * its narrative/emotional texture.
  */
-function applyRollingCompaction(state: LoopState, phase: "pre-turn" | "post-turn"): boolean {
-  const result = maybeCompactConversation(state.conversation, state.contextSize)
-  if (!result.compacted) return false
+async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-turn"): Promise<boolean> {
+  const beforeEstimate = estimatePromptTokens(state.conversation)
+  const contextPressure = Math.max(state.contextSize, beforeEstimate)
+  if (contextPressure < CONTEXT_COMPACT_TRIGGER_TOKENS) return false
 
-  state.conversation = result.messages
-  state.contextSize = result.estimateAfter
+  const summaryProvider = configuredSummaryProvider()
+  if (!summaryProvider.client || !summaryProvider.model) {
+    console.warn(`[context] ${phase}: no summary client available; skipping llm compaction`)
+    return false
+  }
+
+  const beforeCount = state.conversation.length
+  const summarized = await summarizeConversationViaLLM(
+    state.conversation,
+    summaryProvider.client,
+    summaryProvider.model,
+    { recentKeep: LLM_POST_TURN_RECENT_MESSAGES },
+  )
+  if (!summarized) {
+    console.warn(`[context] ${phase}: llm summary unavailable; keeping raw conversation`)
+    return false
+  }
+
+  const afterEstimate = estimatePromptTokens(summarized)
+  if (afterEstimate >= beforeEstimate) {
+    console.warn(`[context] ${phase}: llm summary not smaller (${beforeEstimate} -> ${afterEstimate}); keeping raw conversation`)
+    return false
+  }
+
+  state.conversation = summarized
+  state.contextSize = afterEstimate
 
   const summaryIdx = findSummaryMessageIndex(state.conversation)
   const summary = summaryIdx >= 0 ? (state.conversation[summaryIdx]?.content as string) : undefined
 
   console.log(
-    `[context] ${phase} compacted ${result.messagesRemoved} messages across ${result.chunks} chunks (${result.estimateBefore} -> ${result.estimateAfter})`,
+    `[context] ${phase}: llm-summarized conversation via ${summaryProvider.model} (${beforeCount} -> ${summarized.length} msgs, ${beforeEstimate} -> ${afterEstimate} tokens)`,
   )
 
   recordMetric({
     type: "compaction",
-    before: result.estimateBefore,
-    after: result.estimateAfter,
-    method: "rolling",
+    before: beforeEstimate,
+    after: afterEstimate,
+    method: `${phase}-llm`,
     summary,
   })
   return true
-}
-
-/**
- * Post-turn compaction: when observed context crosses the compaction trigger,
- * replace the middle of the conversation with a single LLM-generated summary so
- * older history keeps its narrative/emotional texture instead of being reduced
- * to bullet lines. Falls back to the heuristic compactor on failure.
- */
-async function applyPostTurnCompaction(state: LoopState): Promise<boolean> {
-  if (state.contextSize >= CONTEXT_COMPACT_TRIGGER_TOKENS) {
-    const summaryProvider = configuredSummaryProvider()
-    if (summaryProvider.client && summaryProvider.model) {
-      const beforeCount = state.conversation.length
-      const beforeEstimate = estimatePromptTokens(state.conversation)
-      const summarized = await summarizeConversationViaLLM(
-        state.conversation,
-        summaryProvider.client,
-        summaryProvider.model,
-        { recentKeep: LLM_POST_TURN_RECENT_MESSAGES },
-      )
-      if (summarized) {
-        const afterEstimate = estimatePromptTokens(summarized)
-        if (afterEstimate < beforeEstimate) {
-          state.conversation = summarized
-          state.contextSize = afterEstimate
-
-          const summaryIdx = findSummaryMessageIndex(state.conversation)
-          const summary = summaryIdx >= 0 ? (state.conversation[summaryIdx]?.content as string) : undefined
-
-          console.log(
-            `[context] post-turn llm-summarized conversation via ${summaryProvider.model} (${beforeCount} -> ${summarized.length} msgs, ${beforeEstimate} -> ${afterEstimate} tokens)`,
-          )
-
-          recordMetric({
-            type: "compaction",
-            before: beforeEstimate,
-            after: afterEstimate,
-            method: "post-turn-llm",
-            summary,
-          })
-          return true
-        }
-
-        console.warn(
-          `[context] post-turn llm summary not smaller (${beforeEstimate} -> ${afterEstimate}); falling back to heuristic`,
-        )
-      } else {
-        console.warn(`[context] post-turn llm summary unavailable; falling back to heuristic`)
-      }
-    }
-  }
-  return applyRollingCompaction(state, "post-turn")
 }
 
 /**
@@ -1385,13 +1326,13 @@ async function applyPostTurnCompaction(state: LoopState): Promise<boolean> {
  */
 export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks): Promise<RunLoopExit> {
   while (true) {
-    const preCompacted = applyRollingCompaction(state, "pre-turn")
+    const preCompacted = await applyLLMCompaction(state, "pre-turn")
     if (preCompacted) await hooks.saveSession()
 
     const outcome = await processAssistantTurn(convId, state, hooks)
     if (outcome === CycleOutcome.Rest) return "rest"
 
-    await applyPostTurnCompaction(state)
+    await applyLLMCompaction(state, "post-turn")
     if (outcome !== CycleOutcome.NoTools) {
       applyContextNudge(state)
     }
