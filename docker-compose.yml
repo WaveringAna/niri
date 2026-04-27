@@ -4,10 +4,12 @@ services:
       context: .
       args:
         AGENT_USER: ${NIRI_USER:-niri}
+        AGENT_UID: ${AGENT_UID:-1000}
+        AGENT_GID: ${AGENT_GID:-1000}
     container_name: ${NIRI_CONTAINER:-niri}
     restart: unless-stopped
     network_mode: host
-    user: "${AGENT_UID:-1001}:${AGENT_GID:-1001}"
+    user: "${AGENT_UID:-1000}:${AGENT_GID:-1000}"
     volumes:
       - ./home:/home/${NIRI_USER:-niri}
       - .:/workspace

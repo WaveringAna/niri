@@ -11,6 +11,56 @@ import {
 import { runRaw } from "./shell.js"
 import type { EditResult, ImageToolPayload, ModelImageInput } from "./types.js"
 
+function shouldRedirectStdinToDevNullByDefault(command: string): boolean {
+  // This runner executes in a real PTY, but we still want to avoid accidentally
+  // hanging forever on commands that commonly read from stdin (REPLs, pagers,
+  // editors, etc.). For most non-interactive commands we keep stdin attached.
+  const trimmed = String(command ?? "").trim()
+  if (!trimmed) return true
+
+  // Only inspect the leading program token (optionally prefixed by sudo).
+  // This is intentionally heuristic; it avoids trying to fully parse shell.
+  const m = trimmed.match(/^(?:sudo\s+)?([^\s]+)/)
+  const prog = (m?.[1] ?? "").toLowerCase()
+  if (!prog) return true
+
+  // Common interactive tools.
+  if (
+    [
+      "bash",
+      "sh",
+      "zsh",
+      "fish",
+      "python",
+      "python3",
+      "node",
+      "ruby",
+      "irb",
+      "php",
+      "psql",
+      "mysql",
+      "sqlite3",
+      "less",
+      "more",
+      "man",
+      "top",
+      "htop",
+      "nano",
+      "vim",
+      "vi",
+      "emacs",
+      "ssh",
+    ].includes(prog)
+  ) {
+    return true
+  }
+
+  // `cat` with no args is a very common accidental hang.
+  if (prog === "cat" && !/\bcat\b\s+\S/.test(trimmed)) return true
+
+  return false
+}
+
 /**
  * Run a shell command.
  * Output is capped at `maxLines` lines (default 150, 40 for known-verbose commands).
@@ -26,6 +76,7 @@ export async function runCommand(command: string, maxLines?: number, timeoutMs?:
   const cap = resolveMaxLines(command, maxLines)
   const raw = await runRaw(command, {
     timeoutMs: normalizeTimeoutMs(timeoutMs, DEFAULT_COMMAND_TIMEOUT_MS),
+    redirectStdinToDevNull: shouldRedirectStdinToDevNullByDefault(command),
   })
 
   if (cap === 0) return raw

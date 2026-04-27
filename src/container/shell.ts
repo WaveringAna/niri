@@ -121,7 +121,10 @@ export function closeBash(): void {
  */
 export async function runRaw(command: string, options: RunRawOptions = {}): Promise<string> {
   const timeoutMs = normalizeTimeoutMs(options.timeoutMs, DEFAULT_COMMAND_TIMEOUT_MS)
-  const redirectStdinToDevNull = options.redirectStdinToDevNull ?? true
+  // Default: keep stdin attached to the PTY for more natural command behavior.
+  // Higher-level helpers (e.g. runCommand) can opt into /dev/null for commands
+  // that are likely to block waiting for stdin.
+  const redirectStdinToDevNull = options.redirectStdinToDevNull ?? false
 
   // Reconnect lazily if the session was lost.
   if (!bash) {

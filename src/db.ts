@@ -1,4 +1,5 @@
 import Database from "better-sqlite3"
+import fs from "fs"
 import path from "path"
 import { fileURLToPath } from "url"
 
@@ -7,7 +8,41 @@ const DB_PATH = path.join(HOME_DIR, "niri.db")
 
 let db: Database.Database
 
+function ensureWritableDirOrThrow(dirPath: string, purpose: string): void {
+  try {
+    fs.mkdirSync(dirPath, { recursive: true })
+    fs.accessSync(dirPath, fs.constants.W_OK)
+  } catch (err: any) {
+    let owner = "unknown"
+    try {
+      const st = fs.statSync(dirPath)
+      owner = `${st.uid}:${st.gid}`
+    } catch {
+      // ignore
+    }
+
+    const uid = typeof process.getuid === "function" ? process.getuid() : undefined
+    const gid = typeof process.getgid === "function" ? process.getgid() : undefined
+    const who = uid !== undefined && gid !== undefined ? `${uid}:${gid}` : "current user"
+
+    throw new Error(
+      [
+        `[db] cannot write ${purpose} under ${dirPath}`,
+        `- dir owner: ${owner}`,
+        `- process uid:gid: ${who}`,
+        "",
+        "Fix:",
+        "- If running locally: `sudo chown -R $(id -u):$(id -g) home`",
+        "- If running via docker-compose: set `AGENT_UID`/`AGENT_GID` in .env to match `id -u`/`id -g`, then recreate the container",
+        "",
+        `Original error: ${err?.message ?? String(err)}`,
+      ].join("\n"),
+    )
+  }
+}
+
 export function initDb(): void {
+  ensureWritableDirOrThrow(HOME_DIR, "niri.db")
   db = new Database(DB_PATH)
 
   db.pragma("journal_mode = WAL")

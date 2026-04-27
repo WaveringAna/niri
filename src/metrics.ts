@@ -1,4 +1,5 @@
 import Database from "better-sqlite3"
+import fs from "fs"
 import path from "path"
 import { fileURLToPath } from "url"
 import type OpenAI from "openai"
@@ -159,6 +160,35 @@ const events: (MetricEvent & { id: number })[] = []
 const MAX_IN_MEMORY = 100
 
 export function initMetricsDb(): void {
+  try {
+    fs.mkdirSync(HOME_DIR, { recursive: true })
+    fs.accessSync(HOME_DIR, fs.constants.W_OK)
+  } catch (err: any) {
+    let owner = "unknown"
+    try {
+      const st = fs.statSync(HOME_DIR)
+      owner = `${st.uid}:${st.gid}`
+    } catch {
+      // ignore
+    }
+    const uid = typeof process.getuid === "function" ? process.getuid() : undefined
+    const gid = typeof process.getgid === "function" ? process.getgid() : undefined
+    const who = uid !== undefined && gid !== undefined ? `${uid}:${gid}` : "current user"
+    throw new Error(
+      [
+        `[metrics] cannot write metrics.db under ${HOME_DIR}`,
+        `- dir owner: ${owner}`,
+        `- process uid:gid: ${who}`,
+        "",
+        "Fix:",
+        "- If running locally: `sudo chown -R $(id -u):$(id -g) home`",
+        "- If running via docker-compose: set `AGENT_UID`/`AGENT_GID` in .env to match `id -u`/`id -g`, then recreate the container",
+        "",
+        `Original error: ${err?.message ?? String(err)}`,
+      ].join("\n"),
+    )
+  }
+
   db = new Database(DB_PATH)
   db.pragma("journal_mode = WAL")
   db.exec(`
