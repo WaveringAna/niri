@@ -878,8 +878,10 @@ const CONTEXT_SUMMARY_HEADER = "[context summary v1]"
 const CONTEXT_SUMMARY_NOTE =
   "Compressed notes of older conversation turns. If anything conflicts, trust newer raw messages."
 const CONTEXT_SUMMARY_SEGMENTS_MARKER = "[segments]"
-const SUMMARY_LINE_MAX_CHARS = 180
+const SUMMARY_LINE_MAX_CHARS = 320
 const SUMMARY_LINE_DEFAULT_EMPTY = "(no text)"
+const TOOL_ACK_RESULT = "(ok)"
+const WAIT_TOOL_RESULT = "Waiting for next event."
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null
@@ -921,43 +923,169 @@ function truncateSummaryText(value: string, maxChars: number): string {
   return `${value.slice(0, maxChars - 3).trimEnd()}...`
 }
 
-function assistantToolNames(message: Message): string[] {
+function assistantToolCalls(message: Message): { name: string; args: Record<string, unknown> }[] {
   const record = asRecord(message)
   const calls = record?.tool_calls
   if (!Array.isArray(calls)) return []
 
-  const names: string[] = []
+  const out: { name: string; args: Record<string, unknown> }[] = []
   for (const call of calls) {
     const callRecord = asRecord(call)
     const fn = asRecord(callRecord?.function)
-    if (typeof fn?.name === "string" && fn.name.trim()) names.push(fn.name.trim())
+    const name = typeof fn?.name === "string" ? fn.name.trim() : ""
+    if (!name) continue
+    let args: Record<string, unknown> = {}
+    const rawArgs = fn?.arguments
+    if (typeof rawArgs === "string" && rawArgs.trim()) {
+      try {
+        const parsed = JSON.parse(rawArgs)
+        if (parsed && typeof parsed === "object") args = parsed as Record<string, unknown>
+      } catch {
+        // ignore malformed arg json
+      }
+    } else if (rawArgs && typeof rawArgs === "object") {
+      args = rawArgs as Record<string, unknown>
+    }
+    out.push({ name, args })
   }
-  return names
+  return out
 }
 
-function toolCallId(message: Message): string | null {
-  const record = asRecord(message)
-  return typeof record?.tool_call_id === "string" && record.tool_call_id.trim() ? record.tool_call_id.trim() : null
+function describeToolCall(call: { name: string; args: Record<string, unknown> }): string | null {
+  const { name, args } = call
+  if (name === "wait") return null
+  if (name === "discord_send") {
+    const content = typeof args.content === "string" ? args.content : ""
+    const channelId = typeof args.channel_id === "string" ? args.channel_id : ""
+    const channelTag = channelId ? `ch/${channelId.slice(-6)}` : "ch?"
+    if (!content) return `discord_send -> ${channelTag}`
+    return `discord_send -> ${channelTag}: ${normalizeSummaryText(content)}`
+  }
+  if (name === "discord_mark") {
+    const itemId = typeof args.item_id === "string" ? args.item_id : ""
+    const action = typeof args.action === "string" ? args.action : ""
+    return `discord_mark ${action || "?"} ${itemId}`.trim()
+  }
+  if (name === "shell") {
+    const cmd = typeof args.command === "string" ? args.command : ""
+    return cmd ? `shell: ${normalizeSummaryText(cmd)}` : "shell"
+  }
+  if (name === "image_tool") {
+    const p = typeof args.path === "string" ? args.path : ""
+    return p ? `image_tool ${p}` : "image_tool"
+  }
+  if (name === "discord_backread" || name === "discord_inbox" || name === "discord_channels") {
+    const channelId = typeof args.channel_id === "string" ? args.channel_id : ""
+    return channelId ? `${name} ch/${channelId.slice(-6)}` : name
+  }
+  // Fallback: compact arg snippet
+  const argKeys = Object.keys(args)
+  if (argKeys.length === 0) return name
+  const snippet = argKeys
+    .slice(0, 3)
+    .map((k) => `${k}=${truncateSummaryText(normalizeSummaryText(String(args[k] ?? "")), 40)}`)
+    .join(" ")
+  return `${name} ${snippet}`.trim()
 }
 
-function summarizeMessageLine(message: Message): string {
+const DISCORD_BATCH_SKIP_PREFIXES = [
+  "[discord batch]",
+  "new_messages=",
+  "auto_seen_timeout=",
+  "channel_flag_repairs=",
+  "channel messages are context",
+  "you can reply if useful",
+  "pending preview:",
+]
+
+function compactDiscordBatch(content: string): string {
+  const lines = content.split("\n")
+  const kept: string[] = []
+  let inPendingPreview = false
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    if (!line) continue
+    if (line === "pending preview:") {
+      inPendingPreview = true
+      continue
+    }
+    if (inPendingPreview) {
+      // pending preview block continues until we hit a non-bullet line
+      if (line.startsWith("- ")) continue
+      inPendingPreview = false
+    }
+    if (DISCORD_BATCH_SKIP_PREFIXES.some((p) => line.startsWith(p))) continue
+    kept.push(line)
+  }
+  return kept.join(" ")
+}
+
+function compactToolResult(content: string): string | null {
+  const trimmed = content.trim()
+  if (!trimmed) return null
+  if (trimmed === WAIT_TOOL_RESULT) return null
+  // Compact discord_send / discord_mark ok JSON to a short ack
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (parsed && typeof parsed === "object") {
+        const rec = parsed as Record<string, unknown>
+        if (rec.ok === true) {
+          const sentId = typeof rec.sent_message_id === "string" ? rec.sent_message_id : null
+          if (sentId) return `${TOOL_ACK_RESULT} sent ${sentId.slice(-6)}`
+          const itemId = typeof rec.item_id === "string" ? rec.item_id : null
+          if (itemId) return `${TOOL_ACK_RESULT} ${itemId.slice(-6)}`
+          return TOOL_ACK_RESULT
+        }
+        if (rec.ok === false || typeof rec.error === "string") {
+          const err = typeof rec.error === "string" ? rec.error : "error"
+          return `error: ${err}`
+        }
+      }
+    } catch {
+      // fall through to default handling
+    }
+  }
+  return normalizeSummaryText(trimmed)
+}
+
+function summarizeMessageLine(message: Message): string | null {
   const role = messageRole(message)
-  const content = truncateSummaryText(normalizeSummaryText(messageStringContent(message)), SUMMARY_LINE_MAX_CHARS)
-  const safeContent = content || SUMMARY_LINE_DEFAULT_EMPTY
+  const rawContent = messageStringContent(message)
 
   if (role === "assistant") {
-    const toolNames = assistantToolNames(message)
-    if (toolNames.length > 0 && content) return `- assistant: ${safeContent} | tools: ${toolNames.join(", ")}`
-    if (toolNames.length > 0) return `- assistant: tools: ${toolNames.join(", ")}`
-    return `- assistant: ${safeContent}`
+    const calls = assistantToolCalls(message)
+    const callDescs = calls.map(describeToolCall).filter((d): d is string => d !== null)
+    const text = normalizeSummaryText(rawContent)
+    // Drop pure wait-only assistant turns (no text, only filtered out wait calls)
+    if (!text && callDescs.length === 0) return null
+    const parts: string[] = []
+    if (text) parts.push(text)
+    if (callDescs.length > 0) parts.push(`[${callDescs.join(" | ")}]`)
+    return `- assistant: ${truncateSummaryText(parts.join(" "), SUMMARY_LINE_MAX_CHARS)}`
   }
+
   if (role === "tool") {
-    const id = toolCallId(message) ?? "unknown"
-    return `- tool(${id}): ${safeContent}`
+    const compact = compactToolResult(rawContent)
+    if (compact === null) return null
+    return `- tool: ${truncateSummaryText(compact, SUMMARY_LINE_MAX_CHARS)}`
   }
-  if (role === "user") return `- user: ${safeContent}`
-  if (role === "system") return `- system: ${safeContent}`
-  return `- ${role || "message"}: ${safeContent}`
+
+  if (role === "user") {
+    const stripped = rawContent.startsWith("[incoming — discord]")
+      ? compactDiscordBatch(rawContent)
+      : normalizeSummaryText(rawContent)
+    const safe = stripped || SUMMARY_LINE_DEFAULT_EMPTY
+    return `- user: ${truncateSummaryText(safe, SUMMARY_LINE_MAX_CHARS)}`
+  }
+
+  if (role === "system") {
+    const text = truncateSummaryText(normalizeSummaryText(rawContent), SUMMARY_LINE_MAX_CHARS) || SUMMARY_LINE_DEFAULT_EMPTY
+    return `- system: ${text}`
+  }
+
+  const text = truncateSummaryText(normalizeSummaryText(rawContent), SUMMARY_LINE_MAX_CHARS) || SUMMARY_LINE_DEFAULT_EMPTY
+  return `- ${role || "message"}: ${text}`
 }
 
 function countLeadingSystemMessages(messages: Message[]): number {
@@ -1014,7 +1142,11 @@ export async function summarizeConversationViaLLM(
   const tail = messages.slice(tailStart)
   if (middle.length === 0) return null
 
-  const transcript = middle.map((m) => summarizeMessageLine(m)).join("\n").slice(0, maxTranscriptChars)
+  const transcript = middle
+    .map((m) => summarizeMessageLine(m))
+    .filter((line): line is string => line !== null)
+    .join("\n")
+    .slice(0, maxTranscriptChars)
   const summaryPrompt: OpenAI.Chat.ChatCompletionMessageParam[] = [
     {
       role: "system",
