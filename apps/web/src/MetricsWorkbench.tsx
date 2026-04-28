@@ -26,8 +26,8 @@ type PromptMetric = BaseMetric & {
   lastUserMessage?: string
 }
 
-type PromptResponseMetric = BaseMetric & {
-  type: "prompt_response"
+type ResponseMetric = BaseMetric & {
+  type: "response"
   promptMetricId?: number
   model?: string
   toolChoice?: string
@@ -69,12 +69,12 @@ type DiscordMetric = {
   isFromBot: boolean
 }
 
-type MetricItem = MemoryMetric | PromptMetric | PromptResponseMetric | UsageMetric | SummarizationMetric
+type MetricItem = MemoryMetric | PromptMetric | ResponseMetric | UsageMetric | SummarizationMetric
 
 type MetricsPage = {
   memories: MemoryMetric[]
   summarization: SummarizationMetric[]
-  prompt_response: PromptResponseMetric[]
+  response: ResponseMetric[]
   prompt: PromptMetric[]
   usage: UsageMetric[]
   discord: DiscordMetric[]
@@ -118,22 +118,27 @@ type PromptDetail = {
   response?: Message
 }
 
+type TurnDetail = {
+  id: number
+  timestamp: string
+  model?: string
+  usage?: Usage
+  promptText: string
+  responseText?: string
+  toolTraces: ToolTrace[]
+}
+
 type DetailState =
   | { kind: "idle" }
   | { kind: "loading"; label: string }
   | { kind: "error"; text: string }
   | { kind: "memory"; memory: MemoryDetail; prompt?: PromptDetail }
+  | { kind: "turn"; turn: TurnDetail }
   | { kind: "metric"; metric: unknown }
-
-type ToolPanelState =
-  | { kind: "idle" }
-  | { kind: "loading"; label: string }
-  | { kind: "error"; text: string }
-  | { kind: "ready"; label: string; traces: ToolTrace[] }
 
 type MemoryPair = {
   memory: MemoryMetric
-  prompt?: PromptMetric | PromptResponseMetric
+  prompt?: PromptMetric | ResponseMetric
   secondsApart?: number
   overlap: number
   shared: string[]
@@ -307,7 +312,7 @@ const fetchJson = async <T,>(path: string, signal?: AbortSignal): Promise<T> => 
 const normalizeMetricsPage = (page: MetricsPageInput): MetricsPage => ({
   memories: Array.isArray(page.memories) ? page.memories : [],
   summarization: Array.isArray(page.summarization) ? page.summarization : [],
-  prompt_response: Array.isArray(page.prompt_response) ? page.prompt_response : [],
+  response: Array.isArray(page.response) ? page.response : [],
   prompt: Array.isArray(page.prompt) ? page.prompt : [],
   usage: Array.isArray(page.usage) ? page.usage : [],
   discord: Array.isArray(page.discord) ? page.discord : [],
@@ -323,18 +328,18 @@ function buildMetricsUrl(search: string): string {
   return `/metrics?${params.toString()}`
 }
 
-function closestPromptPath(timestamp: string, prompts: PromptMetric[]): string | undefined {
+function closestResponsePath(timestamp: string, responses: ResponseMetric[]): string | undefined {
   const usageTime = new Date(timestamp).getTime()
   if (!Number.isFinite(usageTime)) return undefined
 
-  let best: PromptMetric | undefined
+  let best: ResponseMetric | undefined
   let bestDelta = Number.POSITIVE_INFINITY
-  for (const prompt of prompts) {
-    const promptTime = new Date(prompt.timestamp).getTime()
-    if (!Number.isFinite(promptTime) || promptTime > usageTime) continue
-    const delta = usageTime - promptTime
+  for (const r of responses) {
+    const t = new Date(r.timestamp).getTime()
+    if (!Number.isFinite(t) || t > usageTime) continue
+    const delta = usageTime - t
     if (delta < bestDelta) {
-      best = prompt
+      best = r
       bestDelta = delta
     }
   }
@@ -343,14 +348,14 @@ function closestPromptPath(timestamp: string, prompts: PromptMetric[]): string |
 
 function TokenTrace({
   usage,
-  promptResponses,
-  prompts,
+  responses,
   onOpenTurn,
+  latestPromptText,
 }: {
   usage: UsageMetric[]
-  promptResponses: PromptResponseMetric[]
-  prompts: PromptMetric[]
+  responses: ResponseMetric[]
   onOpenTurn: (path: string) => void
+  latestPromptText?: string
 }) {
   const points = useMemo(() => {
     const usagePoints = usage.map((item) => ({
@@ -358,12 +363,12 @@ function TokenTrace({
       timestamp: item.timestamp,
       usage: item.usage,
       model: undefined as string | undefined,
-      detailPath: closestPromptPath(item.timestamp, prompts) ?? item.detailPath,
+      detailPath: closestResponsePath(item.timestamp, responses) ?? item.detailPath,
     }))
-    const responsePoints = promptResponses
+    const responsePoints = responses
       .filter((item) => item.usage)
       .map((item) => ({
-        id: `pr-${item.id}`,
+        id: `r-${item.id}`,
         timestamp: item.timestamp,
         usage: item.usage,
         model: item.model,
@@ -372,7 +377,7 @@ function TokenTrace({
     return [...usagePoints, ...responsePoints]
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
       .slice(-80)
-  }, [promptResponses, prompts, usage])
+  }, [responses, usage])
 
   const maxTotal = Math.max(1, ...points.map((point) => point.usage?.total_tokens ?? 0))
   const latest = points[points.length - 1]
@@ -434,6 +439,13 @@ function TokenTrace({
           <small>avg total</small>
         </div>
       </div>
+
+      {latestPromptText && (
+        <div className="latest-prompt">
+          <small>latest prompt</small>
+          <p>{latestPromptText}</p>
+        </div>
+      )}
     </section>
   )
 }
@@ -495,58 +507,12 @@ function MemoryReview({
   )
 }
 
-function ToolTracePanel({ state }: { state: ToolPanelState }) {
-  return (
-    <section className="metric-panel tool-panel" aria-label="tool calls">
-      <div className="panel-head">
-        <div>
-          <h2>Tool Calls</h2>
-          <p>
-            {state.kind === "ready"
-              ? `${state.traces.length} calls from ${state.label}`
-              : state.kind === "loading"
-                ? state.label
-                : "Recent prompt tool activity"}
-          </p>
-        </div>
-      </div>
-
-      <div className="tool-panel-body">
-        {state.kind === "idle" ? <p className="empty-note">No prompt loaded yet.</p> : null}
-        {state.kind === "loading" ? <p className="empty-note">Loading tools.</p> : null}
-        {state.kind === "error" ? <p className="empty-note">tools unavailable: {state.text}</p> : null}
-        {state.kind === "ready" && state.traces.length === 0 ? (
-          <p className="empty-note">No tool calls in this prompt context.</p>
-        ) : null}
-        {state.kind === "ready" && state.traces.length > 0 ? (
-          <div className="tool-trace-list">
-            {state.traces.map((tool) => (
-              <article key={tool.id} className="tool-trace">
-                <details>
-                  <summary>
-                    <span>{tool.name}</span>
-                    <small>{tool.id}</small>
-                  </summary>
-                  {tool.args ? <pre className="tool-args">{tool.args}</pre> : null}
-                  <div className="tool-result">
-                    <MarkdownBlock content={toolResultMarkdown(tool.result ?? "")} />
-                  </div>
-                </details>
-              </article>
-            ))}
-          </div>
-        ) : null}
-      </div>
-    </section>
-  )
-}
-
 function DetailPane({ detail }: { detail: DetailState }) {
   if (detail.kind === "idle") {
     return (
       <aside className="detail-pane">
-        <h2>Review Detail</h2>
-        <p>Select a memory row to inspect the retrieved chunks beside the prompt that caused the recall.</p>
+        <h2>Turn Detail</h2>
+        <p>Click a bar in the chart or a response in the rail to inspect the turn.</p>
       </aside>
     )
   }
@@ -555,7 +521,7 @@ function DetailPane({ detail }: { detail: DetailState }) {
     return (
       <aside className="detail-pane">
         <h2>{detail.label}</h2>
-        <p>Loading detail.</p>
+        <p>Loading.</p>
       </aside>
     )
   }
@@ -563,8 +529,63 @@ function DetailPane({ detail }: { detail: DetailState }) {
   if (detail.kind === "error") {
     return (
       <aside className="detail-pane detail-error">
-        <h2>Detail Error</h2>
+        <h2>Error</h2>
         <p>{detail.text}</p>
+      </aside>
+    )
+  }
+
+  if (detail.kind === "turn") {
+    const { turn } = detail
+    return (
+      <aside className="detail-pane">
+        <h2>Turn #{turn.id}</h2>
+        <dl className="detail-meta">
+          {turn.model ? <div><dt>model</dt><dd>{turn.model}</dd></div> : null}
+          <div><dt>time</dt><dd>{timeLabel(turn.timestamp)}</dd></div>
+          {turn.usage ? (
+            <>
+              <div><dt>prompt</dt><dd>{formatNumber(turn.usage.prompt_tokens)} tok</dd></div>
+              <div><dt>completion</dt><dd>{formatNumber(turn.usage.completion_tokens)} tok</dd></div>
+            </>
+          ) : null}
+        </dl>
+
+        <section className="detail-section">
+          <h3>Prompt</h3>
+          <MarkdownBlock content={turn.promptText || "(no prompt)"} />
+        </section>
+
+        {turn.toolTraces.length > 0 ? (
+          <section className="detail-section">
+            <h3>Tool Calls ({turn.toolTraces.length})</h3>
+            <div className="tool-trace-list">
+              {turn.toolTraces.map((tool) => (
+                <article key={tool.id} className="tool-trace">
+                  <details>
+                    <summary>
+                      <span>{tool.name}</span>
+                      <small>{tool.id}</small>
+                    </summary>
+                    {tool.args ? <pre className="tool-args">{tool.args}</pre> : null}
+                    {tool.result !== undefined ? (
+                      <div className="tool-result">
+                        <MarkdownBlock content={toolResultMarkdown(tool.result)} />
+                      </div>
+                    ) : null}
+                  </details>
+                </article>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {turn.responseText ? (
+          <section className="detail-section">
+            <h3>Response</h3>
+            <MarkdownBlock content={turn.responseText} />
+          </section>
+        ) : null}
       </aside>
     )
   }
@@ -628,8 +649,7 @@ function BucketRail({
   onOpenMetric: (path: string) => void
 }) {
   const rows: Array<{ label: string; count: number; items: Array<MetricItem | DiscordMetric> }> = [
-    { label: "prompt_response", count: metrics.prompt_response.length, items: metrics.prompt_response.slice(0, 6) },
-    { label: "prompt", count: metrics.prompt.length, items: metrics.prompt.slice(0, 6) },
+    { label: "response", count: metrics.response.length, items: metrics.response.slice(0, 6) },
     { label: "summarization", count: metrics.summarization.length, items: metrics.summarization.slice(0, 6) },
     { label: "discord", count: metrics.discord.length, items: metrics.discord.slice(0, 6) },
   ]
@@ -647,15 +667,13 @@ function BucketRail({
               <button key={`${item.type}-${item.id}`} type="button" onClick={() => onOpenMetric(item.detailPath)}>
                 <span>{shortTime(item.timestamp)}</span>
                 <strong>
-                  {item.type === "prompt_response"
-                    ? item.responsePreview || `${item.model ?? "model"} response`
-                    : item.type === "prompt"
-                      ? item.lastUserMessage || "prompt"
-                      : item.type === "summarization"
-                        ? item.summaryPreview || item.method || "summary"
-                        : item.type === "discord"
-                          ? item.contentPreview || item.authorUsername || "discord"
-                          : item.type}
+                  {item.type === "response"
+                    ? item.responsePreview || `${item.model ?? "model"}`
+                    : item.type === "summarization"
+                      ? item.summaryPreview || item.method || "summary"
+                      : item.type === "discord"
+                        ? item.contentPreview || item.authorUsername || "discord"
+                        : item.type}
                 </strong>
               </button>
             ))}
@@ -674,8 +692,6 @@ export function MetricsWorkbench() {
   const [query, setQuery] = useState("")
   const [reviewOnly, setReviewOnly] = useState(false)
   const [detail, setDetail] = useState<DetailState>({ kind: "idle" })
-  const [toolPanel, setToolPanel] = useState<ToolPanelState>({ kind: "idle" })
-  const [toolSourcePath, setToolSourcePath] = useState<string | null>(null)
   const [live, setLive] = useState(true)
   const [lastUpdated, setLastUpdated] = useState<string | null>(null)
 
@@ -719,7 +735,7 @@ export function MetricsWorkbench() {
 
   const pairs = useMemo<MemoryPair[]>(() => {
     if (!metrics) return []
-    const prompts = [...metrics.prompt_response, ...metrics.prompt]
+    const prompts = [...metrics.response, ...metrics.prompt]
       .filter((prompt) => prompt.lastUserMessage)
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
 
@@ -734,61 +750,56 @@ export function MetricsWorkbench() {
     })
   }, [metrics])
 
-  const latestToolMetric = useMemo<PromptMetric | PromptResponseMetric | undefined>(() => {
-    if (!metrics) return undefined
-    return metrics.prompt_response[0] ?? metrics.prompt[0]
+  const latestPromptText = useMemo(() => {
+    return metrics?.response[0]?.lastUserMessage ?? undefined
   }, [metrics])
-
-  useEffect(() => {
-    if (!latestToolMetric) return
-    if (detail.kind === "memory") return
-    if (toolSourcePath === latestToolMetric.detailPath) return
-
-    const controller = new AbortController()
-    const label = latestToolMetric.type === "prompt_response" ? `response #${latestToolMetric.id}` : `prompt #${latestToolMetric.id}`
-    setToolPanel({ kind: "loading", label })
-
-    fetchJson<PromptDetail>(latestToolMetric.detailPath, controller.signal)
-      .then((prompt) => {
-        setToolPanel({ kind: "ready", label, traces: extractToolTraces(prompt) })
-        setToolSourcePath(latestToolMetric.detailPath)
-      })
-      .catch((err) => {
-        if (controller.signal.aborted) return
-        setToolPanel({ kind: "error", text: err instanceof Error ? err.message : String(err) })
-      })
-
-    return () => controller.abort()
-  }, [detail.kind, latestToolMetric, toolSourcePath])
 
   const selectedMemoryId = detail.kind === "memory" ? detail.memory.id : undefined
 
   const selectPair = useCallback(async (pair: MemoryPair) => {
     setDetail({ kind: "loading", label: `Recall #${pair.memory.id}` })
-    const toolLabel = pair.prompt
-      ? pair.prompt.type === "prompt_response"
-        ? `matched response #${pair.prompt.id}`
-        : `matched prompt #${pair.prompt.id}`
-      : `recall #${pair.memory.id}`
-    setToolPanel({ kind: "loading", label: toolLabel })
     try {
       const [memory, prompt] = await Promise.all([
         fetchJson<MemoryDetail>(pair.memory.detailPath),
         pair.prompt ? fetchJson<PromptDetail>(pair.prompt.detailPath) : Promise.resolve(undefined),
       ])
       setDetail({ kind: "memory", memory, prompt })
-      setToolPanel({ kind: "ready", label: toolLabel, traces: extractToolTraces(prompt) })
-      setToolSourcePath(pair.prompt?.detailPath ?? null)
     } catch (err) {
       setDetail({ kind: "error", text: err instanceof Error ? err.message : String(err) })
-      setToolPanel({ kind: "error", text: err instanceof Error ? err.message : String(err) })
     }
   }, [])
 
   const openMetric = useCallback(async (path: string) => {
-    setDetail({ kind: "loading", label: "Metric detail" })
+    setDetail({ kind: "loading", label: "Turn detail" })
     try {
-      setDetail({ kind: "metric", metric: await fetchJson<unknown>(path) })
+      const raw = await fetchJson<Record<string, unknown>>(path)
+      if (raw?.type === "prompt_response") {
+        const msgs = Array.isArray(raw.messages) ? (raw.messages as Message[]) : []
+        const response = raw.response as Message | undefined
+        const promptText = lastUserMessage(msgs)
+        const responseText = textContent(response?.content) || undefined
+        const fakeDetail: PromptDetail = {
+          id: raw.id as number,
+          type: "prompt_response",
+          timestamp: raw.timestamp as string,
+          messages: msgs,
+          response,
+        }
+        setDetail({
+          kind: "turn",
+          turn: {
+            id: raw.id as number,
+            timestamp: raw.timestamp as string,
+            model: typeof raw.model === "string" ? raw.model : undefined,
+            usage: raw.usage as Usage | undefined,
+            promptText: promptText || "(no prompt)",
+            responseText,
+            toolTraces: extractToolTraces(fakeDetail),
+          },
+        })
+      } else {
+        setDetail({ kind: "metric", metric: raw })
+      }
     } catch (err) {
       setDetail({ kind: "error", text: err instanceof Error ? err.message : String(err) })
     }
@@ -836,9 +847,9 @@ export function MetricsWorkbench() {
           <div className="metrics-main">
             <TokenTrace
               usage={metrics.usage}
-              promptResponses={metrics.prompt_response}
-              prompts={metrics.prompt}
+              responses={metrics.response}
               onOpenTurn={openMetric}
+              latestPromptText={latestPromptText}
             />
             <MemoryReview
               pairs={pairs}
@@ -847,7 +858,6 @@ export function MetricsWorkbench() {
               onReviewOnlyChange={setReviewOnly}
               onSelect={selectPair}
             />
-            <ToolTracePanel state={toolPanel} />
           </div>
           <div className="metrics-side">
             <DetailPane detail={detail} />

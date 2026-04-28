@@ -26,16 +26,17 @@ const DISCORD_BATCH_MAX_MESSAGES = Math.max(
   Math.min(200, parseInt(process.env.DISCORD_BATCH_MAX_MESSAGES ?? "40", 10) || 40),
 )
 const DISCORD_BATCH_SCAN = (process.env.DISCORD_BATCH_SCAN ?? "true").trim().toLowerCase() !== "false"
-const METRIC_LIST_TYPES = new Set<MetricListType>(["prompt_response", "summarization", "memory", "prompt", "usage", "discord"])
+const METRIC_LIST_TYPES = new Set<MetricListType>(["response", "summarization", "memory", "prompt", "usage", "discord"])
 const METRIC_TYPE_ALIASES: Record<string, MetricListType> = {
   compaction: "summarization",
   memory: "memory",
   memories: "memory",
   summary: "summarization",
   summaries: "summarization",
-  prompt_response: "prompt_response",
-  "prompt-response": "prompt_response",
-  completion: "prompt_response",
+  response: "response",
+  prompt_response: "response",
+  "prompt-response": "response",
+  completion: "response",
 }
 
 function parseMetricTypes(raw: string | undefined): MetricListType[] | undefined {
@@ -214,7 +215,7 @@ export function createServer() {
       to?: string
       cursor_memories?: string
       cursor_summarization?: string
-      cursor_prompt_response?: string
+      cursor_response?: string
       cursor_prompt?: string
       cursor_usage?: string
       cursor_discord?: string
@@ -225,7 +226,7 @@ export function createServer() {
       cursors: {
         memories: query.cursor_memories,
         summarization: query.cursor_summarization,
-        prompt_response: query.cursor_prompt_response,
+        response: query.cursor_response,
         prompt: query.cursor_prompt,
         usage: query.cursor_usage,
         discord: query.cursor_discord,

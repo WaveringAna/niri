@@ -427,6 +427,25 @@ button {
   background: #1c1a17;
 }
 
+.latest-prompt {
+  padding: 0.75rem 0.9rem;
+  border-top: 1px solid #34302a;
+}
+
+.latest-prompt small {
+  color: #aaa39a;
+  font-size: 0.76rem;
+  text-transform: uppercase;
+}
+
+.latest-prompt p {
+  margin: 0.35rem 0 0;
+  color: #d8d3ca;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .switch-row {
   display: flex;
   align-items: center;

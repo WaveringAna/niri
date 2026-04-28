@@ -506,6 +506,20 @@ function fullMessageText(value: unknown): string {
   return text.replace(/\n/g, "\n  ")
 }
 
+function formatHumanTimestamp(value: string | null | undefined): string {
+  if (!value) return "unknown time"
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  return parsed.toLocaleString("en-US", {
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZoneName: "short",
+  })
+}
+
 function formatBatchTimestamp(value: string | null | undefined): string {
   if (!value) return "unknown-time"
   const parsed = new Date(value)
@@ -779,6 +793,7 @@ export function listDiscordBackread(channelId: string, limit = 40, beforeMessage
   const replyByMessageId = buildReplyTargetContextMap(rows)
   return rows.map(({ raw_json: _rawJson, ...row }) => ({
     ...row,
+    created_at: formatHumanTimestamp(row.created_at as string | undefined),
     ...(replyByMessageId.has(row.message_id) ? { reply_to: replyByMessageId.get(row.message_id) } : {}),
   }))
 }

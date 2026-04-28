@@ -47,12 +47,12 @@ export interface UsageMetric extends BaseMetricEvent {
 
 export type MetricEvent = PromptMetric | PromptResponseMetric | MemoryMetric | CompactionMetric | UsageMetric
 
-export type MetricListType = "prompt_response" | "summarization" | "memory" | "prompt" | "usage" | "discord"
-export type MetricBucketName = "memories" | "summarization" | "prompt_response" | "prompt" | "usage" | "discord"
+export type MetricListType = "response" | "summarization" | "memory" | "prompt" | "usage" | "discord"
+export type MetricBucketName = "memories" | "summarization" | "response" | "prompt" | "usage" | "discord"
 
 export type MetricListItem =
   | (BaseMetricListItem & {
-      type: "prompt_response"
+      type: "response"
       promptMetricId?: number
       model?: string
       toolChoice?: string
@@ -122,7 +122,7 @@ export interface DiscordMetricListItem extends BaseMetricEvent {
 export interface MetricsPage {
   memories: MetricListItem[]
   summarization: MetricListItem[]
-  prompt_response: MetricListItem[]
+  response: MetricListItem[]
   prompt: MetricListItem[]
   usage: MetricListItem[]
   discord: DiscordMetricListItem[]
@@ -228,9 +228,9 @@ export function recordMetric(event: MetricEventInput): number | null {
 
 const DEFAULT_METRIC_LIMIT = 100
 const MAX_METRIC_LIMIT = 200
-const DEFAULT_LIST_TYPES: MetricListType[] = ["memory", "summarization", "prompt_response", "prompt", "usage", "discord"]
+const DEFAULT_LIST_TYPES: MetricListType[] = ["memory", "summarization", "response", "prompt", "usage", "discord"]
 const METRIC_TYPE_TO_SOURCE: Partial<Record<MetricListType, MetricEvent["type"]>> = {
-  prompt_response: "prompt_response",
+  response: "prompt_response",
   summarization: "compaction",
   memory: "memory",
   prompt: "prompt",
@@ -239,7 +239,7 @@ const METRIC_TYPE_TO_SOURCE: Partial<Record<MetricListType, MetricEvent["type"]>
 const METRIC_TYPE_TO_BUCKET: Record<MetricListType, MetricBucketName> = {
   memory: "memories",
   summarization: "summarization",
-  prompt_response: "prompt_response",
+  response: "response",
   prompt: "prompt",
   usage: "usage",
   discord: "discord",
@@ -307,7 +307,7 @@ function parseMetricRow(row: MetricRow): MetricListItem | null {
     const response = payload.response as OpenAI.Chat.ChatCompletionMessage | undefined
     return {
       ...base,
-      type: "prompt_response",
+      type: "response",
       promptMetricId: typeof payload.promptMetricId === "number" ? payload.promptMetricId : undefined,
       model: typeof payload.model === "string" ? payload.model : undefined,
       toolChoice: typeof payload.toolChoice === "string" ? payload.toolChoice : undefined,
@@ -537,7 +537,7 @@ export function getMetrics(query: MetricsQuery = {}): MetricsPage {
   return {
     memories: readMetricBucket("memory"),
     summarization: readMetricBucket("summarization"),
-    prompt_response: readMetricBucket("prompt_response"),
+    response: readMetricBucket("response"),
     prompt: readMetricBucket("prompt"),
     usage: readMetricBucket("usage"),
     discord: readDiscordBucket(),

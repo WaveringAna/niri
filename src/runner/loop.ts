@@ -102,6 +102,7 @@ type CompletionRequest = {
   tool_choice: "required" | "auto" | "none"
   include_reasoning?: boolean
   reasoning?: { enabled?: boolean; exclude?: boolean; effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" }
+  reasoning_effort?: "low" | "medium" | "high"
   provider?: { require_parameters?: boolean }
   enable_thinking?: boolean
   chat_template_kwargs?: { enable_thinking?: boolean }
@@ -319,6 +320,7 @@ async function consumeCompletionStream(
     }
   }
 
+  const bufferedThinking = reasoningParts.join("")
   const message: OpenAI.Chat.ChatCompletionMessage = {
     role: "assistant",
     content: contentParts.length > 0 ? contentParts.join("") : null,
@@ -330,14 +332,15 @@ async function consumeCompletionStream(
             .map(([, toolCall]) => toolCall),
         }
       : {}),
-  }
+    ...(bufferedThinking ? { reasoning_content: bufferedThinking } : {}),
+  } as OpenAI.Chat.ChatCompletionMessage
 
   return {
     message,
     usage,
     emittedText,
     emittedThinking,
-    bufferedThinking: reasoningParts.join(""),
+    bufferedThinking,
   }
 }
 
@@ -410,12 +413,24 @@ async function createFallbackCompletion(messages: OpenAI.Chat.ChatCompletionMess
   }
 }
 
+function normalizeReasoningMessages(
+  messages: OpenAI.Chat.ChatCompletionMessageParam[],
+): OpenAI.Chat.ChatCompletionMessageParam[] {
+  return messages.map((msg) => {
+    if (msg.role !== "assistant") return msg
+    const raw = msg as unknown as Record<string, unknown>
+    if ("reasoning_content" in raw) return msg
+    return { ...raw, reasoning_content: "" } as unknown as OpenAI.Chat.ChatCompletionMessageParam
+  })
+}
+
 async function createPrimaryCompletion(messages: OpenAI.Chat.ChatCompletionMessageParam[]): Promise<CompletionTurnResult> {
   const request: CompletionRequest = {
     model: MODEL,
-    messages,
+    messages: normalizeReasoningMessages(messages),
     tools: TOOLS,
     tool_choice: PRIMARY_TOOL_CHOICE,
+    reasoning_effort: "medium",
     ...openRouterToolRequestExtras(API_BASE),
   }
 
@@ -454,6 +469,9 @@ async function createPrimaryCompletion(messages: OpenAI.Chat.ChatCompletionMessa
  * @param msg - Assistant message to append.
  */
 function addAssistantMessage(convId: number, state: LoopState, msg: OpenAI.Chat.ChatCompletionMessage): void {
+  if ((msg.content === null || msg.content === undefined) && (!msg.tool_calls || msg.tool_calls.length === 0)) {
+    msg.content = ""
+  }
   state.conversation.push(msg)
   logMessage(convId, msg.role, msg.content ?? "", msg.tool_calls ?? undefined)
 }
@@ -904,14 +922,6 @@ function buildToolHandlers(): Record<string, ToolHandler> {
       return {}
     },
 
-    wait: async ({ convId, state, hooks, call, args }) => {
-      recordToolResult(convId, state, call, "wait", args, "Waiting for next event.")
-      console.log("[runner] niri is waiting for next event...")
-      const incoming = await hooks.waitForEvent()
-      hooks.injectIncomingEvent(convId, incoming)
-      return { isWait: true }
-    },
-
     rest: async ({ convId, state, hooks, call, args }) => {
       if (args.note) console.log("[runner] rest note:", args.note)
       recordToolResult(convId, state, call, "rest", args, "Goodnight.")
@@ -1143,15 +1153,11 @@ async function executeToolCall(
     return {}
   }
 
-  if ((call.function.name === "wait" || call.function.name === "rest") && latestAssistantContent(state).length === 0) {
-    // Some providers emit tool-only assistant turns with empty `content`.
-    // Don't block wait/rest in that case; log it for debugging instead.
-    console.warn(
-      `[runner] ${call.function.name} called with empty assistant content; allowing tool-only turn (provider emitted no text).`,
-    )
+  if (call.function.name === "rest" && latestAssistantContent(state).length === 0) {
+    console.warn(`[runner] rest called with empty assistant content; allowing tool-only turn (provider emitted no text).`)
   }
 
-  const isWaitTool = call.function.name === "wait" || call.function.name === "wait_then_continue"
+  const isWaitTool = call.function.name === "wait_then_continue"
   if (!isWaitTool) state.toolInFlight = true
 
   try {
@@ -1338,5 +1344,11 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
     }
 
     await hooks.saveSession()
+
+    if (outcome === CycleOutcome.NoTools) {
+      console.log("[runner] no tool call — waiting for next event...")
+      const incoming = await hooks.waitForEvent()
+      hooks.injectIncomingEvent(convId, incoming)
+    }
   }
 }
