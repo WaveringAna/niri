@@ -31,6 +31,9 @@ const parseBooleanEnv = (value: string | undefined, fallback: boolean): boolean 
   if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") return false
   return fallback
 }
+
+/** Controls whether model reasoning/thinking is requested and streamed to clients. */
+export const ENABLE_THINKING = parseBooleanEnv(process.env.ENABLE_THINKING, true)
 const parseToolChoiceEnv = (value: string | undefined, fallback: "required" | "auto" | "none"): "required" | "auto" | "none" => {
   if (typeof value !== "string") return fallback
   const normalized = value.trim().toLowerCase()
@@ -123,6 +126,7 @@ console.log(`[config] primary=${MODEL} @ ${API_BASE}`)
 console.log(`[config] fallback=${FALLBACK_MODEL} @ ${FALLBACK_BASE}`)
 if (summaryClient) console.log(`[config] summary=${SUMMARY_MODEL} @ ${SUMMARY_BASE}`)
 console.log(`[config] env=${NIRI_ENV} use_fallback=${USE_FALLBACK}`)
+console.log(`[config] thinking=${ENABLE_THINKING}`)
 
 const IMAGE_ROOT_HINT = imageRootForModelInput()
 

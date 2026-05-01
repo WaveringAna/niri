@@ -54,6 +54,10 @@ let showAllTools = false
 let showThinking = false
 let activeStreamKind: "text" | "thinking" | null = null
 let activeStreamMuted = false
+let streamSettleTimer: ReturnType<typeof setTimeout> | null = null
+let streamStatusCheckInFlight = false
+
+const STREAM_SETTLE_CHECK_MS = 250
 
 const print = (line: string) => {
   endActiveStream()
@@ -90,15 +94,46 @@ const appendActiveStream = (kind: "text" | "thinking", chunk: string) => {
 }
 
 function endActiveStream(): void {
+  if (streamSettleTimer) {
+    clearTimeout(streamSettleTimer)
+    streamSettleTimer = null
+  }
+
   if (!activeStreamKind) return
+
   process.stdout.write("\n")
   activeStreamKind = null
   activeStreamMuted = false
+  rl.resume()
+  rl.prompt(true)
+}
+
+const scheduleStreamSettleCheck = () => {
+  if (streamSettleTimer) clearTimeout(streamSettleTimer)
+
+  streamSettleTimer = setTimeout(async () => {
+    if (!activeStreamKind || streamStatusCheckInFlight) return
+
+    streamStatusCheckInFlight = true
+    try {
+      const status = await client.getStatus()
+      if (!status.running) {
+        endActiveStream()
+      } else {
+        scheduleStreamSettleCheck()
+      }
+    } catch {
+      scheduleStreamSettleCheck()
+    } finally {
+      streamStatusCheckInFlight = false
+    }
+  }, STREAM_SETTLE_CHECK_MS)
 }
 
 const handleStreamEvent = (event: StreamEvent) => {
   if (event.type === "thinking") {
     appendActiveStream("thinking", event.text)
+    scheduleStreamSettleCheck()
     return
   }
 
@@ -122,6 +157,7 @@ const handleStreamEvent = (event: StreamEvent) => {
   }
 
   appendActiveStream("text", event.text)
+  scheduleStreamSettleCheck()
 }
 
 const rl = readline.createInterface({
