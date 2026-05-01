@@ -13,6 +13,7 @@
     "start:local": "NIRI_ENV=local dotenv -- tsx src/index.ts",
     "dev": "dotenv -- tsx watch src/index.ts",
     "dev:local": "NIRI_ENV=local dotenv -- tsx watch src/index.ts",
+    "test": "node --import tsx --test src/**/*.test.ts",
     "chat": "dotenv -- tsx scripts/chat.ts",
     "chat:local": "NIRI_ENV=local dotenv -- tsx scripts/chat.ts",
     "dev:web": "npm run dev --workspace @niri/web",

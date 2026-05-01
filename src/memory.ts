@@ -15,10 +15,11 @@ const CORE_FILE = path.join(MEMORIES_DIR, "core.md")
 const MEMORY_RECALL_HEADER = "[memory recall v1]"
 const MEMORY_RECALL_NOTE =
   "Potentially relevant long-term notes. Use only if helpful; trust newer conversation details if anything conflicts."
-const MEMORY_RECALL_MAX_CHUNKS = 3
-const MEMORY_RECALL_MAX_CHARS = 1_100
-const MEMORY_QUERY_TOKEN_LIMIT = 8
+const MEMORY_RECALL_MAX_CHUNKS = 4
+const MEMORY_RECALL_MAX_CHARS = 1_500
+const MEMORY_QUERY_TOKEN_LIMIT = 12
 const MEMORY_RECALL_COOLDOWN_TURNS = 7
+const SCHEDULED_HEARTBEAT_CONTENT = "Scheduled heartbeat."
 const MEMORY_STOP_WORDS = new Set([
   "a",
   "an",
@@ -291,21 +292,25 @@ function isCoolingDown(hit: MemoryHit, cooldowns: Record<number, number>, curren
   return currentTurn - lastTurn < memoryRecallCooldownTurns(hit.kind)
 }
 
-function latestUserMessage(conversation: Message[]): string | null {
-  const last = conversation[conversation.length - 1]
-  if (!last || last.role !== "user") return null
-  if (typeof last.content !== "string") return null
-  if (last.content.startsWith(MEMORY_RECALL_HEADER)) return null
-  if (last.content.startsWith("[system]")) return null
-  if (
-    last.content.includes("[discord batch]") ||
-    last.content.includes("scan snapshot:") ||
-    last.content.includes("recent messages:") ||
-    last.content.includes("pending preview:")
-  ) {
-    return null
+function isMemoryRecallSkippedMessage(content: string): boolean {
+  if (content.startsWith(MEMORY_RECALL_HEADER)) return true
+  if (content.startsWith("[system]")) return true
+  if (content.includes("scan snapshot:") && !content.includes("[discord batch]")) return true
+  return false
+}
+
+function latestMemoryRecallQuery(conversation: Message[]): string | null {
+  for (let i = conversation.length - 1; i >= 0; i -= 1) {
+    const message = conversation[i]
+    if (!message || message.role !== "user") continue
+    if (typeof message.content !== "string") continue
+
+    const content = message.content.trim()
+    if (!content || isMemoryRecallSkippedMessage(content)) continue
+    if (content === SCHEDULED_HEARTBEAT_CONTENT) continue
+    return content
   }
-  return last.content
+  return null
 }
 
 function discordChannelLabel(channelId: string | null, fallbackContext: string | null, isDm: boolean): string {
@@ -376,8 +381,37 @@ function conciseDiscordMemoryQuery(raw: string): string | null {
   return parts.length ? parts.join("\n") : null
 }
 
+function extractBulletSection(raw: string, label: string): string[] {
+  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const match = raw.match(new RegExp(`(?:^|\\n)${escapedLabel}:\\n([\\s\\S]*?)(?:\\n\\n[^\\n:]+:|$)`, "i"))
+  if (!match) return []
+
+  return match[1]
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("- "))
+    .map((line) => line.slice(2).trim())
+    .filter((line) => line && line !== "(none)")
+}
+
+function conciseDiscordBatchMemoryQuery(raw: string): string | null {
+  const withoutWakeEnvelope = raw.replace(/^\[(wake|incoming|harness restarted)[^\n]*\]\s*/gi, "").trim()
+  if (!/\[discord batch\]/i.test(withoutWakeEnvelope)) return null
+
+  const recent = extractBulletSection(withoutWakeEnvelope, "recent messages")
+  const pending = extractBulletSection(withoutWakeEnvelope, "pending preview")
+  const selected = (recent.length > 0 ? recent : pending).slice(-3)
+  if (selected.length === 0) return null
+
+  const normalized = selected.map((entry) =>
+    entry.replace(/^\[([^\]]+)\]\s+\[[^\]]+\]\s+@([^:]+):\s*/i, "@$2 $1 ").trim(),
+  )
+
+  return normalized.join("\n")
+}
+
 function memoryQueryForUserMessage(raw: string): string {
-  return conciseDiscordMemoryQuery(raw) ?? raw
+  return conciseDiscordMemoryQuery(raw) ?? conciseDiscordBatchMemoryQuery(raw) ?? raw
 }
 
 function normalizeSearchInput(raw: string): string {
@@ -706,9 +740,9 @@ export async function buildCompletionMessages(
   cooldowns: Record<number, number>,
   currentTurn: number,
 ): Promise<{ messages: Message[]; recalledChunkIds: number[] }> {
-  const latestUser = latestUserMessage(conversation)
-  if (!latestUser) return { messages: conversation, recalledChunkIds: [] }
-  const memoryQuery = memoryQueryForUserMessage(latestUser)
+  const memoryQuerySource = latestMemoryRecallQuery(conversation)
+  if (!memoryQuerySource) return { messages: conversation, recalledChunkIds: [] }
+  const memoryQuery = memoryQueryForUserMessage(memoryQuerySource)
 
   await syncMemoryIndex()
 
@@ -759,6 +793,13 @@ export function rememberRecalledMemoryChunks(
   }
 
   return next
+}
+
+export const __memoryTest = {
+  latestMemoryRecallQuery,
+  memoryQueryForUserMessage,
+  normalizeSearchInput,
+  searchTokens,
 }
 
 export async function searchMemories(rawQuery: string, limit = 5): Promise<MemorySearchResult[]> {
