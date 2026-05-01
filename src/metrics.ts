@@ -158,6 +158,38 @@ const DB_PATH = path.join(HOME_DIR, "metrics.db")
 let db: Database.Database
 const events: (MetricEvent & { id: number })[] = []
 const MAX_IN_MEMORY = 100
+const DEFAULT_METRICS_RETENTION_DAYS = 3
+const METRICS_PRUNE_INTERVAL_MS = 60 * 60_000
+
+let pruneTimer: ReturnType<typeof setInterval> | null = null
+
+function metricsRetentionDays(): number {
+  const parsed = Number(process.env.METRICS_RETENTION_DAYS ?? DEFAULT_METRICS_RETENTION_DAYS)
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_METRICS_RETENTION_DAYS
+  return parsed
+}
+
+function metricsRetentionCutoff(days = metricsRetentionDays()): string {
+  return new Date(Date.now() - days * 24 * 60 * 60_000).toISOString()
+}
+
+export function pruneOldMetrics(days = metricsRetentionDays()): number {
+  if (!db) return 0
+
+  const cutoff = metricsRetentionCutoff(days)
+  try {
+    const result = db.prepare("delete from metrics where createdAt < ?").run(cutoff)
+    const deleted = result.changes
+    if (deleted > 0) {
+      console.log(`[metrics] pruned ${deleted} rows older than ${days} days`)
+      db.pragma("wal_checkpoint(PASSIVE)")
+    }
+    return deleted
+  } catch (err) {
+    console.error("[metrics] failed to prune old metrics:", err)
+    return 0
+  }
+}
 
 export function initMetricsDb(): void {
   try {
@@ -202,6 +234,13 @@ export function initMetricsDb(): void {
     create index if not exists idx_metrics_created on metrics(createdAt desc);
     create index if not exists idx_metrics_type_id on metrics(type, id desc);
   `)
+  pruneOldMetrics()
+  if (!pruneTimer) {
+    pruneTimer = setInterval(() => {
+      pruneOldMetrics()
+    }, METRICS_PRUNE_INTERVAL_MS)
+    if (typeof pruneTimer.unref === "function") pruneTimer.unref()
+  }
   console.log("[metrics] ready")
 }
 
