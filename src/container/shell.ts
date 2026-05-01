@@ -161,8 +161,8 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
       }
     })
 
-    // Wrap command in a { } group. By default we redirect stdin from /dev/null
-    // so accidental interactive reads do not hang forever.
+    // Wrap command in a { } group. When requested, redirect stdin from
+    // /dev/null so accidental interactive reads do not hang forever.
     // The closing } is on its own line so heredocs inside the command still
     // get their correct delimiter line.
     const groupedCommand = redirectStdinToDevNull ? `{ ${command}\n} < /dev/null` : `{ ${command}\n}`
@@ -174,6 +174,12 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
       settled = true
       dataDisposable.dispose()
       session.write("\x03\n")
+      // After a timeout we no longer know whether bash consumed Ctrl+C,
+      // returned to a prompt, or still has a foreground process attached.
+      // Reuse would interleave the next command with a potentially poisoned
+      // PTY, so force a fresh docker exec session next time.
+      session.kill()
+      if (bash === session) bash = null
       reject(new Error(`Command timed out after ${timeoutMs}ms: ${command}`))
     }, timeoutMs)
   })
