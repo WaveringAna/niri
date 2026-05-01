@@ -616,7 +616,6 @@ function memoryQueryForUserMessage(raw: string): MemoryQueryParts {
 function memoryQueryToString(parts: MemoryQueryParts): string {
   const pieces = [
     parts.sender ? `@${parts.sender}` : null,
-    parts.source,
     parts.body || null,
   ].filter((value): value is string => Boolean(value && value.trim()))
   return pieces.join("\n")
