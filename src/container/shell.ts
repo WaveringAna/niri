@@ -17,7 +17,7 @@ function cleanOutput(str: string): string {
     .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "") // CSI sequences (colors, cursor, etc.)
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "") // OSC sequences (title, etc.)
     .replace(/\x1b[^[\]]/g, "") // other 2-char ESC sequences
-    .replace(/\^C\s*/g, "") // Ctrl+C echo after interrupt
+    .replace(/(?:\x03|\^C)\s*/g, "") // Ctrl+C echo after interrupt
     .replace(/\r\n/g, "\n") // CRLF -> LF
     .replace(/\r/g, "\n") // stray CR -> LF
     .replace(/\x00/g, "") // null bytes
