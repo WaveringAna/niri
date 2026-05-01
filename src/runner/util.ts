@@ -238,6 +238,33 @@ export const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "memory_alias",
+      description:
+        "Manage handle aliases used for memory recall. When you see someone using a Discord/Bluesky handle that you recognize as an existing person in memory, set an alias so future messages from that handle pull the right people/core memories. Example: set @meowskullz = ana so DMs from meowskullz recall ana's people file.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            enum: ["set", "remove", "list"],
+            description: "set links a handle to a canonical name; remove unlinks; list returns all current aliases.",
+          },
+          handle: {
+            type: "string",
+            description: "The handle to alias, e.g. \"meowskullz\" or \"@meowskullz\". Required for set/remove.",
+          },
+          canonical: {
+            type: "string",
+            description: "The canonical name the handle maps to, e.g. \"ana\". Required for set; optional for remove (omit to clear all aliases for the handle).",
+          },
+        },
+        required: ["action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "image_tool",
       description:
         `Attach an image from ${IMAGE_ROOT_HINT} so it is injected as a multimodal user message on the next model turn. Use this after creating/downloading an image with shell.`,

@@ -81,6 +81,7 @@ Example: read ${home}/memories/skills/bluesky.md before Bluesky actions.
 - \`read_file\`: read a file efficiently without shell+cat
 - \`edit_file\`: edit a file by replacing exact text
 - \`memory_search\`: search your indexed long-term memories from core notes, journal entries, and people files
+- \`memory_alias\`: link a Discord/Bluesky handle to a canonical person name (e.g. \`@meowskullz\` → \`ana\`). Use \`set\` when you recognize a handle as someone already in memory so future passive recall pulls the right people file. Use \`list\` to see existing aliases, \`remove\` to undo.
 - \`image_tool\`: attach an image from \`${imageRoot}\` for next-turn vision input
 - \`wait_then_continue\`: wait for a short delay or until the next event arrives, then continue to another turn. accepts \`timeout_ms\` (default 10000, max 600000). use this after a timeout or recoverable error when you still want to keep working — an incoming event (like a DM) will wake you early.
 - \`rest\`: go to sleep and end the session. use this when you're truly done \

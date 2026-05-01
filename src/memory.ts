@@ -11,12 +11,15 @@ const MEMORIES_DIR = path.join(HOME_DIR, "memories")
 const JOURNAL_DIR = path.join(MEMORIES_DIR, "journal")
 const PEOPLE_DIR = path.join(MEMORIES_DIR, "people")
 const CORE_FILE = path.join(MEMORIES_DIR, "core.md")
+const ALIASES_FILE = path.join(MEMORIES_DIR, "aliases.json")
 
 const MEMORY_RECALL_HEADER = "[memory recall v1]"
 const MEMORY_RECALL_NOTE =
   "Potentially relevant long-term notes. Use only if helpful; trust newer conversation details if anything conflicts."
 const MEMORY_RECALL_MAX_CHUNKS = 4
+const MEMORY_RECALL_MAX_CHUNKS_HARD_CAP = 8
 const MEMORY_RECALL_MAX_CHARS = 1_500
+const MEMORY_RECALL_PER_EXTRA_PERSON_CHARS = 400
 const MEMORY_QUERY_TOKEN_LIMIT = 12
 const MEMORY_RECALL_COOLDOWN_TURNS = 7
 const SCHEDULED_HEARTBEAT_CONTENT = "Scheduled heartbeat."
@@ -112,8 +115,18 @@ export type MemorySearchResult = {
   preview: string
 }
 
+type MemoryQueryParts = {
+  sender: string | null
+  source: string | null
+  body: string
+}
+
 type MemorySearchProfile = {
   normalized: string
+  sender: string | null
+  senderAliases: string[]
+  bodyTokens: string[]
+  bodyPeople: string[]
   tokens: string[]
   personQuery: boolean
   eventQuery: boolean
@@ -122,7 +135,11 @@ type MemorySearchProfile = {
 type MemoryHitSignal = {
   overlap: number
   strongOverlap: boolean
+  bodyOverlap: number
+  senderMatch: boolean
 }
+
+export type AliasMap = Record<string, string[]>
 
 function normalizeText(value: string): string {
   return value.replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim()
@@ -157,6 +174,97 @@ async function pathExists(target: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+function normalizeHandle(handle: string): string {
+  return handle.trim().replace(/^@+/, "").toLowerCase()
+}
+
+let aliasCache: { mtimeMs: number; map: AliasMap } | null = null
+
+async function loadAliasMap(): Promise<AliasMap> {
+  try {
+    const stat = await fs.stat(ALIASES_FILE)
+    if (aliasCache && aliasCache.mtimeMs === stat.mtimeMs) return aliasCache.map
+    const raw = await fs.readFile(ALIASES_FILE, "utf-8")
+    const parsed = JSON.parse(raw) as unknown
+    const map: AliasMap = {}
+    if (parsed && typeof parsed === "object") {
+      for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+        const handle = normalizeHandle(key)
+        if (!handle) continue
+        const list = Array.isArray(value) ? value : [value]
+        const aliases = list
+          .map((v) => (typeof v === "string" ? normalizeHandle(v) : ""))
+          .filter((v) => v && v !== handle)
+        if (aliases.length > 0) map[handle] = Array.from(new Set(aliases))
+      }
+    }
+    aliasCache = { mtimeMs: stat.mtimeMs, map }
+    return map
+  } catch {
+    aliasCache = { mtimeMs: 0, map: {} }
+    return {}
+  }
+}
+
+async function writeAliasMap(map: AliasMap): Promise<void> {
+  await fs.mkdir(MEMORIES_DIR, { recursive: true })
+  const sorted: AliasMap = {}
+  for (const key of Object.keys(map).sort()) sorted[key] = [...map[key]!].sort()
+  await fs.writeFile(ALIASES_FILE, `${JSON.stringify(sorted, null, 2)}\n`, "utf-8")
+  aliasCache = null
+}
+
+function resolveAliases(handle: string | null, map: AliasMap): string[] {
+  if (!handle) return []
+  const seen = new Set<string>([handle])
+  const out: string[] = []
+  const queue = [handle]
+  while (queue.length > 0) {
+    const current = queue.shift()!
+    const next = map[current] ?? []
+    for (const alias of next) {
+      if (seen.has(alias)) continue
+      seen.add(alias)
+      out.push(alias)
+      queue.push(alias)
+    }
+  }
+  return out
+}
+
+export async function listAliases(): Promise<AliasMap> {
+  return loadAliasMap()
+}
+
+export async function setAlias(handle: string, canonical: string): Promise<AliasMap> {
+  const h = normalizeHandle(handle)
+  const c = normalizeHandle(canonical)
+  if (!h || !c) throw new Error("alias handle and canonical must be non-empty")
+  const map = await loadAliasMap()
+  if (h === c) return map
+  const existing = new Set(map[h] ?? [])
+  existing.add(c)
+  map[h] = Array.from(existing)
+  await writeAliasMap(map)
+  return map
+}
+
+export async function removeAlias(handle: string, canonical?: string): Promise<AliasMap> {
+  const h = normalizeHandle(handle)
+  if (!h) throw new Error("alias handle must be non-empty")
+  const map = await loadAliasMap()
+  if (!map[h]) return map
+  if (canonical) {
+    const c = normalizeHandle(canonical)
+    map[h] = map[h]!.filter((entry) => entry !== c)
+    if (map[h]!.length === 0) delete map[h]
+  } else {
+    delete map[h]
+  }
+  await writeAliasMap(map)
+  return map
 }
 
 async function walkMarkdownFiles(root: string): Promise<string[]> {
@@ -350,7 +458,7 @@ function discordChannelLabel(channelId: string | null, fallbackContext: string |
   return channelId ? `#${channelId}` : "channel"
 }
 
-function conciseDiscordMemoryQuery(raw: string): string | null {
+function conciseDiscordMemoryQuery(raw: string): MemoryQueryParts | null {
   const withoutWakeEnvelope = raw.replace(/^\[(wake|incoming|harness restarted)[^\n]*\]\s*/gi, "").trim()
   if (!/\[discord\/(?:dm|channel)\]/i.test(withoutWakeEnvelope)) return null
 
@@ -365,20 +473,19 @@ function conciseDiscordMemoryQuery(raw: string): string | null {
   const discordLine = lines.find((line) => /^\[discord\/(?:dm|channel)\]/i.test(line)) ?? ""
   const contextLine = lines.find((line) => /^context:\s*/i.test(line)) ?? null
   const isDm = /\[discord\/dm\]/i.test(discordLine)
-  const author = discordLine.match(/@(\S+)/)?.[1]
+  const author = discordLine.match(/@(\S+)/)?.[1] ?? null
   const context = contextLine?.replace(/^context:\s*/i, "").trim() ?? ""
   const dmChannelId = context.match(/^DM\s+(\d+)/i)?.[1] ?? null
   const namedChannelId = context.match(/\((\d+)\)\s*$/)?.[1] ?? null
   const channelId = dmChannelId ?? namedChannelId
   const location = discordChannelLabel(channelId, contextLine, isDm)
 
-  const parts = [
-    author ? `@${author}` : null,
-    location,
-    message || null,
-  ].filter((part): part is string => Boolean(part?.trim()))
-
-  return parts.length ? parts.join("\n") : null
+  if (!author && !location && !message) return null
+  return {
+    sender: author ? normalizeHandle(author) : null,
+    source: location || null,
+    body: message,
+  }
 }
 
 function extractBulletSection(raw: string, label: string): string[] {
@@ -394,7 +501,7 @@ function extractBulletSection(raw: string, label: string): string[] {
     .filter((line) => line && line !== "(none)")
 }
 
-function conciseDiscordBatchMemoryQuery(raw: string): string | null {
+function conciseDiscordBatchMemoryQuery(raw: string): MemoryQueryParts | null {
   const withoutWakeEnvelope = raw.replace(/^\[(wake|incoming|harness restarted)[^\n]*\]\s*/gi, "").trim()
   if (!/\[discord batch\]/i.test(withoutWakeEnvelope)) return null
 
@@ -403,30 +510,49 @@ function conciseDiscordBatchMemoryQuery(raw: string): string | null {
   const selected = (recent.length > 0 ? recent : pending).slice(-3)
   if (selected.length === 0) return null
 
-  const normalized = selected.map((entry) =>
-    entry.replace(/^\[([^\]]+)\]\s+\[[^\]]+\]\s+@([^:]+):\s*/i, "@$2 $1 ").trim(),
+  const senders: string[] = []
+  const sources: string[] = []
+  const bodies: string[] = []
+  const entryPattern = /^\[([^\]]+)\]\s+\[[^\]]+\]\s+@([^:]+):\s*(.*)$/i
+  for (const entry of selected) {
+    const match = entry.match(entryPattern)
+    if (!match) {
+      bodies.push(entry)
+      continue
+    }
+    const [, location, author, body] = match
+    if (author) senders.push(normalizeHandle(author))
+    if (location) sources.push(location.trim())
+    if (body) bodies.push(body.trim())
+  }
+
+  const lastSender = senders.length > 0 ? senders[senders.length - 1]! : null
+  const lastSource = sources.length > 0 ? sources[sources.length - 1]! : null
+  const body = bodies.filter(Boolean).join("\n").trim()
+
+  if (!lastSender && !lastSource && !body) return null
+  return { sender: lastSender, source: lastSource, body }
+}
+
+function memoryQueryForUserMessage(raw: string): MemoryQueryParts {
+  return (
+    conciseDiscordMemoryQuery(raw) ??
+    conciseDiscordBatchMemoryQuery(raw) ??
+    { sender: null, source: null, body: raw }
   )
-
-  return normalized.join("\n")
 }
 
-function memoryQueryForUserMessage(raw: string): string {
-  return conciseDiscordMemoryQuery(raw) ?? conciseDiscordBatchMemoryQuery(raw) ?? raw
+function memoryQueryToString(parts: MemoryQueryParts): string {
+  const pieces = [
+    parts.sender ? `@${parts.sender}` : null,
+    parts.source,
+    parts.body || null,
+  ].filter((value): value is string => Boolean(value && value.trim()))
+  return pieces.join("\n")
 }
 
-function normalizeSearchInput(raw: string): string {
-  const withoutWakeEnvelope = raw.replace(/^\[(wake|incoming|harness restarted)[^\n]*\]\s*/gi, "").trim()
-
-  const blocks = withoutWakeEnvelope
-    .split(/\n\s*\n/g)
-    .map((block) => block.trim())
-    .filter(Boolean)
-
-  const bodyCandidate = blocks.length > 0 ? blocks[blocks.length - 1]! : withoutWakeEnvelope
-
-  return bodyCandidate
-    .replace(/^\[discord\/[^\]]+\]\s*@\S+\s+in\s+\d+(?:\s+\(\d+\))?\s*/gi, "")
-    .replace(/^\[[^\]]+\]\s*/g, "")
+function normalizeBodyText(raw: string): string {
+  return raw
     .replace(/@([a-z0-9_.-]+)/gi, " $1 ")
     .replace(/\b\d{6,}\b/g, " ")
     .replace(/[^\p{L}\p{N}\s'-]+/gu, " ")
@@ -434,9 +560,8 @@ function normalizeSearchInput(raw: string): string {
     .trim()
 }
 
-function searchTokens(raw: string): string[] {
-  const clean = normalizeSearchInput(raw)
-
+function tokensFromText(raw: string): string[] {
+  const clean = normalizeBodyText(raw)
   const tokens = clean
     .split(/\s+/)
     .map((token) => token.replace(/^['-]+|['-]+$/g, ""))
@@ -451,18 +576,83 @@ function searchTokens(raw: string): string[] {
     unique.push(token)
     if (unique.length >= MEMORY_QUERY_TOKEN_LIMIT) break
   }
-
   return unique
 }
 
-function buildSearchProfile(raw: string): MemorySearchProfile {
-  const normalized = normalizeSearchInput(raw)
-  const tokens = searchTokens(raw)
+function searchTokens(raw: string): string[] {
+  return tokensFromText(raw)
+}
+
+async function knownPeopleHandles(aliasMap: AliasMap): Promise<Set<string>> {
+  const handles = new Set<string>()
+  if (await pathExists(PEOPLE_DIR)) {
+    const entries = await fs.readdir(PEOPLE_DIR, { withFileTypes: true })
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue
+      const base = basenameWithoutExt(entry.name).toLowerCase()
+      if (base) handles.add(base)
+    }
+  }
+  for (const [key, values] of Object.entries(aliasMap)) {
+    handles.add(key)
+    for (const value of values) handles.add(value)
+  }
+  return handles
+}
+
+async function buildSearchProfile(parts: MemoryQueryParts): Promise<MemorySearchProfile> {
+  const aliasMap = await loadAliasMap()
+  const sender = parts.sender ? normalizeHandle(parts.sender) : null
+  const senderAliases = resolveAliases(sender, aliasMap)
+  const bodyTokens = parts.body ? tokensFromText(parts.body) : []
+
+  const known = await knownPeopleHandles(aliasMap)
+  const inlineMentions = parts.body
+    ? Array.from(parts.body.matchAll(/@([a-z0-9_.-]+)/gi)).map((match) => normalizeHandle(match[1]!))
+    : []
+  const bodyPeopleSet = new Set<string>()
+  const senderSet = new Set<string>([sender ?? "", ...senderAliases].filter(Boolean))
+  for (const token of [...bodyTokens, ...inlineMentions]) {
+    if (!token || senderSet.has(token)) continue
+    if (known.has(token)) bodyPeopleSet.add(token)
+  }
+  const bodyPeople = Array.from(bodyPeopleSet)
+  for (const person of [...bodyPeople]) {
+    for (const alias of resolveAliases(person, aliasMap)) {
+      if (!senderSet.has(alias)) bodyPeopleSet.add(alias)
+    }
+  }
+  const bodyPeopleResolved = Array.from(bodyPeopleSet)
+
+  const combined: string[] = []
+  const seen = new Set<string>()
+  const push = (value: string | null | undefined) => {
+    if (!value) return
+    const lower = value.toLowerCase()
+    if (seen.has(lower)) return
+    seen.add(lower)
+    combined.push(lower)
+  }
+  push(sender)
+  for (const alias of senderAliases) push(alias)
+  for (const person of bodyPeopleResolved) push(person)
+  for (const token of bodyTokens) push(token)
+
+  const normalized = [sender ? `@${sender}` : "", parts.source ?? "", parts.body ?? ""]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
 
   return {
     normalized,
-    tokens,
+    sender,
+    senderAliases,
+    bodyTokens,
+    bodyPeople: bodyPeopleResolved,
+    tokens: combined.slice(0, MEMORY_QUERY_TOKEN_LIMIT),
     personQuery:
+      Boolean(sender) ||
+      bodyPeopleResolved.length > 0 ||
       /\b(who is|who's|tell me about|about)\b/.test(normalized) ||
       /\bname\b/.test(normalized) ||
       /\bfriend\b/.test(normalized),
@@ -583,6 +773,30 @@ export async function syncMemoryIndex(): Promise<void> {
   }
 }
 
+function senderHandles(profile: MemorySearchProfile): string[] {
+  const out: string[] = []
+  if (profile.sender) out.push(profile.sender)
+  for (const alias of profile.senderAliases) out.push(alias)
+  return out
+}
+
+function allPersonHandles(profile: MemorySearchProfile): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const handle of [...senderHandles(profile), ...profile.bodyPeople]) {
+    if (!handle || seen.has(handle)) continue
+    seen.add(handle)
+    out.push(handle)
+  }
+  return out
+}
+
+function hitMatchesHandle(hit: MemoryHit, handle: string): boolean {
+  const titleHaystack = `${hit.documentTitle} ${hit.title} ${hit.headingPath ?? ""} ${basenameWithoutExt(hit.path)}`.toLowerCase()
+  const pathHaystack = hit.path.toLowerCase()
+  return titleHaystack.includes(handle) || pathHaystack.includes(`/${handle}.md`)
+}
+
 function scoreMemoryHit(hit: MemoryHit, profile: MemorySearchProfile): number {
   let score = hit.rank
 
@@ -600,7 +814,18 @@ function scoreMemoryHit(hit: MemoryHit, profile: MemorySearchProfile): number {
   }
 
   const titleHaystack = `${hit.documentTitle} ${hit.title} ${hit.headingPath ?? ""} ${basenameWithoutExt(hit.path)}`.toLowerCase()
-  if (profile.tokens.some((token) => titleHaystack.includes(token))) score -= 0.35
+  if (profile.bodyTokens.some((token) => titleHaystack.includes(token))) score -= 0.35
+
+  const handles = allPersonHandles(profile)
+  if (handles.length > 0) {
+    const fullHaystack = `${titleHaystack} ${hit.text.toLowerCase()}`
+    const pathHaystack = hit.path.toLowerCase()
+    if (handles.some((h) => titleHaystack.includes(h) || pathHaystack.includes(`/${h}.md`))) {
+      score -= 3
+    } else if (handles.some((h) => fullHaystack.includes(h))) {
+      score -= 1
+    }
+  }
 
   return score
 }
@@ -613,14 +838,25 @@ function memoryHitSignal(hit: MemoryHit, profile: MemorySearchProfile): MemoryHi
   const haystack = hitSearchHaystack(hit)
   let overlap = 0
   let strongOverlap = false
+  let bodyOverlap = 0
 
   for (const token of profile.tokens) {
     if (!haystack.includes(token)) continue
     overlap += 1
     if (token.length >= 5 || /[0-9]/.test(token)) strongOverlap = true
   }
+  for (const token of profile.bodyTokens) {
+    if (haystack.includes(token)) bodyOverlap += 1
+  }
 
-  return { overlap, strongOverlap }
+  const handles = allPersonHandles(profile)
+  const titleHaystack = `${hit.documentTitle} ${hit.title} ${hit.headingPath ?? ""} ${basenameWithoutExt(hit.path)}`.toLowerCase()
+  const pathHaystack = hit.path.toLowerCase()
+  const senderMatch =
+    handles.length > 0 &&
+    handles.some((h) => titleHaystack.includes(h) || pathHaystack.includes(`/${h}.md`) || haystack.includes(h))
+
+  return { overlap, strongOverlap, bodyOverlap, senderMatch }
 }
 
 function shouldInjectHits(hits: MemoryHit[], profile: MemorySearchProfile): boolean {
@@ -628,16 +864,24 @@ function shouldInjectHits(hits: MemoryHit[], profile: MemorySearchProfile): bool
 
   const topSignal = memoryHitSignal(hits[0]!, profile)
 
-  if (profile.personQuery && !profile.eventQuery) {
-    return topSignal.overlap >= 1 && hits.some((hit) => hit.kind === "people" || hit.kind === "core")
+  if (profile.sender || profile.bodyPeople.length > 0) {
+    if (topSignal.senderMatch) return true
+    if (topSignal.bodyOverlap >= 2) return true
+    if (topSignal.bodyOverlap >= 1 && topSignal.strongOverlap) return true
+    return false
   }
 
   if (profile.eventQuery && !profile.personQuery) {
     return topSignal.overlap >= 1 && hits.some((hit) => hit.kind === "journal")
   }
 
-  if (topSignal.overlap >= 2) return true
-  if (topSignal.overlap >= 1 && topSignal.strongOverlap) return true
+  if (profile.personQuery && !profile.eventQuery) {
+    return topSignal.overlap >= 1 && hits.some((hit) => hit.kind === "people" || hit.kind === "core")
+  }
+
+  if (topSignal.bodyOverlap >= 2) return true
+  if (topSignal.bodyOverlap >= 1 && topSignal.strongOverlap) return true
+  if (topSignal.overlap >= 2 && topSignal.strongOverlap) return true
   return false
 }
 
@@ -686,12 +930,32 @@ function searchMemory(
 
   const deduped: MemoryHit[] = []
   const seenChunkIds = new Set<number>()
+  const seenPaths = new Set<string>()
+
+  const handles = allPersonHandles(profile)
+  if (handles.length >= 2) {
+    for (const handle of handles) {
+      if (deduped.length >= limit) break
+      const candidate = pool.find(
+        (row) =>
+          !seenChunkIds.has(row.chunkId) &&
+          !seenPaths.has(row.path) &&
+          !isCoolingDown(row, cooldowns, currentTurn) &&
+          hitMatchesHandle(row, handle),
+      )
+      if (!candidate) continue
+      seenChunkIds.add(candidate.chunkId)
+      seenPaths.add(candidate.path)
+      deduped.push(candidate)
+    }
+  }
+
   for (const row of pool) {
+    if (deduped.length >= limit) break
     if (seenChunkIds.has(row.chunkId)) continue
     if (isCoolingDown(row, cooldowns, currentTurn)) continue
     seenChunkIds.add(row.chunkId)
     deduped.push(row)
-    if (deduped.length >= limit) break
   }
 
   return deduped
@@ -717,17 +981,17 @@ function toMemorySearchResult(hit: MemoryHit): MemorySearchResult {
   }
 }
 
-function buildMemoryRecallMessage(hits: MemoryHit[]): string {
+function buildMemoryRecallMessage(hits: MemoryHit[], maxChars: number): string {
   const lines = [MEMORY_RECALL_HEADER, MEMORY_RECALL_NOTE, ""]
   let usedChars = lines.join("\n").length
 
   for (const hit of hits) {
     const source = formatMemorySource(hit)
-    const remaining = Math.max(120, MEMORY_RECALL_MAX_CHARS - usedChars - source.length - 10)
+    const remaining = Math.max(120, maxChars - usedChars - source.length - 10)
     const body = trimForPrompt(normalizeText(hit.text), Math.min(280, remaining))
     const block = `- ${source}\n  ${body}`
 
-    if (usedChars + block.length > MEMORY_RECALL_MAX_CHARS && lines.length > 3) break
+    if (usedChars + block.length > maxChars && lines.length > 3) break
     lines.push(block)
     usedChars += block.length + 1
   }
@@ -742,25 +1006,41 @@ export async function buildCompletionMessages(
 ): Promise<{ messages: Message[]; recalledChunkIds: number[] }> {
   const memoryQuerySource = latestMemoryRecallQuery(conversation)
   if (!memoryQuerySource) return { messages: conversation, recalledChunkIds: [] }
-  const memoryQuery = memoryQueryForUserMessage(memoryQuerySource)
+  const queryParts = memoryQueryForUserMessage(memoryQuerySource)
+  const memoryQuery = memoryQueryToString(queryParts)
 
   await syncMemoryIndex()
 
-  const profile = buildSearchProfile(memoryQuery)
+  const profile = await buildSearchProfile(queryParts)
   if (profile.tokens.length === 0) return { messages: conversation, recalledChunkIds: [] }
 
-  const hits = searchMemory(profile, cooldowns, currentTurn, MEMORY_RECALL_MAX_CHUNKS)
-  if (hits.length === 0) return { messages: conversation, recalledChunkIds: [] }
+  const personCount = allPersonHandles(profile).length
+  const recallLimit = Math.min(
+    MEMORY_RECALL_MAX_CHUNKS_HARD_CAP,
+    personCount >= 2 ? MEMORY_RECALL_MAX_CHUNKS + (personCount - 1) : MEMORY_RECALL_MAX_CHUNKS,
+  )
+  const hits = searchMemory(profile, cooldowns, currentTurn, recallLimit)
+  const aliasInfo = profile.senderAliases.length > 0 ? ` aliases=${profile.senderAliases.join(",")}` : ""
+  const peopleInfo = profile.bodyPeople.length > 0 ? ` people=${profile.bodyPeople.join(",")}` : ""
+  const debugTag = `sender=${profile.sender ?? "-"}${aliasInfo}${peopleInfo} personQuery=${profile.personQuery} eventQuery=${profile.eventQuery}`
+  if (hits.length === 0) {
+    console.log(
+      `[memory] no-hits query=${JSON.stringify(trimForPrompt(normalizeText(memoryQuery), 120))} ${debugTag}`,
+    )
+    return { messages: conversation, recalledChunkIds: [] }
+  }
   if (!shouldInjectHits(hits, profile)) {
     console.log(
-      `[memory] skipped query=${JSON.stringify(trimForPrompt(normalizeText(memoryQuery), 120))} personQuery=${profile.personQuery} eventQuery=${profile.eventQuery} reason=weak-match`,
+      `[memory] skipped query=${JSON.stringify(trimForPrompt(normalizeText(memoryQuery), 120))} ${debugTag} reason=weak-match`,
     )
     return { messages: conversation, recalledChunkIds: [] }
   }
 
-  const recallContent = buildMemoryRecallMessage(hits)
+  const extraPersons = Math.max(0, personCount - 1)
+  const recallChars = MEMORY_RECALL_MAX_CHARS + extraPersons * MEMORY_RECALL_PER_EXTRA_PERSON_CHARS
+  const recallContent = buildMemoryRecallMessage(hits, recallChars)
   console.log(
-    `[memory] recalled query=${JSON.stringify(trimForPrompt(normalizeText(memoryQuery), 120))} personQuery=${profile.personQuery} eventQuery=${profile.eventQuery}\n${recallContent}`,
+    `[memory] recalled query=${JSON.stringify(trimForPrompt(normalizeText(memoryQuery), 120))} ${debugTag}\n${recallContent}`,
   )
 
   recordMetric({
@@ -798,14 +1078,18 @@ export function rememberRecalledMemoryChunks(
 export const __memoryTest = {
   latestMemoryRecallQuery,
   memoryQueryForUserMessage,
-  normalizeSearchInput,
+  memoryQueryToString,
+  normalizeBodyText,
   searchTokens,
+  buildSearchProfile,
+  resolveAliases,
+  normalizeHandle,
 }
 
 export async function searchMemories(rawQuery: string, limit = 5): Promise<MemorySearchResult[]> {
   await syncMemoryIndex()
 
-  const profile = buildSearchProfile(rawQuery)
+  const profile = await buildSearchProfile({ sender: null, source: null, body: rawQuery })
   if (profile.tokens.length === 0) return []
 
   const results = searchMemory(profile, {}, Number.POSITIVE_INFINITY, Math.max(1, Math.min(limit, 10))).map(toMemorySearchResult)

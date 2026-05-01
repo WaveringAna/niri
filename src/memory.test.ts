@@ -16,7 +16,7 @@ test("latestMemoryRecallQuery falls back past scheduled heartbeat", () => {
   )
 })
 
-test("memoryQueryForUserMessage extracts recent messages from discord batch", () => {
+test("memoryQueryForUserMessage extracts structured parts from discord batch", () => {
   const batch = `[user/discord] [discord batch] 2026-05-01T03:10:50.162Z -> 2026-05-01T03:11:22.198Z
 new_messages=1 channels=1 pending_inbox=0 scope=configured+dm
 auto_seen_timeout=10m auto_demoted=0
@@ -29,23 +29,98 @@ recent messages:
 pending preview:
 - (none)`
 
-  assert.equal(
-    __memoryTest.memoryQueryForUserMessage(batch),
-    "@meowskullz channel/staying up till 1 billion oclock/#niri awa",
-  )
+  assert.deepEqual(__memoryTest.memoryQueryForUserMessage(batch), {
+    sender: "meowskullz",
+    source: "channel/staying up till 1 billion oclock/#niri",
+    body: "awa",
+  })
 })
 
-test("searchTokens keeps meaningful discord batch terms", () => {
-  const batchQuery = "@meowskullz channel/staying up till 1 billion oclock/#niri awa"
+test("memoryQueryForUserMessage parses discord DM envelope into parts", () => {
+  const dm = `[discord/dm] @meowskullz
+context: DM 1234567890
+message_id: 9999
+timestamp: 2026-05-01T00:00:00Z
+action: This is a direct message. Reply if it needs a response.
 
-  assert.deepEqual(__memoryTest.searchTokens(batchQuery), [
-    "meowskullz",
-    "channel",
+thanks`
+
+  const parts = __memoryTest.memoryQueryForUserMessage(dm)
+  assert.equal(parts.sender, "meowskullz")
+  assert.equal(parts.source, "DM")
+  assert.equal(parts.body, "thanks")
+})
+
+test("buildSearchProfile uses sender as primary signal and drops source", async () => {
+  const profile = await __memoryTest.buildSearchProfile({
+    sender: "meowskullz",
+    source: "DM",
+    body: "thanks",
+  })
+
+  assert.equal(profile.sender, "meowskullz")
+  assert.equal(profile.personQuery, true)
+  assert.deepEqual(profile.bodyTokens, ["thanks"])
+  assert.ok(profile.tokens.includes("meowskullz"))
+  assert.ok(profile.tokens.includes("thanks"))
+  assert.ok(!profile.tokens.includes("dm"), "source label should not become a search token")
+})
+
+test("resolveAliases follows transitive mappings without cycles", () => {
+  const map = {
+    meowskullz: ["ana"],
+    ana: ["ana_canonical"],
+    foo: ["meowskullz"],
+  }
+  assert.deepEqual(__memoryTest.resolveAliases("meowskullz", map), ["ana", "ana_canonical"])
+  assert.deepEqual(__memoryTest.resolveAliases("foo", map), ["meowskullz", "ana", "ana_canonical"])
+  assert.deepEqual(__memoryTest.resolveAliases(null, map), [])
+})
+
+test("buildSearchProfile expands sender via alias map", async (t) => {
+  const fs = await import("node:fs/promises")
+  const path = await import("node:path")
+  const url = await import("node:url")
+  const memoriesDir = path.resolve(url.fileURLToPath(import.meta.url), "../../home/memories")
+  const aliasFile = path.join(memoriesDir, "aliases.json")
+  const had = await fs.readFile(aliasFile, "utf-8").catch(() => null)
+
+  await fs.mkdir(memoriesDir, { recursive: true })
+  await fs.writeFile(aliasFile, JSON.stringify({ meowskullz: ["ana"] }), "utf-8")
+
+  t.after(async () => {
+    if (had !== null) await fs.writeFile(aliasFile, had, "utf-8")
+    else await fs.rm(aliasFile, { force: true })
+  })
+
+  const profile = await __memoryTest.buildSearchProfile({
+    sender: "meowskullz",
+    source: "DM",
+    body: "thanks",
+  })
+
+  assert.deepEqual(profile.senderAliases, ["ana"])
+  assert.ok(profile.tokens.includes("ana"))
+})
+
+test("buildSearchProfile detects people mentioned in body", async () => {
+  const profile = await __memoryTest.buildSearchProfile({
+    sender: "meowskullz",
+    source: "DM",
+    body: "patpat, who is rea",
+  })
+
+  assert.ok(profile.bodyPeople.includes("rea"), `expected rea in bodyPeople, got ${JSON.stringify(profile.bodyPeople)}`)
+  assert.ok(profile.tokens.includes("rea"))
+  assert.equal(profile.personQuery, true)
+})
+
+test("searchTokens keeps meaningful body terms", () => {
+  assert.deepEqual(__memoryTest.searchTokens("staying up till 1 billion oclock awa"), [
     "staying",
     "till",
     "billion",
     "oclock",
-    "niri",
     "awa",
   ])
 })

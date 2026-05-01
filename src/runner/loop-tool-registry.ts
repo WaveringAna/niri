@@ -11,7 +11,7 @@ import {
   sendDiscordMessage,
   setDiscordChannelNote,
 } from "../discord/state.js"
-import { searchMemories } from "../memory.js"
+import { listAliases, removeAlias, searchMemories, setAlias } from "../memory.js"
 import { emit } from "../stream.js"
 import type { ToolHandler } from "./loop-shared.js"
 import { pushToolMessage, recordToolResult, runStandardTool, toolError } from "./loop-tool-runtime.js"
@@ -115,6 +115,32 @@ export function buildToolHandlers(): Record<string, ToolHandler> {
             2,
           ),
         emptyFallback: '{"query":"","results":[]}',
+      }),
+
+    memory_alias: (ctx) =>
+      runStandardTool(ctx, {
+        name: "memory_alias",
+        logArgKeys: ["action", "handle", "canonical"] as const,
+        runArgKeys: ["action", "handle", "canonical"] as const,
+        run: async (action, handle, canonical) => {
+          const op = String(action ?? "").toLowerCase()
+          if (op === "list") {
+            return JSON.stringify({ ok: true, aliases: await listAliases() }, null, 2)
+          }
+          if (op === "set") {
+            if (!handle || !canonical) {
+              return JSON.stringify({ ok: false, error: "set requires handle and canonical" })
+            }
+            const map = await setAlias(String(handle), String(canonical))
+            return JSON.stringify({ ok: true, aliases: map }, null, 2)
+          }
+          if (op === "remove") {
+            if (!handle) return JSON.stringify({ ok: false, error: "remove requires handle" })
+            const map = await removeAlias(String(handle), canonical ? String(canonical) : undefined)
+            return JSON.stringify({ ok: true, aliases: map }, null, 2)
+          }
+          return JSON.stringify({ ok: false, error: `unknown action: ${op}` })
+        },
       }),
 
     image_tool: async ({ convId, state, call, args }) => {
