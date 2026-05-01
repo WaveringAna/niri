@@ -12,7 +12,7 @@ import {
   summarizeConversationViaLLM,
 } from "./util.js"
 import { addAssistantMessage, applyUsage, configuredSummaryProvider, emitThinking, fetchCompletion } from "./loop-completion.js"
-import { isFunctionToolCall } from "./loop-content.js"
+import { assistantContentText, isFunctionToolCall } from "./loop-content.js"
 import { buildTurnSignature, hasIncomingUserMessage } from "./loop-signatures.js"
 import { processToolCalls } from "./loop-tools.js"
 import type { LoopHooks, LoopState } from "./types.js"
@@ -76,12 +76,12 @@ async function processAssistantTurn(convId: number, state: LoopState, hooks: Loo
  * conversational text but did not call discord_send. Injects a system
  * nudge so the next turn actually delivers the message.
  */
-function applyDiscordSendNudge(state: LoopState, turnMessages: OpenAI.Chat.ChatCompletionMessage[]): void {
+function applyDiscordSendNudge(state: LoopState, turnMessages: OpenAI.Chat.ChatCompletionMessage[]): boolean {
   // Check if any incoming user message in this turn came from Discord
   const hasDiscordInput = turnMessages.some(
     (m) => m.role === "user" && typeof m.content === "string" && /\[discord\/(?:dm|batch|channel)\]/i.test(m.content),
   )
-  if (!hasDiscordInput) return
+  if (!hasDiscordInput) return false
 
   // Check if the assistant called discord_send in this turn
   const hasDiscordSend = turnMessages.some(
@@ -90,7 +90,7 @@ function applyDiscordSendNudge(state: LoopState, turnMessages: OpenAI.Chat.ChatC
       Array.isArray(m.tool_calls) &&
       m.tool_calls.some((tc) => tc.type === "function" && tc.function.name === "discord_send"),
   )
-  if (hasDiscordSend) return
+  if (hasDiscordSend) return false
 
   // Also check if a tool result from discord_send exists (edge case: tool result is separate message)
   const hasDiscordSendResult = turnMessages.some(
@@ -100,19 +100,18 @@ function applyDiscordSendNudge(state: LoopState, turnMessages: OpenAI.Chat.ChatC
       m.content.includes('"ok":true') &&
       m.content.includes("discord_send"),
   )
-  if (hasDiscordSendResult) return
+  if (hasDiscordSendResult) return false
 
   // Find the assistant's text content in this turn
-  const assistantText = turnMessages.find(
-    (m) => m.role === "assistant" && typeof m.content === "string" && m.content.trim().length > 0,
-  )
-  if (!assistantText || typeof assistantText !== "object") return
+  const assistantText = turnMessages.find((m) => m.role === "assistant" && assistantContentText(m.content).length > 0)
+  if (!assistantText) return false
 
   // The assistant wrote something in response to a Discord message but
   // never actually sent it. Nudge.
   const nudge = `[system] you wrote a response to a Discord message but did not call discord_send. your message was not delivered. call discord_send now or explicitly decide not to reply.`
   console.warn("[runner] discord_send nudge: assistant responded to Discord input without calling discord_send")
   state.conversation.push({ role: "user", content: nudge })
+  return true
 }
 
 function applyContextNudge(state: LoopState): void {
@@ -197,8 +196,9 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
     // a Discord message but forgets to call discord_send. This is a common
     // hallucination pattern — the model writes a reply "in its head" and
     // then calls wait/rest, leaving the Discord user in silence.
+    let discordSendNudged = false
     if (outcome !== CycleOutcome.Rest) {
-      applyDiscordSendNudge(state, turnMessages)
+      discordSendNudged = applyDiscordSendNudge(state, turnMessages)
     }
 
     if (interruptedByUserEvent || !turnSignature) {
@@ -213,6 +213,7 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
 
     if (outcome === CycleOutcome.Rest) return "rest"
     if (outcome === CycleOutcome.NoTools) {
+      if (discordSendNudged) continue
       await hooks.saveSession()
       return "silent_complete"
     }
@@ -233,4 +234,8 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
     applyContextNudge(state)
     await hooks.saveSession()
   }
+}
+
+export const __loopTest = {
+  applyDiscordSendNudge,
 }
