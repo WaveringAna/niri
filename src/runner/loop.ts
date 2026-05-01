@@ -1,3 +1,4 @@
+import type OpenAI from "openai"
 import { recordMetric } from "../metrics.js"
 import { emit } from "../stream.js"
 import {
@@ -68,6 +69,50 @@ async function processAssistantTurn(convId: number, state: LoopState, hooks: Loo
 
   const shouldRest = await processToolCalls(convId, state, hooks, functionCalls)
   return shouldRest ? CycleOutcome.Rest : CycleOutcome.ToolsDone
+}
+
+/**
+ * Detects when the assistant responded to a Discord message with
+ * conversational text but did not call discord_send. Injects a system
+ * nudge so the next turn actually delivers the message.
+ */
+function applyDiscordSendNudge(state: LoopState, turnMessages: OpenAI.Chat.ChatCompletionMessage[]): void {
+  // Check if any incoming user message in this turn came from Discord
+  const hasDiscordInput = turnMessages.some(
+    (m) => m.role === "user" && typeof m.content === "string" && /\[discord\/(?:dm|batch|channel)\]/i.test(m.content),
+  )
+  if (!hasDiscordInput) return
+
+  // Check if the assistant called discord_send in this turn
+  const hasDiscordSend = turnMessages.some(
+    (m) =>
+      m.role === "assistant" &&
+      Array.isArray(m.tool_calls) &&
+      m.tool_calls.some((tc) => tc.type === "function" && tc.function.name === "discord_send"),
+  )
+  if (hasDiscordSend) return
+
+  // Also check if a tool result from discord_send exists (edge case: tool result is separate message)
+  const hasDiscordSendResult = turnMessages.some(
+    (m) =>
+      m.role === "tool" &&
+      typeof m.content === "string" &&
+      m.content.includes('"ok":true') &&
+      m.content.includes("discord_send"),
+  )
+  if (hasDiscordSendResult) return
+
+  // Find the assistant's text content in this turn
+  const assistantText = turnMessages.find(
+    (m) => m.role === "assistant" && typeof m.content === "string" && m.content.trim().length > 0,
+  )
+  if (!assistantText || typeof assistantText !== "object") return
+
+  // The assistant wrote something in response to a Discord message but
+  // never actually sent it. Nudge.
+  const nudge = `[system] you wrote a response to a Discord message but did not call discord_send. your message was not delivered. call discord_send now or explicitly decide not to reply.`
+  console.warn("[runner] discord_send nudge: assistant responded to Discord input without calling discord_send")
+  state.conversation.push({ role: "user", content: nudge })
 }
 
 function applyContextNudge(state: LoopState): void {
@@ -147,6 +192,14 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
     const turnMessages = state.conversation.slice(turnStart)
     const interruptedByUserEvent = hasIncomingUserMessage(turnMessages)
     const turnSignature = buildTurnSignature(turnMessages)
+
+    // Nudge when the assistant produces conversational text in response to
+    // a Discord message but forgets to call discord_send. This is a common
+    // hallucination pattern — the model writes a reply "in its head" and
+    // then calls wait/rest, leaving the Discord user in silence.
+    if (outcome !== CycleOutcome.Rest) {
+      applyDiscordSendNudge(state, turnMessages)
+    }
 
     if (interruptedByUserEvent || !turnSignature) {
       previousTurnSignature = null
