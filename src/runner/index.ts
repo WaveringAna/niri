@@ -245,8 +245,6 @@ export async function wake(event: UserMessage): Promise<void> {
     })
     if (exit === "rest") {
       setRunnerPresence("resting")
-    } else if (exit === "silent_complete") {
-      console.log("[runner] assistant ended turn with no tool call; stopping wake cycle")
     } else {
       console.warn("[runner] loop guard stopped the run; waiting for a new external event")
     }

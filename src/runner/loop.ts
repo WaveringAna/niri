@@ -33,7 +33,12 @@ enum CycleOutcome {
   Rest = "rest",
 }
 
-export type RunLoopExit = "rest" | "guard_stop" | "silent_complete"
+export type RunLoopExit = "rest" | "guard_stop"
+
+async function waitForNextEvent(convId: number, hooks: LoopHooks): Promise<void> {
+  const incoming = await hooks.waitForEvent()
+  hooks.injectIncomingEvent(convId, incoming)
+}
 
 async function stopLoopForGuard(state: LoopState, hooks: LoopHooks, reason: string): Promise<RunLoopExit> {
   const guardMessage = `[system] safety stop: ${reason}. pausing until a new external event wakes niri again.`
@@ -76,11 +81,39 @@ async function processAssistantTurn(convId: number, state: LoopState, hooks: Loo
  * conversational text but did not call discord_send. Injects a system
  * nudge so the next turn actually delivers the message.
  */
-function applyDiscordSendNudge(state: LoopState, turnMessages: OpenAI.Chat.ChatCompletionMessage[]): boolean {
-  // Check if any incoming user message in this turn came from Discord
-  const hasDiscordInput = turnMessages.some(
-    (m) => m.role === "user" && typeof m.content === "string" && /\[discord\/(?:dm|batch|channel)\]/i.test(m.content),
-  )
+function isDiscordInputMessage(message: OpenAI.Chat.ChatCompletionMessage | OpenAI.Chat.ChatCompletionMessageParam): boolean {
+  return message.role === "user" && typeof message.content === "string" && /\[discord\/(?:dm|batch|channel)\]/i.test(message.content)
+}
+
+function hasDiscordInputForTurn(
+  conversation: OpenAI.Chat.ChatCompletionMessageParam[],
+  turnMessages: OpenAI.Chat.ChatCompletionMessage[],
+  turnStart: number,
+): boolean {
+  if (turnMessages.some(isDiscordInputMessage)) return true
+
+  // After a harness restart, the triggering Discord event is appended before
+  // the first post-restart assistant turn. Look backward to the latest
+  // assistant boundary and treat intervening user messages as active context.
+  for (let i = turnStart - 1; i >= 0; i--) {
+    const message = conversation[i]
+    if (!message) continue
+    if (message.role === "assistant") break
+    if (isDiscordInputMessage(message)) return true
+  }
+
+  return false
+}
+
+function applyDiscordSendNudge(
+  state: LoopState,
+  turnMessages: OpenAI.Chat.ChatCompletionMessage[],
+  turnStart: number,
+): boolean {
+  // Check if the assistant is responding to active Discord input, including
+  // the post-restart case where the triggering user message is already in the
+  // conversation before the turn begins.
+  const hasDiscordInput = hasDiscordInputForTurn(state.conversation, turnMessages, turnStart)
   if (!hasDiscordInput) return false
 
   // Check if the assistant called discord_send in this turn
@@ -198,7 +231,7 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
     // then calls wait/rest, leaving the Discord user in silence.
     let discordSendNudged = false
     if (outcome !== CycleOutcome.Rest) {
-      discordSendNudged = applyDiscordSendNudge(state, turnMessages)
+      discordSendNudged = applyDiscordSendNudge(state, turnMessages, turnStart)
     }
 
     if (interruptedByUserEvent || !turnSignature) {
@@ -215,7 +248,8 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
     if (outcome === CycleOutcome.NoTools) {
       if (discordSendNudged) continue
       await hooks.saveSession()
-      return "silent_complete"
+      await waitForNextEvent(convId, hooks)
+      continue
     }
 
     if (turnCount >= RUNNER_MAX_TURNS) {
@@ -238,4 +272,6 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
 
 export const __loopTest = {
   applyDiscordSendNudge,
+  hasDiscordInputForTurn,
+  waitForNextEvent,
 }

@@ -382,6 +382,11 @@ async function consumeCompletionStream(
       : {}),
   }
 
+  if (reasoningParts.length > 0) {
+    ;(message as OpenAI.Chat.ChatCompletionMessage & { reasoning_content?: string }).reasoning_content =
+      reasoningParts.join("")
+  }
+
   return {
     message,
     usage,
@@ -681,4 +686,8 @@ export async function fetchCompletion(
       }
     }
   }
+}
+
+export const __completionTest = {
+  consumeCompletionStream,
 }

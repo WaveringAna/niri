@@ -18,6 +18,8 @@ export const USE_FALLBACK = NIRI_ENV === "local"
 
 export const API_BASE = process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1"
 export const MODEL = process.env.MODEL ?? ""
+export const PRIMARY_PROVIDER_REQUIRES_REASONING_REPLAY =
+  API_BASE.toLowerCase().includes("deepseek") || MODEL.toLowerCase().includes("deepseek")
 const DEFAULT_FALLBACK_BASE = "http://localhost:1234/v1"
 const isLikelyLocalBase = (baseUrl: string): boolean => {
   const lowered = baseUrl.trim().toLowerCase()
@@ -45,6 +47,8 @@ export const FALLBACK_BASE =
   process.env.FALLBACK_OPENAI_BASE_URL ?? process.env.OPENROUTER_BASE_URL ?? process.env.LMSTUDIO_BASE_URL ?? DEFAULT_FALLBACK_BASE
 export const FALLBACK_MODEL =
   process.env.FALLBACK_MODEL ?? process.env.OPENROUTER_MODEL ?? process.env.LMSTUDIO_MODEL ?? "zai-org/glm-4.7-flash"
+export const FALLBACK_PROVIDER_REQUIRES_REASONING_REPLAY =
+  FALLBACK_BASE.toLowerCase().includes("deepseek") || FALLBACK_MODEL.toLowerCase().includes("deepseek")
 export const SUMMARY_BASE =
   process.env.SUMMARY_OPENAI_BASE_URL ?? process.env.SUMMARY_BASE_URL ?? ""
 export const SUMMARY_MODEL = process.env.SUMMARY_MODEL ?? ""
@@ -467,8 +471,42 @@ export async function clearSession(): Promise<void> {
   await fs.unlink(SESSION_FILE).catch(() => {})
 }
 
+function normalizeReasoningReplay(msgs: Message[]): Message[] {
+  if (!ENABLE_THINKING) return msgs
+  const needsReplayNormalization =
+    PRIMARY_PROVIDER_REQUIRES_REASONING_REPLAY ||
+    FALLBACK_PROVIDER_REQUIRES_REASONING_REPLAY ||
+    msgs.some(
+      (msg) =>
+        msg.role === "assistant" &&
+        typeof (msg as OpenAI.Chat.ChatCompletionMessage & { reasoning_content?: string }).reasoning_content === "string",
+    )
+  if (!needsReplayNormalization) return msgs
+
+  let changed = false
+  const normalized = msgs.map((msg) => {
+    if (msg.role !== "assistant") return msg
+
+    const assistant = msg as OpenAI.Chat.ChatCompletionMessage & { reasoning_content?: string }
+    if (typeof assistant.reasoning_content === "string") return msg
+
+    changed = true
+    return {
+      ...assistant,
+      reasoning_content: "",
+    }
+  })
+
+  if (changed) {
+    console.log("[runner] backfilled empty reasoning_content on assistant history for provider compatibility")
+  }
+
+  return normalized
+}
+
 /** Move mis-ordered tool responses back into place and synthesize missing ones. */
 export function sanitizeMessages(msgs: Message[]): Message[] {
+  msgs = normalizeReasoningReplay(msgs)
   let i = 0
   while (i < msgs.length) {
     const msg = msgs[i]

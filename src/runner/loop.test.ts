@@ -35,6 +35,29 @@ test("applyDiscordSendNudge appends a follow-up user nudge for unsent Discord re
   assert.match(String(state.conversation[0]?.content), /did not call discord_send/i)
 })
 
+test("applyDiscordSendNudge fires after a harness restart when the discord event is pre-turn context", () => {
+  const state = makeState()
+  state.conversation.push(
+    {
+      role: "user",
+      content: "[harness restarted — discord @ 2026-05-01T04:30:00.000Z]\n\n[discord/dm] hi starfish",
+    },
+    {
+      role: "assistant",
+      content: "i keep getting bounced by harness restarts sorry ^^ still here though! what's up?",
+    },
+  )
+
+  const turnStart = 1
+  const turnMessages = [state.conversation[1]!]
+
+  const nudged = __loopTest.applyDiscordSendNudge(state, turnMessages, turnStart)
+
+  assert.equal(nudged, true)
+  assert.equal(state.conversation.length, 3)
+  assert.match(String(state.conversation[2]?.content), /did not call discord_send/i)
+})
+
 test("applyDiscordSendNudge does not fire when discord_send was already called", () => {
   const state = makeState()
   const turnMessages = [
@@ -62,4 +85,32 @@ test("applyDiscordSendNudge does not fire when discord_send was already called",
 
   assert.equal(nudged, false)
   assert.equal(state.conversation.length, 0)
+})
+
+test("waitForNextEvent waits for and injects the next external event", async () => {
+  const calls: string[] = []
+  const event = {
+    source: "chat" as const,
+    triggeredAt: "2026-05-01T04:40:00.000Z",
+    content: "still here",
+    raw: {},
+  }
+
+  await __loopTest.waitForNextEvent(42, {
+    waitForEvent: async () => {
+      calls.push("wait")
+      return event
+    },
+    waitForEventWithTimeout: async () => null,
+    injectIncomingEvent: (_convId, incoming) => {
+      calls.push(`inject:${incoming.content}`)
+      assert.equal(_convId, 42)
+      assert.equal(incoming, event)
+    },
+    flushDeferredEvents: () => {},
+    clearSession: async () => {},
+    saveSession: async () => {},
+  })
+
+  assert.deepEqual(calls, ["wait", "inject:still here"])
 })
