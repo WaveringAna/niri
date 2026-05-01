@@ -3,7 +3,8 @@ import path from "path"
 import { createHash } from "crypto"
 import { fileURLToPath } from "url"
 import type { Message } from "./types.js"
-import { getDb } from "./db.js"
+import { getDb, isVecAvailable, MEMORY_EMBEDDING_DIMENSIONS } from "./db.js"
+import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, embeddingsConfigured, embedTexts } from "./embeddings.js"
 import { recordMetric } from "./metrics.js"
 
 const HOME_DIR = path.resolve(fileURLToPath(import.meta.url), "../../home")
@@ -22,7 +23,22 @@ const MEMORY_RECALL_MAX_CHARS = 1_500
 const MEMORY_RECALL_PER_EXTRA_PERSON_CHARS = 400
 const MEMORY_QUERY_TOKEN_LIMIT = 12
 const MEMORY_RECALL_COOLDOWN_TURNS = 7
+const MEMORY_EMBEDDING_BATCH_SIZE = 24
+const MEMORY_SEMANTIC_MIN_SIMILARITY = 0.18
+const MEMORY_SEMANTIC_STRONG_SIMILARITY = 0.32
+const MEMORY_CHATTER_SIMILARITY_THRESHOLD = 0.74
+const MEMORY_RECALL_INTENT_SIMILARITY_THRESHOLD = 0.55
 const SCHEDULED_HEARTBEAT_CONTENT = "Scheduled heartbeat."
+const MEMORY_EMBEDDING_PROTOTYPES = [
+  { id: 1, name: "affection-love", category: "chatter", text: "i love you so much sweetie <33" },
+  { id: 2, name: "cat-greeting", category: "chatter", text: "boop mraow meow hi sweetie" },
+  { id: 3, name: "celebration", category: "chatter", text: "yay yayy lets gooooo <33" },
+  { id: 4, name: "goodnight", category: "chatter", text: "goodnight sweet dreams rest well" },
+  { id: 101, name: "who-person", category: "recall_intent", text: "who is this person what do i know about them" },
+  { id: 102, name: "past-event", category: "recall_intent", text: "what happened before remember when that event happened" },
+  { id: 103, name: "task-context", category: "recall_intent", text: "what context do i need for this task or project" },
+  { id: 104, name: "system-lesson", category: "recall_intent", text: "what lesson or instruction should i remember here" },
+] as const
 const MEMORY_STOP_WORDS = new Set([
   "a",
   "an",
@@ -103,6 +119,8 @@ type MemoryHit = {
   headingPath: string | null
   text: string
   rank: number
+  semanticDistance?: number
+  semanticSimilarity?: number
 }
 
 export type MemorySearchResult = {
@@ -138,6 +156,26 @@ type MemoryHitSignal = {
   strongOverlap: boolean
   bodyOverlap: number
   senderMatch: boolean
+}
+
+type MemoryEmbeddingRow = {
+  chunkId: number
+  path: string
+  kind: MemoryKind
+  documentTitle: string
+  title: string
+  headingPath: string | null
+  text: string
+  tags: string | null
+  model: string | null
+  dimensions: number | null
+  contentHash: string | null
+}
+
+type SemanticQuerySignal = {
+  vector: number[]
+  chatterSimilarity: number | null
+  recallIntentSimilarity: number | null
 }
 
 export type AliasMap = Record<string, string[]>
@@ -297,6 +335,38 @@ function contentHash(content: string): string {
   return createHash("sha1").update(content).digest("hex")
 }
 
+function embeddingInputHash(content: string): string {
+  return createHash("sha256").update(content).digest("hex")
+}
+
+function vectorParam(vector: number[]): Float32Array {
+  return new Float32Array(vector)
+}
+
+function embeddingTextForChunk(row: {
+  path: string
+  kind: MemoryKind
+  documentTitle: string
+  title: string
+  headingPath: string | null
+  text: string
+  tags?: string | null
+}): string {
+  const relativePath = path.relative(HOME_DIR, row.path)
+  return [
+    `kind: ${row.kind}`,
+    `file: ${relativePath}`,
+    `document: ${row.documentTitle}`,
+    `title: ${row.title}`,
+    row.headingPath ? `section: ${row.headingPath}` : null,
+    row.tags ? `tags: ${row.tags}` : null,
+    "",
+    row.text,
+  ]
+    .filter((part): part is string => part !== null)
+    .join("\n")
+}
+
 function chunkLargeSection(text: string, maxChars = 900): string[] {
   const paragraphs = text
     .split(/\n\s*\n/g)
@@ -405,6 +475,7 @@ function isMemoryRecallSkippedMessage(content: string): boolean {
   if (content.startsWith(MEMORY_RECALL_HEADER)) return true
   if (content.startsWith("[system]")) return true
   if (content.includes("scan snapshot:") && !content.includes("[discord batch]")) return true
+  if (/\[discord batch\]/i.test(content) && conciseDiscordBatchMemoryQuery(content) === null) return true
   return false
 }
 
@@ -506,15 +577,14 @@ function conciseDiscordBatchMemoryQuery(raw: string): MemoryQueryParts | null {
   const withoutWakeEnvelope = raw.replace(/^\[(wake|incoming|harness restarted)[^\n]*\]\s*/gi, "").trim()
   if (!/\[discord batch\]/i.test(withoutWakeEnvelope)) return null
 
-  const recent = extractBulletSection(withoutWakeEnvelope, "recent messages")
   const pending = extractBulletSection(withoutWakeEnvelope, "pending preview")
-  const selected = (recent.length > 0 ? recent : pending).slice(-3)
+  const selected = pending.filter((entry) => !/^\(none\)$/i.test(entry)).slice(-3)
   if (selected.length === 0) return null
 
   const senders: string[] = []
   const sources: string[] = []
   const bodies: string[] = []
-  const entryPattern = /^\[([^\]]+)\]\s+\[[^\]]+\]\s+@([^:]+):\s*(.*)$/i
+  const entryPattern = /(?:^|\s)\[([^\]]+)\]\s+\[[^\]]+\]\s+@([^:]+):\s*(.*)$/i
   for (const entry of selected) {
     const match = entry.match(entryPattern)
     if (!match) {
@@ -798,8 +868,180 @@ export async function syncMemoryIndex(): Promise<void> {
   })()
 
   if (updates.length === 0 && removedPaths.length === 0) {
+    await syncMemoryEmbeddings()
     return
   }
+
+  await syncMemoryEmbeddings()
+}
+
+let embeddingSkipWarned = false
+
+async function syncMemoryEmbeddings(): Promise<void> {
+  if (!isVecAvailable()) return
+  if (!embeddingsConfigured()) {
+    if (!embeddingSkipWarned) {
+      console.warn("[memory] embeddings disabled: set EMBEDDING_API_KEY")
+      embeddingSkipWarned = true
+    }
+    return
+  }
+  if (EMBEDDING_DIMENSIONS !== MEMORY_EMBEDDING_DIMENSIONS) {
+    if (!embeddingSkipWarned) {
+      console.warn(
+        `[memory] embeddings disabled: EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS} but sqlite-vec table is ${MEMORY_EMBEDDING_DIMENSIONS}`,
+      )
+      embeddingSkipWarned = true
+    }
+    return
+  }
+
+  const db = getDb()
+  try {
+    await syncMemoryEmbeddingPrototypes()
+  } catch (err: any) {
+    console.warn(`[memory] prototype embedding sync failed: ${err?.message ?? String(err)}`)
+    return
+  }
+  db.prepare("delete from memory_embedding_meta where chunk_id not in (select id from memory_chunks)").run()
+  db.prepare("delete from memory_chunk_vec where rowid not in (select id from memory_chunks)").run()
+
+  const rows = db
+    .prepare(`
+      select
+        c.id as chunkId,
+        d.path as path,
+        d.kind as kind,
+        d.title as documentTitle,
+        c.title as title,
+        c.heading_path as headingPath,
+        c.chunk_text as text,
+        c.tags as tags,
+        m.model as model,
+        m.dimensions as dimensions,
+        m.content_hash as contentHash
+      from memory_chunks c
+      join memory_documents d on d.id = c.document_id
+      left join memory_embedding_meta m on m.chunk_id = c.id
+      order by d.kind, d.path, c.chunk_index
+    `)
+    .all() as MemoryEmbeddingRow[]
+
+  const pending = rows
+    .map((row) => {
+      const text = embeddingTextForChunk(row)
+      return { ...row, embeddingText: text, embeddingHash: embeddingInputHash(text) }
+    })
+    .filter(
+      (row) =>
+        row.model !== EMBEDDING_MODEL ||
+        row.dimensions !== MEMORY_EMBEDDING_DIMENSIONS ||
+        row.contentHash !== row.embeddingHash,
+    )
+
+  if (pending.length === 0) return
+
+  const upsertMeta = db.prepare(`
+    insert into memory_embedding_meta (chunk_id, model, dimensions, content_hash, updated_at)
+    values (?, ?, ?, ?, datetime('now'))
+    on conflict(chunk_id) do update set
+      model = excluded.model,
+      dimensions = excluded.dimensions,
+      content_hash = excluded.content_hash,
+      updated_at = datetime('now')
+  `)
+  const upsertVector = db.prepare("insert or replace into memory_chunk_vec(rowid, embedding) values (?, ?)")
+
+  let embedded = 0
+  for (let i = 0; i < pending.length; i += MEMORY_EMBEDDING_BATCH_SIZE) {
+    const batch = pending.slice(i, i + MEMORY_EMBEDDING_BATCH_SIZE)
+    let vectors: number[][]
+    try {
+      vectors = await embedTexts(batch.map((row) => row.embeddingText))
+    } catch (err: any) {
+      console.warn(`[memory] embedding batch failed: ${err?.message ?? String(err)}`)
+      return
+    }
+
+    db.transaction(() => {
+      batch.forEach((row, index) => {
+        const vector = vectors[index]
+        if (!vector) return
+        if (vector.length !== MEMORY_EMBEDDING_DIMENSIONS) {
+          throw new Error(`embedding dimension mismatch: got ${vector.length}, expected ${MEMORY_EMBEDDING_DIMENSIONS}`)
+        }
+        upsertVector.run(BigInt(row.chunkId), vectorParam(vector))
+        upsertMeta.run(row.chunkId, EMBEDDING_MODEL, MEMORY_EMBEDDING_DIMENSIONS, row.embeddingHash)
+        embedded += 1
+      })
+    })()
+  }
+
+  console.log(`[memory] embedded chunks=${embedded} model=${EMBEDDING_MODEL} dimensions=${MEMORY_EMBEDDING_DIMENSIONS}`)
+}
+
+async function syncMemoryEmbeddingPrototypes(): Promise<void> {
+  const db = getDb()
+  const rows = db
+    .prepare("select id, name, category, model, dimensions, content_hash as contentHash from memory_embedding_prototypes")
+    .all() as Array<{
+      id: number
+      name: string
+      category: string
+      model: string
+      dimensions: number
+      contentHash: string
+    }>
+  const known = new Map(rows.map((row) => [row.id, row]))
+  const pending = MEMORY_EMBEDDING_PROTOTYPES.map((prototype) => ({
+    ...prototype,
+    hash: embeddingInputHash(`${prototype.category}\n${prototype.name}\n${prototype.text}`),
+  })).filter((prototype) => {
+    const row = known.get(prototype.id)
+    return (
+      !row ||
+      row.name !== prototype.name ||
+      row.category !== prototype.category ||
+      row.model !== EMBEDDING_MODEL ||
+      row.dimensions !== MEMORY_EMBEDDING_DIMENSIONS ||
+      row.contentHash !== prototype.hash
+    )
+  })
+
+  if (pending.length === 0) return
+
+  const vectors = await embedTexts(pending.map((prototype) => prototype.text))
+  const upsertPrototype = db.prepare(`
+    insert into memory_embedding_prototypes (id, name, category, model, dimensions, content_hash, updated_at)
+    values (?, ?, ?, ?, ?, ?, datetime('now'))
+    on conflict(id) do update set
+      name = excluded.name,
+      category = excluded.category,
+      model = excluded.model,
+      dimensions = excluded.dimensions,
+      content_hash = excluded.content_hash,
+      updated_at = datetime('now')
+  `)
+  const upsertVector = db.prepare("insert or replace into memory_prototype_vec(rowid, embedding) values (?, ?)")
+
+  db.transaction(() => {
+    pending.forEach((prototype, index) => {
+      const vector = vectors[index]
+      if (!vector) return
+      if (vector.length !== MEMORY_EMBEDDING_DIMENSIONS) {
+        throw new Error(`prototype embedding dimension mismatch: got ${vector.length}, expected ${MEMORY_EMBEDDING_DIMENSIONS}`)
+      }
+      upsertVector.run(BigInt(prototype.id), vectorParam(vector))
+      upsertPrototype.run(
+        prototype.id,
+        prototype.name,
+        prototype.category,
+        EMBEDDING_MODEL,
+        MEMORY_EMBEDDING_DIMENSIONS,
+        prototype.hash,
+      )
+    })
+  })()
 }
 
 function senderHandles(profile: MemorySearchProfile): string[] {
@@ -820,10 +1062,18 @@ function allPersonHandles(profile: MemorySearchProfile): string[] {
   return out
 }
 
+function targetPersonHandles(profile: MemorySearchProfile): string[] {
+  return profile.bodyPeople.length > 0 ? profile.bodyPeople : allPersonHandles(profile)
+}
+
 function hitMatchesHandle(hit: MemoryHit, handle: string): boolean {
   const titleHaystack = `${hit.documentTitle} ${hit.title} ${hit.headingPath ?? ""} ${basenameWithoutExt(hit.path)}`.toLowerCase()
   const pathHaystack = hit.path.toLowerCase()
   return titleHaystack.includes(handle) || pathHaystack.includes(`/${handle}.md`)
+}
+
+function hitMentionsHandle(hit: MemoryHit, handle: string): boolean {
+  return hitMatchesHandle(hit, handle) || hitSearchHaystack(hit).includes(handle)
 }
 
 function scoreMemoryHit(hit: MemoryHit, profile: MemorySearchProfile): number {
@@ -853,6 +1103,18 @@ function scoreMemoryHit(hit: MemoryHit, profile: MemorySearchProfile): number {
       score -= 3
     } else if (handles.some((h) => fullHaystack.includes(h))) {
       score -= 1
+    }
+  }
+
+  if (profile.bodyPeople.length > 0) {
+    const targetHandles = targetPersonHandles(profile)
+    const matchesTarget = targetHandles.some((handle) => hitMatchesHandle(hit, handle))
+    if (matchesTarget) {
+      score -= 4
+    } else if (hit.kind === "people") {
+      score += 3
+    } else if (hit.kind === "core" && !profileHasCoreIntent(profile)) {
+      score += 3.5
     }
   }
 
@@ -915,12 +1177,133 @@ function shouldInjectHits(hits: MemoryHit[], profile: MemorySearchProfile): bool
   return false
 }
 
-function searchMemory(
+function profileHasExplicitRecallIntent(profile: MemorySearchProfile): boolean {
+  if (profile.bodyPeople.length > 0) return true
+  if (profile.eventQuery) return true
+  if (/\b(who is|who's|tell me about|remember|recall|what happened|what do i know|context)\b/.test(profile.normalized)) {
+    return true
+  }
+  return false
+}
+
+function profileHasCoreIntent(profile: MemorySearchProfile): boolean {
+  return /\b(core|identity|system|environment|lesson|rule|instruction|workflow|tool|config|memory)\b/.test(profile.normalized)
+}
+
+async function semanticQuerySignal(memoryQuery: string): Promise<SemanticQuerySignal | null> {
+  if (!isVecAvailable() || !embeddingsConfigured() || EMBEDDING_DIMENSIONS !== MEMORY_EMBEDDING_DIMENSIONS) return null
+  const [vector] = await embedTexts([memoryQuery])
+  if (!vector || vector.length !== MEMORY_EMBEDDING_DIMENSIONS) return null
+
+  const rows = getDb()
+    .prepare(`
+      select p.category as category, v.distance as distance
+      from memory_prototype_vec v
+      join memory_embedding_prototypes p on p.id = v.rowid
+      where v.embedding match ?
+        and k = ?
+      order by v.distance
+    `)
+    .all(vectorParam(vector), 8) as Array<{ category: string; distance: number }>
+
+  let chatterSimilarity: number | null = null
+  let recallIntentSimilarity: number | null = null
+  for (const row of rows) {
+    const similarity = 1 - row.distance
+    if (row.category === "chatter") chatterSimilarity = Math.max(chatterSimilarity ?? -Infinity, similarity)
+    if (row.category === "recall_intent") {
+      recallIntentSimilarity = Math.max(recallIntentSimilarity ?? -Infinity, similarity)
+    }
+  }
+
+  return {
+    vector,
+    chatterSimilarity,
+    recallIntentSimilarity,
+  }
+}
+
+function shouldSkipForSemanticChatter(profile: MemorySearchProfile, signal: SemanticQuerySignal | null): boolean {
+  if (!signal) return false
+  if (profileHasExplicitRecallIntent(profile)) return false
+  if (profile.bodyTokens.length > 5) return false
+  const chatter = signal.chatterSimilarity ?? 0
+  const recallIntent = signal.recallIntentSimilarity ?? 0
+  return chatter >= MEMORY_CHATTER_SIMILARITY_THRESHOLD && recallIntent < MEMORY_RECALL_INTENT_SIMILARITY_THRESHOLD
+}
+
+function semanticDistancesForQuery(vector: number[], limit: number): Map<number, number> {
+  if (!isVecAvailable()) return new Map()
+  const rows = getDb()
+    .prepare(`
+      select rowid as chunkId, distance
+      from memory_chunk_vec
+      where embedding match ?
+        and k = ?
+      order by distance
+    `)
+    .all(vectorParam(vector), limit) as Array<{ chunkId: number; distance: number }>
+  return new Map(rows.map((row) => [row.chunkId, row.distance]))
+}
+
+function exactPersonHits(profile: MemorySearchProfile): MemoryHit[] {
+  if (profile.bodyPeople.length === 0) return []
+  const db = getDb()
+  const hits: MemoryHit[] = []
+  const seen = new Set<number>()
+  const stmt = db.prepare(`
+    select
+      c.id as chunkId,
+      d.path as path,
+      d.kind as kind,
+      d.title as documentTitle,
+      c.title as title,
+      c.heading_path as headingPath,
+      c.chunk_text as text,
+      -10.0 as rank
+    from memory_chunks c
+    join memory_documents d on d.id = c.document_id
+    where d.kind = 'people'
+      and lower(d.path) like ?
+    order by c.chunk_index
+  `)
+
+  for (const handle of profile.bodyPeople) {
+    const rows = stmt.all(`%/people/${handle.toLowerCase()}.md`) as MemoryHit[]
+    for (const row of rows) {
+      if (seen.has(row.chunkId)) continue
+      seen.add(row.chunkId)
+      hits.push(row)
+    }
+  }
+  return hits
+}
+
+function scoreMemoryHitWithSemantic(hit: MemoryHit, profile: MemorySearchProfile): number {
+  let score = scoreMemoryHit(hit, profile)
+  const coreIntent = profileHasCoreIntent(profile)
+
+  if (hit.semanticSimilarity !== undefined) {
+    score -= hit.semanticSimilarity * 2.5
+    if (hit.kind === "core" && !coreIntent && hit.semanticSimilarity < MEMORY_SEMANTIC_STRONG_SIMILARITY) {
+      score += 1.25
+    }
+  } else {
+    score += 0.75
+    if (hit.kind === "core" && !coreIntent) score += 1.25
+  }
+
+  if (hit.kind === "core" && !coreIntent) score += 0.75
+  return score
+}
+
+async function searchMemory(
   profile: MemorySearchProfile,
   cooldowns: Record<number, number>,
   currentTurn: number,
   limit: number,
-): MemoryHit[] {
+  semanticSignal: SemanticQuerySignal | null = null,
+): Promise<MemoryHit[]> {
   const db = getDb()
   const query = buildSearchQuery(profile)
   if (!query) return []
@@ -944,7 +1327,22 @@ function searchMemory(
     `)
     .all(query, Math.max(limit * 8, limit)) as MemoryHit[]
 
-  const ordered = rows.sort((a, b) => scoreMemoryHit(a, profile) - scoreMemoryHit(b, profile))
+  for (const hit of exactPersonHits(profile)) {
+    if (rows.some((row) => row.chunkId === hit.chunkId)) continue
+    rows.push(hit)
+  }
+
+  if (semanticSignal) {
+    const distances = semanticDistancesForQuery(semanticSignal.vector, Math.max(limit * 16, 64))
+    for (const row of rows) {
+      const distance = distances.get(row.chunkId)
+      if (distance === undefined) continue
+      row.semanticDistance = distance
+      row.semanticSimilarity = 1 - distance
+    }
+  }
+
+  const ordered = rows.sort((a, b) => scoreMemoryHitWithSemantic(a, profile) - scoreMemoryHitWithSemantic(b, profile))
   const pool =
     profile.personQuery && !profile.eventQuery
       ? (() => {
@@ -962,7 +1360,9 @@ function searchMemory(
   const seenChunkIds = new Set<number>()
   const seenPaths = new Set<string>()
 
-  const handles = allPersonHandles(profile)
+  const handles = targetPersonHandles(profile)
+  const exactTargetAvailable =
+    profile.bodyPeople.length > 0 && pool.some((row) => handles.some((handle) => hitMatchesHandle(row, handle)))
   if (handles.length >= 2) {
     for (const handle of handles) {
       if (deduped.length >= limit) break
@@ -984,6 +1384,21 @@ function searchMemory(
     if (deduped.length >= limit) break
     if (seenChunkIds.has(row.chunkId)) continue
     if (isCoolingDown(row, cooldowns, currentTurn)) continue
+    const exactTargetMatch = profile.bodyPeople.length > 0 && handles.some((handle) => hitMatchesHandle(row, handle))
+    if (exactTargetAvailable && !exactTargetMatch && row.kind !== "journal") {
+      continue
+    }
+    if (profile.bodyPeople.length > 0 && !profile.bodyPeople.some((handle) => hitMentionsHandle(row, handle))) {
+      continue
+    }
+    if (
+      semanticSignal &&
+      row.kind === "core" &&
+      !profileHasCoreIntent(profile) &&
+      (row.semanticSimilarity ?? 0) < MEMORY_SEMANTIC_MIN_SIMILARITY
+    ) {
+      continue
+    }
     seenChunkIds.add(row.chunkId)
     deduped.push(row)
   }
@@ -1051,12 +1466,26 @@ export async function buildCompletionMessages(
     return { messages: conversation, recalledChunkIds: [] }
   }
 
+  let semanticSignal: SemanticQuerySignal | null = null
+  try {
+    semanticSignal = await semanticQuerySignal(memoryQuery)
+  } catch (err: any) {
+    console.warn(`[memory] semantic query failed: ${err?.message ?? String(err)}`)
+  }
+
+  if (shouldSkipForSemanticChatter(profile, semanticSignal)) {
+    console.log(
+      `[memory] skipped query=${JSON.stringify(trimForPrompt(normalizeText(memoryQuery), 120))} sender=${profile.sender ?? "-"} reason=semantic-chatter chatter=${semanticSignal?.chatterSimilarity?.toFixed(3) ?? "-"} recallIntent=${semanticSignal?.recallIntentSimilarity?.toFixed(3) ?? "-"}`,
+    )
+    return { messages: conversation, recalledChunkIds: [] }
+  }
+
   const personCount = allPersonHandles(profile).length
   const recallLimit = Math.min(
     MEMORY_RECALL_MAX_CHUNKS_HARD_CAP,
     personCount >= 2 ? MEMORY_RECALL_MAX_CHUNKS + (personCount - 1) : MEMORY_RECALL_MAX_CHUNKS,
   )
-  const hits = searchMemory(profile, cooldowns, currentTurn, recallLimit)
+  const hits = await searchMemory(profile, cooldowns, currentTurn, recallLimit, semanticSignal)
   const aliasInfo = profile.senderAliases.length > 0 ? ` aliases=${profile.senderAliases.join(",")}` : ""
   const peopleInfo = profile.bodyPeople.length > 0 ? ` people=${profile.bodyPeople.join(",")}` : ""
   const debugTag = `sender=${profile.sender ?? "-"}${aliasInfo}${peopleInfo} personQuery=${profile.personQuery} eventQuery=${profile.eventQuery}`
@@ -1129,7 +1558,20 @@ export async function searchMemories(rawQuery: string, limit = 5): Promise<Memor
   const profile = await buildSearchProfile({ sender: null, source: null, body: rawQuery })
   if (profile.tokens.length === 0) return []
 
-  const results = searchMemory(profile, {}, Number.POSITIVE_INFINITY, Math.max(1, Math.min(limit, 10))).map(toMemorySearchResult)
+  let semanticSignal: SemanticQuerySignal | null = null
+  try {
+    semanticSignal = await semanticQuerySignal(rawQuery)
+  } catch {
+    semanticSignal = null
+  }
+
+  const results = (await searchMemory(
+    profile,
+    {},
+    Number.POSITIVE_INFINITY,
+    Math.max(1, Math.min(limit, 10)),
+    semanticSignal,
+  )).map(toMemorySearchResult)
   recordMetric({
     type: "memory",
     query: rawQuery,

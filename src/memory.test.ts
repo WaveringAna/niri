@@ -27,12 +27,51 @@ recent messages:
 - [channel/staying up till 1 billion oclock/#niri] [2026-05-01 03:11:14.553Z] @meowskullz: awa
 
 pending preview:
-- (none)`
+- 1499679672404021248 [mention] [channel/staying up till 1 billion oclock/#niri] [2026-05-01 03:11:14.553Z] @meowskullz: awa`
 
   assert.deepEqual(__memoryTest.memoryQueryForUserMessage(batch), {
     sender: "meowskullz",
     source: "channel/staying up till 1 billion oclock/#niri",
     body: "awa",
+  })
+})
+
+test("latestMemoryRecallQuery skips ambient discord batch without pending items", () => {
+  const batch = `[user/discord] [discord batch] 2026-05-01T03:10:50.162Z -> 2026-05-01T03:11:22.198Z
+new_messages=1 channels=1 pending_inbox=0 scope=configured+dm
+
+recent messages:
+- [channel/meowskullz's server/#ai-sister-yap] [2026-05-01 08:01:35.639Z] @rose: foxie emoji
+
+pending preview:
+- (none)`
+
+  const conversation: Message[] = [
+    { role: "user", content: "what did we talk about when lisya was buying monero" },
+    { role: "assistant", content: "..." },
+    { role: "user", content: batch },
+  ]
+
+  assert.equal(
+    __memoryTest.latestMemoryRecallQuery(conversation),
+    "what did we talk about when lisya was buying monero",
+  )
+})
+
+test("memoryQueryForUserMessage ignores ambient discord batch recent messages", () => {
+  const batch = `[user/discord] [discord batch] 2026-05-01T03:10:50.162Z -> 2026-05-01T03:11:22.198Z
+new_messages=1 channels=1 pending_inbox=0 scope=configured+dm
+
+recent messages:
+- [channel/meowskullz's server/#ai-sister-yap] [2026-05-01 08:01:35.639Z] @rose: foxie emoji
+
+pending preview:
+- (none)`
+
+  assert.deepEqual(__memoryTest.memoryQueryForUserMessage(batch), {
+    sender: null,
+    source: null,
+    body: batch,
   })
 })
 

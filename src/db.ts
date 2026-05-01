@@ -1,12 +1,15 @@
 import Database from "better-sqlite3"
 import fs from "fs"
 import path from "path"
+import * as sqliteVec from "sqlite-vec"
 import { fileURLToPath } from "url"
 
 const HOME_DIR = path.resolve(fileURLToPath(import.meta.url), "../../home")
 const DB_PATH = path.join(HOME_DIR, "niri.db")
+export const MEMORY_EMBEDDING_DIMENSIONS = 3072
 
 let db: Database.Database
+let vecAvailable = false
 
 function ensureWritableDirOrThrow(dirPath: string, purpose: string): void {
   try {
@@ -47,6 +50,13 @@ export function initDb(): void {
 
   db.pragma("journal_mode = WAL")
   db.pragma("foreign_keys = ON")
+  try {
+    sqliteVec.load(db)
+    vecAvailable = true
+  } catch (err: any) {
+    vecAvailable = false
+    console.warn(`[db] sqlite-vec unavailable: ${err?.message ?? String(err)}`)
+  }
 
   db.exec(`
     create table if not exists conversations (
@@ -186,7 +196,40 @@ export function initDb(): void {
       insert into memory_chunks_fts(rowid, title, heading_path, chunk_text, tags)
       values (new.id, new.title, new.heading_path, new.chunk_text, new.tags);
     end;
+
+    create table if not exists memory_embedding_meta (
+      chunk_id      integer primary key references memory_chunks(id) on delete cascade,
+      model         text    not null,
+      dimensions    integer not null,
+      content_hash  text    not null,
+      updated_at    text    not null default (datetime('now'))
+    );
+
+    create index if not exists idx_memory_embedding_meta_model
+      on memory_embedding_meta(model, dimensions);
+
+    create table if not exists memory_embedding_prototypes (
+      id           integer primary key,
+      name         text    not null unique,
+      category     text    not null,
+      model        text    not null,
+      dimensions   integer not null,
+      content_hash text    not null,
+      updated_at   text    not null default (datetime('now'))
+    );
   `)
+
+  if (vecAvailable) {
+    db.exec(`
+      create virtual table if not exists memory_chunk_vec using vec0(
+        embedding float[${MEMORY_EMBEDDING_DIMENSIONS}] distance_metric=cosine
+      );
+
+      create virtual table if not exists memory_prototype_vec using vec0(
+        embedding float[${MEMORY_EMBEDDING_DIMENSIONS}] distance_metric=cosine
+      );
+    `)
+  }
 
   console.log("[db] ready")
 }
@@ -223,4 +266,8 @@ export function endConversation(id: number, tokens: number): void {
 export function getDb(): Database.Database {
   if (!db) throw new Error("Database not initialized")
   return db
+}
+
+export function isVecAvailable(): boolean {
+  return vecAvailable
 }
