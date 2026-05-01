@@ -130,6 +130,7 @@ type MemorySearchProfile = {
   tokens: string[]
   personQuery: boolean
   eventQuery: boolean
+  bodyInformative: boolean
 }
 
 type MemoryHitSignal = {
@@ -583,6 +584,31 @@ function searchTokens(raw: string): string[] {
   return tokensFromText(raw)
 }
 
+const BODY_INFORMATIVE_BM25_THRESHOLD = -5
+
+function bestBodyBm25(bodyTokens: string[]): number | null {
+  if (bodyTokens.length === 0) return null
+  const query = bodyTokens.map((token) => `"${token.replace(/"/g, '""')}"*`).join(" OR ")
+  try {
+    const row = getDb()
+      .prepare(
+        "select bm25(memory_chunks_fts, 5.0, 2.0, 1.0, 0.5) as r from memory_chunks_fts where memory_chunks_fts match ? order by r limit 1",
+      )
+      .get(query) as { r: number } | undefined
+    return row?.r ?? null
+  } catch {
+    return null
+  }
+}
+
+function computeBodyInformativeness(bodyTokens: string[], bodyPeople: string[]): boolean {
+  if (bodyPeople.length > 0) return true
+  if (bodyTokens.length === 0) return false
+  const top = bestBodyBm25(bodyTokens)
+  if (top === null) return false
+  return top <= BODY_INFORMATIVE_BM25_THRESHOLD
+}
+
 async function knownPeopleHandles(aliasMap: AliasMap): Promise<Set<string>> {
   const handles = new Set<string>()
   if (await pathExists(PEOPLE_DIR)) {
@@ -643,6 +669,8 @@ async function buildSearchProfile(parts: MemoryQueryParts): Promise<MemorySearch
     .join(" ")
     .toLowerCase()
 
+  const bodyInformative = computeBodyInformativeness(bodyTokens, bodyPeopleResolved)
+
   return {
     normalized,
     sender,
@@ -650,6 +678,7 @@ async function buildSearchProfile(parts: MemoryQueryParts): Promise<MemorySearch
     bodyTokens,
     bodyPeople: bodyPeopleResolved,
     tokens: combined.slice(0, MEMORY_QUERY_TOKEN_LIMIT),
+    bodyInformative,
     personQuery:
       Boolean(sender) ||
       bodyPeopleResolved.length > 0 ||
@@ -865,6 +894,7 @@ function shouldInjectHits(hits: MemoryHit[], profile: MemorySearchProfile): bool
   const topSignal = memoryHitSignal(hits[0]!, profile)
 
   if (profile.sender || profile.bodyPeople.length > 0) {
+    if (!profile.bodyInformative) return false
     if (topSignal.senderMatch) return true
     if (topSignal.bodyOverlap >= 2) return true
     if (topSignal.bodyOverlap >= 1 && topSignal.strongOverlap) return true
@@ -1013,6 +1043,13 @@ export async function buildCompletionMessages(
 
   const profile = await buildSearchProfile(queryParts)
   if (profile.tokens.length === 0) return { messages: conversation, recalledChunkIds: [] }
+
+  if ((profile.sender || profile.bodyPeople.length > 0) && !profile.bodyInformative) {
+    console.log(
+      `[memory] skipped query=${JSON.stringify(trimForPrompt(normalizeText(memoryQuery), 120))} sender=${profile.sender ?? "-"} reason=trivial-body`,
+    )
+    return { messages: conversation, recalledChunkIds: [] }
+  }
 
   const personCount = allPersonHandles(profile).length
   const recallLimit = Math.min(

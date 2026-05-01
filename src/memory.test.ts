@@ -103,6 +103,18 @@ test("buildSearchProfile expands sender via alias map", async (t) => {
   assert.ok(profile.tokens.includes("ana"))
 })
 
+test("buildSearchProfile body informativeness short-circuits on body-people", async () => {
+  const withPerson = await __memoryTest.buildSearchProfile({
+    sender: "meowskullz",
+    source: "DM",
+    body: "yayy, who is rea",
+  })
+  assert.equal(withPerson.bodyInformative, true)
+
+  const empty = await __memoryTest.buildSearchProfile({ sender: "meowskullz", source: "DM", body: "" })
+  assert.equal(empty.bodyInformative, false)
+})
+
 test("buildSearchProfile detects people mentioned in body", async () => {
   const profile = await __memoryTest.buildSearchProfile({
     sender: "meowskullz",
