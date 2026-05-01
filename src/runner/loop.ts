@@ -41,7 +41,8 @@ async function waitForNextEvent(convId: number, hooks: LoopHooks): Promise<void>
 }
 
 async function stopLoopForGuard(state: LoopState, hooks: LoopHooks, reason: string): Promise<RunLoopExit> {
-  const guardMessage = `[system] safety stop: ${reason}. pausing until a new external event wakes niri again.`
+  const guardMessage =
+    `[system] hey, you've been going for a while (${reason}). are you stuck and need to tell who you're talking to there's a problem? or is nothing happening and maybe it's time for a rest? remember to tell your important people you are resting if you are going to.`
   console.warn(`[runner] ${reason}`)
   state.conversation.push({
     role: "user",

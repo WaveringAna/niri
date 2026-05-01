@@ -632,11 +632,33 @@ export function shouldFallback(err: unknown): boolean {
     if (!err.status || err.status === 429 || err.status >= 500) return true
     return false
   }
-  // Node fetch errors (ECONNREFUSED, ENOTFOUND, ETIMEDOUT…)
-  if (err instanceof Error) {
-    return /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|ECONNRESET|fetch failed/i.test(err.message)
+  return isTransientTransportError(err)
+}
+
+function errorCauseChainText(err: unknown): string {
+  const parts: string[] = []
+  let current: unknown = err
+
+  for (let depth = 0; depth < 4 && current instanceof Error; depth++) {
+    parts.push(current.name, current.message)
+    const withMetadata = current as Error & { code?: unknown; cause?: unknown }
+    if (typeof withMetadata.code === "string") parts.push(withMetadata.code)
+    current = withMetadata.cause
   }
-  return false
+
+  return parts.join("\n")
+}
+
+/**
+ * Detects retryable network/stream failures thrown below the OpenAI SDK.
+ */
+export function isTransientTransportError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+
+  const text = errorCauseChainText(err)
+  return /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|ECONNRESET|EPIPE|UND_ERR|fetch failed|terminated|socket hang up|other side closed|aborted/i.test(
+    text,
+  )
 }
 
 const PROMPT_TOO_LARGE_PHRASES = [

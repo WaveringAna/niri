@@ -612,6 +612,17 @@ export async function fetchCompletion(
           promptTooLargeAttempts++
           if (recovered) continue
         }
+        if (shouldFallback(fallbackErr)) {
+          const retryAfter = retryDelayMs(fallbackErr)
+          console.warn(
+            `[fallback] transient failure (${errorSummary(fallbackErr)}); retrying after ${Math.ceil(retryAfter / 1000)}s`,
+          )
+          console.log(
+            `[runner] backing off ${Math.ceil(retryAfter / 1000)}s (until ${formatRetryAt(retryAfter)}) before retrying fallback...`,
+          )
+          await sleep(retryAfter)
+          continue
+        }
         logApiError(fallbackErr, `model=${FALLBACK_MODEL} api=${FALLBACK_BASE}`)
         throw fallbackErr
       }
