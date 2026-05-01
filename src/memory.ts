@@ -531,7 +531,7 @@ function discordChannelLabel(channelId: string | null, fallbackContext: string |
 }
 
 function conciseDiscordMemoryQuery(raw: string): MemoryQueryParts | null {
-  const withoutWakeEnvelope = raw.replace(/^\[(wake|incoming|harness restarted)[^\n]*\]\s*/gi, "").trim()
+  const withoutWakeEnvelope = stripWakeEnvelope(raw)
   if (!/\[discord\/(?:dm|channel)\]/i.test(withoutWakeEnvelope)) return null
 
   const blocks = withoutWakeEnvelope
@@ -574,7 +574,7 @@ function extractBulletSection(raw: string, label: string): string[] {
 }
 
 function conciseDiscordBatchMemoryQuery(raw: string): MemoryQueryParts | null {
-  const withoutWakeEnvelope = raw.replace(/^\[(wake|incoming|harness restarted)[^\n]*\]\s*/gi, "").trim()
+  const withoutWakeEnvelope = stripWakeEnvelope(raw)
   if (!/\[discord batch\]/i.test(withoutWakeEnvelope)) return null
 
   const pending = extractBulletSection(withoutWakeEnvelope, "pending preview")
@@ -605,11 +605,17 @@ function conciseDiscordBatchMemoryQuery(raw: string): MemoryQueryParts | null {
   return { sender: lastSender, source: lastSource, body }
 }
 
+const WAKE_ENVELOPE_PATTERN = /^\[(wake|incoming|harness restarted)[^\n]*\]\s*/gi
+
+function stripWakeEnvelope(raw: string): string {
+  return raw.replace(WAKE_ENVELOPE_PATTERN, "").trim()
+}
+
 function memoryQueryForUserMessage(raw: string): MemoryQueryParts {
   return (
     conciseDiscordMemoryQuery(raw) ??
     conciseDiscordBatchMemoryQuery(raw) ??
-    { sender: null, source: null, body: raw }
+    { sender: null, source: null, body: stripWakeEnvelope(raw) }
   )
 }
 
@@ -755,7 +761,7 @@ async function buildSearchProfile(parts: MemoryQueryParts): Promise<MemorySearch
       /\bname\b/.test(normalized) ||
       /\bfriend\b/.test(normalized),
     eventQuery:
-      /\b(what happened|when|yesterday|today|tonight|earlier|before|after|restart|restarted|session|wake)\b/.test(
+      /\b(what happened|when|yesterday|today|tonight|earlier|before|after|session|wake)\b/.test(
         normalized,
       ) ||
       /\b\d{4}-\d{2}-\d{2}\b/.test(normalized) ||
