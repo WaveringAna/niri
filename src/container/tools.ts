@@ -1,14 +1,16 @@
 import { randomBytes } from "crypto"
+import fs from "fs/promises"
 import path from "path"
 import {
   DEFAULT_COMMAND_TIMEOUT_MS,
   DEFAULT_FILE_TIMEOUT_MS,
   IMAGE_MAX_BYTES,
   IMAGE_ROOT,
+  USE_DOCKER_SHELL,
   normalizeTimeoutMs,
   resolveMaxLines,
 } from "./config.js"
-import { runRaw } from "./shell.js"
+import { currentWorkingDirectory, runRaw } from "./shell.js"
 import type { EditResult, ImageToolPayload, ModelImageInput } from "./types.js"
 
 function shouldRedirectStdinToDevNullByDefault(command: string): boolean {
@@ -98,6 +100,47 @@ function normalizeImagePath(filePath: string): string {
   return normalized
 }
 
+async function resolveLocalPath(filePath: string, timeoutMs: number): Promise<string> {
+  const raw = String(filePath ?? "").trim()
+  if (!raw) throw new Error("path is required")
+  if (path.isAbsolute(raw)) return path.normalize(raw)
+  return path.resolve(await currentWorkingDirectory(timeoutMs), raw)
+}
+
+function imageMimeFromBytes(filePath: string, data: Buffer): string | null {
+  if (data.length >= 8 && data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return "image/png"
+  }
+  if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return "image/jpeg"
+  if (data.length >= 6 && (data.subarray(0, 6).toString("ascii") === "GIF87a" || data.subarray(0, 6).toString("ascii") === "GIF89a")) {
+    return "image/gif"
+  }
+  if (data.length >= 12 && data.subarray(0, 4).toString("ascii") === "RIFF" && data.subarray(8, 12).toString("ascii") === "WEBP") {
+    return "image/webp"
+  }
+  if (data.length >= 2 && data.subarray(0, 2).toString("ascii") === "BM") return "image/bmp"
+  if (
+    data.length >= 4 &&
+    (data.subarray(0, 4).equals(Buffer.from([0x49, 0x49, 0x2a, 0x00])) ||
+      data.subarray(0, 4).equals(Buffer.from([0x4d, 0x4d, 0x00, 0x2a])))
+  ) {
+    return "image/tiff"
+  }
+
+  const ext = path.extname(filePath).toLowerCase()
+  const byExt: Record<string, string> = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+  }
+  return byExt[ext] ?? null
+}
+
 /**
  * Read an image from the container and encode it as a data URL for multimodal input.
  * Only paths inside the configured IMAGE_ROOT are allowed.
@@ -110,6 +153,29 @@ function normalizeImagePath(filePath: string): string {
 export async function readImageForModel(filePath: string, timeoutMs?: number): Promise<ModelImageInput> {
   const safePath = normalizeImagePath(filePath)
   const opTimeoutMs = normalizeTimeoutMs(timeoutMs, DEFAULT_FILE_TIMEOUT_MS)
+
+  if (!USE_DOCKER_SHELL) {
+    let st
+    try {
+      st = await fs.stat(safePath)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      throw new Error(`could not stat ${safePath}: ${message}`)
+    }
+    if (!st.isFile()) throw new Error(`not a regular file: ${safePath}`)
+    if (st.size <= 0) throw new Error(`file is empty: ${safePath}`)
+    if (st.size > IMAGE_MAX_BYTES) throw new Error(`file too large: ${st.size} bytes (max ${IMAGE_MAX_BYTES})`)
+
+    const data = await fs.readFile(safePath)
+    const mime = imageMimeFromBytes(safePath, data)
+    if (!mime) throw new Error(`unsupported image type: ${safePath}`)
+    return {
+      path: safePath,
+      mime,
+      bytes: data.length,
+      dataUrl: `data:${mime};base64,${data.toString("base64")}`,
+    }
+  }
 
   const py = [
     "import base64, imghdr, json, mimetypes, os, stat, sys, warnings",
@@ -164,10 +230,7 @@ export async function readImageForModel(filePath: string, timeoutMs?: number): P
     "})",
   ].join("\n")
 
-  const raw = await runRaw(
-    `python3 -c ${shellQuote(py)} ${shellQuote(safePath)} ${shellQuote(String(IMAGE_MAX_BYTES))}`,
-    { timeoutMs: opTimeoutMs },
-  )
+  const raw = await runRaw(pythonCommand(py, [safePath, String(IMAGE_MAX_BYTES)]), { timeoutMs: opTimeoutMs })
 
   let parsed: ImageToolPayload
 
@@ -201,6 +264,22 @@ function shellQuote(str: string): string {
   return "'" + str.replace(/'/g, "'\\''") + "'"
 }
 
+function pythonCommand(source: string, args: string[] = []): string {
+  const token = `NIRI_PY_${randomBytes(8).toString("hex").toUpperCase()}`
+  const scriptPath = `/tmp/niri-${randomBytes(8).toString("hex")}.py`
+  return [
+    `cat > ${shellQuote(scriptPath)} << '${token}'`,
+    source,
+    token,
+    `python3 ${shellQuote(scriptPath)} ${args.map(shellQuote).join(" ")}`,
+    `rm -f ${shellQuote(scriptPath)}`,
+  ].join("\n")
+}
+
+function wrappedBase64(str: string): string {
+  return Buffer.from(str, "utf8").toString("base64").match(/.{1,76}/g)?.join("\n") ?? ""
+}
+
 /**
  * Read a file from the container with optional line-range selection.
  * Returns content with a metadata header showing the line range and total line count.
@@ -219,6 +298,19 @@ export async function readFile(filePath: string, startLine = 1, endLine?: number
 
   if (!Number.isFinite(start) || (end !== undefined && !Number.isFinite(end))) {
     throw new Error(`readFile: invalid line range (${startLine}, ${endLine})`)
+  }
+
+  if (!USE_DOCKER_SHELL) {
+    const resolvedPath = await resolveLocalPath(filePath, opTimeoutMs)
+    const content = await fs.readFile(resolvedPath, "utf8")
+    const lines = content.split("\n")
+    if (lines.at(-1) === "") lines.pop()
+    const totalLines = lines.length
+    const effectiveEnd = end ?? Math.min(start + 99, totalLines > 0 ? totalLines : start + 99)
+    const selected = lines.slice(start - 1, effectiveEnd).join("\n")
+    const rangeStr = `lines ${start}–${effectiveEnd}`
+    const totalStr = totalLines > 0 ? ` of ${totalLines} total` : ""
+    return `[${filePath}  ${rangeStr}${totalStr}]\n${selected}`
   }
 
   const quoted = shellQuote(filePath)
@@ -257,18 +349,45 @@ export async function editFile(filePath: string, oldText: string, newText: strin
 
   const opTimeoutMs = normalizeTimeoutMs(timeoutMs, DEFAULT_FILE_TIMEOUT_MS)
 
-  const payload = Buffer.from(
-    JSON.stringify({ path: filePath, old_text: oldText, new_text: newText }),
-    "utf8",
-  ).toString("base64")
-  const payloadLines = payload.match(/.{1,76}/g)?.join("\n") ?? payload
-  const heredocToken = `NIRI_EDIT_${randomBytes(8).toString("hex").toUpperCase()}`
+  if (!USE_DOCKER_SHELL) {
+    const resolvedPath = await resolveLocalPath(filePath, opTimeoutMs)
+    let content: string
+    try {
+      content = await fs.readFile(resolvedPath, "utf8")
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return { ok: false, message: `could not read ${filePath}: ${message}` }
+    }
+
+    const count = content.split(oldText).length - 1
+    if (count === 0) return { ok: false, message: `old_text not found in ${filePath}` }
+    if (count > 1) return { ok: false, message: `old_text found ${count} times in ${filePath} — must be unique` }
+
+    try {
+      await fs.writeFile(resolvedPath, content.replace(oldText, newText), "utf8")
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return { ok: false, message: `could not write ${filePath}: ${message}` }
+    }
+
+    const linesDelta = newText.split("\n").length - oldText.split("\n").length
+    const sign = linesDelta >= 0 ? "+" : ""
+    return {
+      ok: true,
+      message: `edited ${filePath} (${sign}${linesDelta} lines)`,
+    }
+  }
+
+  const payload = wrappedBase64(JSON.stringify({ path: filePath, old_text: oldText, new_text: newText }))
+  const payloadToken = `NIRI_EDIT_PAYLOAD_${randomBytes(8).toString("hex").toUpperCase()}`
+  const payloadPath = `/tmp/niri-edit-${randomBytes(8).toString("hex")}.b64`
 
   const py = [
     "import base64, json, sys",
     "def out(obj):",
     "    print(json.dumps(obj, ensure_ascii=False))",
-    "payload = json.loads(base64.b64decode(sys.stdin.read()).decode('utf-8'))",
+    "with open(sys.argv[1], 'r', encoding='ascii') as f:",
+    "    payload = json.loads(base64.b64decode(f.read()).decode('utf-8'))",
     "path = payload.get('path', '')",
     "old = payload.get('old_text', '')",
     "new = payload.get('new_text', '')",
@@ -302,7 +421,13 @@ export async function editFile(filePath: string, oldText: string, newText: strin
   ].join("\n")
 
   const raw = await runRaw(
-    `python3 -c ${shellQuote(py)} << '${heredocToken}'\n${payloadLines}\n${heredocToken}`,
+    [
+      `cat > ${shellQuote(payloadPath)} << '${payloadToken}'`,
+      payload,
+      payloadToken,
+      pythonCommand(py, [payloadPath]),
+      `rm -f ${shellQuote(payloadPath)}`,
+    ].join("\n"),
     { timeoutMs: opTimeoutMs },
   )
 

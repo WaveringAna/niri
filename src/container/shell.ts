@@ -4,6 +4,7 @@ import {
   CONTAINER_NAME,
   CONTAINER_USER,
   DEFAULT_COMMAND_TIMEOUT_MS,
+  USE_DOCKER_SHELL,
   normalizeTimeoutMs,
 } from "./config.js"
 import type { RunRawOptions } from "./types.js"
@@ -25,6 +26,35 @@ function cleanOutput(str: string): string {
 
 let bash: pty.IPty | null = null
 
+function spawnBash(): { proc: pty.IPty; backend: string } {
+  const env = process.env as Record<string, string>
+  const options = {
+    name: "xterm-256color",
+    cols: 220, // wide enough to avoid line-wrapping sentinels
+    rows: 50,
+    env,
+  }
+
+  if (USE_DOCKER_SHELL) {
+    // docker exec -it allocates a PTY inside the container so bash runs
+    // interactively with job control. Combined with node-pty on the host
+    // this gives us a proper interactive shell where Ctrl+C interrupts
+    // the running command rather than killing bash itself.
+    return {
+      proc: pty.spawn("docker", ["exec", "-it", "-u", CONTAINER_USER, CONTAINER_NAME, "bash"], options),
+      backend: `docker:${CONTAINER_NAME}`,
+    }
+  }
+
+  return {
+    proc: pty.spawn("bash", ["--noprofile", "--norc", "-i"], {
+      ...options,
+      cwd: process.cwd(),
+    }),
+    backend: "local",
+  }
+}
+
 /**
  * Opens and initializes the persistent PTY bash session inside the configured container.
  *
@@ -35,19 +65,12 @@ let bash: pty.IPty | null = null
  * @throws If the container shell cannot be started or initialized.
  */
 export async function openBash(): Promise<void> {
-  // docker exec -it allocates a PTY inside the container so bash runs
-  // interactively with job control. Combined with node-pty on the host
-  // this gives us a proper interactive shell where Ctrl+C interrupts
-  // the running command rather than killing bash itself.
-  const proc = pty.spawn("docker", ["exec", "-it", "-u", CONTAINER_USER, CONTAINER_NAME, "bash"], {
-    name: "xterm-256color",
-    cols: 220, // wide enough to avoid line-wrapping sentinels
-    rows: 50,
-    env: process.env as Record<string, string>,
-  })
+  if (bash) return
+
+  const { proc, backend } = spawnBash()
 
   proc.onExit(({ exitCode }) => {
-    console.log(`[bash] exited with code ${exitCode}`)
+    console.log(`[bash:${backend}] exited with code ${exitCode}`)
     if (bash === proc) bash = null
   })
 
@@ -59,7 +82,8 @@ export async function openBash(): Promise<void> {
     const d = proc.onExit(() => {
       clearTimeout(timer)
       d.dispose()
-      reject(new Error(`bash exited immediately — is the '${CONTAINER_NAME}' container running?`))
+      const detail = USE_DOCKER_SHELL ? ` — is the '${CONTAINER_NAME}' container running?` : ""
+      reject(new Error(`bash exited immediately${detail}`))
     })
   })
 
@@ -68,8 +92,8 @@ export async function openBash(): Promise<void> {
   // so the sentinel appears in the output immediately as a false positive.
   //
   // Strategy: disable echo via a PROMPT-BASED signal.
-  //   1. Send `stty -echo; export PS1='<token>' PS2=''`
-  //   2. Wait for <token> to appear in the PTY output
+  //   1. Send `stty -echo` without any unique token on that input line.
+  //   2. Send `export PS1='<token>' PS2=''` and wait for the prompt token.
   //   3. Now echo is off meaning sentinel detection is safe for all subsequent calls.
   //   4. Use runRaw to source .bashrc and clear the prompt.
 
@@ -77,26 +101,32 @@ export async function openBash(): Promise<void> {
 
   await new Promise<void>((resolve, reject) => {
     let buf = ""
-    const d = proc.onData((chunk: string) => {
+    let dataDisposable: { dispose(): void } | null = null
+    const timer = setTimeout(() => {
+      dataDisposable?.dispose()
+      reject(new Error("bash init timed out"))
+    }, 10_000)
+    dataDisposable = proc.onData((chunk: string) => {
       buf += chunk
       const clean = cleanOutput(buf)
       if (clean.includes(initToken)) {
-        d.dispose()
+        clearTimeout(timer)
+        dataDisposable?.dispose()
         resolve()
       }
     })
-    // stty runs directly on the PTY (no stdin redirect); this is intentional.
-    proc.write(`stty -echo; export PS1='${initToken}' PS2=''\n`)
+    // Keep the token off the stty line. Otherwise the terminal echo can make
+    // readiness detection fire before echo has actually been disabled.
+    proc.write("stty -echo\n")
     setTimeout(() => {
-      d.dispose()
-      reject(new Error("bash init timed out"))
-    }, 10_000)
+      proc.write(`export PS1='${initToken}' PS2=''\n`)
+    }, 25)
   })
 
   // Echo is now off. Clear the token prompt, source .bashrc, done.
   await runRaw("export PS1='' PS2=''")
   await runRaw("source ~/.bashrc 2>/dev/null || true; export PS1='' PS2=''")
-  console.log("[bash] session ready")
+  console.log(`[bash:${backend}] session ready`)
 }
 
 /**
@@ -107,6 +137,10 @@ export function closeBash(): void {
     bash.kill()
     bash = null
   }
+}
+
+export async function currentWorkingDirectory(timeoutMs?: number): Promise<string> {
+  return (await runRaw("pwd -P", { timeoutMs, redirectStdinToDevNull: true })).trim()
 }
 
 /**

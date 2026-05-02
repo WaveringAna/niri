@@ -1,14 +1,19 @@
 import path from "path"
 
+const configuredContainerName = (process.env.NIRI_CONTAINER ?? "").trim()
+const configuredContainerUser = (process.env.NIRI_USER ?? "").trim()
+
+/** Whether command execution should go through Docker instead of a local shell. */
+export const USE_DOCKER_SHELL = configuredContainerName.length > 0 && configuredContainerUser.length > 0
 /** Docker container name used for command execution. */
-export const CONTAINER_NAME = (process.env.NIRI_CONTAINER ?? "niri").trim() || "niri"
+export const CONTAINER_NAME = configuredContainerName || "niri"
 /** Linux user inside the container used for command execution. */
-export const CONTAINER_USER = (process.env.NIRI_USER ?? "niri").trim() || "niri"
+export const CONTAINER_USER = configuredContainerUser || "niri"
 
 /** Absolute image root allowed for `image_tool` operations. */
 export const IMAGE_ROOT = (() => {
   const configured = (process.env.IMAGE_ROOT ?? "").trim()
-  const root = configured || `/home/${CONTAINER_USER}/images`
+  const root = configured || (USE_DOCKER_SHELL ? `/home/${CONTAINER_USER}/images` : path.resolve(process.cwd(), "home", "images"))
   if (!root.startsWith("/")) {
     throw new Error(`IMAGE_ROOT must be an absolute path, got: ${root}`)
   }

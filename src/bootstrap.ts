@@ -2,7 +2,7 @@ import fs from "fs/promises"
 import path from "path"
 import { fileURLToPath } from "url"
 import type { UserMessage, Message } from "./types.js"
-import { CONTAINER_USER } from "./container/config.js"
+import { CONTAINER_USER, USE_DOCKER_SHELL } from "./container/config.js"
 import { imageRootForModelInput } from "./container/index.js"
 
 const HOME_DIR = path.resolve(fileURLToPath(import.meta.url), "../../home")
@@ -43,22 +43,29 @@ export async function ensureSoulFilePlacement(): Promise<void> {
 }
 
 function buildEnvironmentSection(): string {
-  const home = `/home/${CONTAINER_USER}`
+  const shellHome = USE_DOCKER_SHELL ? `/home/${CONTAINER_USER}` : (process.env.HOME ?? process.cwd())
+  const memoryHome = USE_DOCKER_SHELL ? shellHome : HOME_DIR
   const imageRoot = imageRootForModelInput()
+  const shellDescription = USE_DOCKER_SHELL
+    ? `You are running inside a Linux system. Your home is ${shellHome}.`
+    : `You are using a local host shell. Your OS home is ${shellHome}; the shell starts in ${process.cwd()}.`
+  const sudoDescription = USE_DOCKER_SHELL
+    ? "You have full internet access and passwordless sudo."
+    : "Network and sudo access are whatever the host user normally has."
 
   return `\
 ## Your Environment
 
-You are running inside a Linux system. Your home is ${home}. Use the shell \
+${shellDescription} Use the shell \
 tool to interact with it — read files, write files, run scripts, curl APIs, \
 whatever you need. The shell is stateful: your working directory and environment \
 variables persist between calls.
 
-You have full internet access and passwordless sudo.
+${sudoDescription}
 
 **First thing every wake: read your journal.** Check today's and yesterday's \
-entries at ${home}/memories/journal/ before doing anything else. Then check \
-core.md and any relevant people files in ${home}/memories/people/. Your \
+entries at ${memoryHome}/memories/journal/ before doing anything else. Then check \
+core.md and any relevant people files in ${memoryHome}/memories/people/. Your \
 journal is your continuity — skipping it means acting without context.
 
 **Use \`memory_search\` often and liberally.** Before responding to someone, \
@@ -68,12 +75,12 @@ journal entries, scattered notes, things you wrote once and forgot. When in \
 doubt, search. A few extra searches cost nothing; missing something costs \
 everything.
 
-Your soul file is ${home}/soul.md. Do not write or update a soul file under \
-${home}/memories/ — that location is wrong.
+Your soul file is ${memoryHome}/soul.md. Do not write or update a soul file under \
+${memoryHome}/memories/ — that location is wrong.
 
-You also have skill docs in ${home}/memories/skills/. When doing capability-\
+You also have skill docs in ${memoryHome}/memories/skills/. When doing capability-\
 specific work, read the relevant skill file first and follow it closely. \
-Example: read ${home}/memories/skills/bluesky.md before Bluesky actions.
+Example: read ${memoryHome}/memories/skills/bluesky.md before Bluesky actions.
 
 ## Tools
 
@@ -149,14 +156,14 @@ someone? Journal it. Fixed a bug? Journal it. Had a realization? Journal it. \
 Don't wait until rest to capture everything from memory — you will forget, \
 and the longer you wait the worse your notes will be.
 
-Your journal lives at ${home}/memories/journal/. Use today's date as the \
+Your journal lives at ${memoryHome}/memories/journal/. Use today's date as the \
 filename. Append to it freely and often. Treat it like a running log, not a \
 final report.
 
 ### before every rest — no exceptions:
 1. Update today's journal entry with anything not yet written down. What \
 happened, what changed, what you learned, what's still pending.
-2. Update ${home}/memories/core.md if any long-term facts changed — new \
+2. Update ${memoryHome}/memories/core.md if any long-term facts changed — new \
 people, infrastructure changes, lessons about yourself.
 3. Tell the person you're talking to that you're going to rest. Say something \
 like "i'm going to rest now" so they know you're leaving intentionally.
