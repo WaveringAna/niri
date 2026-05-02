@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { __loopTest } from "./loop.js"
 import type { LoopState } from "./types.js"
+import type { Message } from "../types.js"
 
 function makeState(): LoopState {
   return {
@@ -17,7 +18,7 @@ function makeState(): LoopState {
 
 test("applyDiscordSendNudge appends a follow-up user nudge for unsent Discord replies", () => {
   const state = makeState()
-  const turnMessages = [
+  const turnMessages: Message[] = [
     {
       role: "user",
       content: "[user/discord] [discord/dm] hey are you there",
@@ -60,7 +61,7 @@ test("applyDiscordSendNudge fires after a harness restart when the discord event
 
 test("applyDiscordSendNudge does not fire when discord_send was already called", () => {
   const state = makeState()
-  const turnMessages = [
+  const turnMessages: Message[] = [
     {
       role: "user",
       content: "[user/discord] [discord/channel] can you reply",

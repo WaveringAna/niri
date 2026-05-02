@@ -13,3 +13,5 @@ session.json
 # agent home — ignore everything except the example file
 home/*
 !home/soul.example.md
+
+.codex

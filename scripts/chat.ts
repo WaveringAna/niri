@@ -59,12 +59,17 @@ let streamStatusCheckInFlight = false
 
 const STREAM_SETTLE_CHECK_MS = 250
 
+const restorePrompt = () => {
+  rl.resume()
+  process.stdin.resume()
+  rl.prompt()
+}
+
 const print = (line: string) => {
   endActiveStream()
   rl.pause()
   process.stdout.write(`\r\x1b[K${line}\n`)
-  rl.resume()
-  rl.prompt(true)
+  restorePrompt()
 }
 
 const startActiveStream = (kind: "text" | "thinking") => {
@@ -104,8 +109,7 @@ function endActiveStream(): void {
   process.stdout.write("\n")
   activeStreamKind = null
   activeStreamMuted = false
-  rl.resume()
-  rl.prompt(true)
+  restorePrompt()
 }
 
 const scheduleStreamSettleCheck = () => {

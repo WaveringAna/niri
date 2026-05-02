@@ -1,6 +1,11 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import type OpenAI from "openai"
 import { isTransientTransportError, sanitizeMessages, shouldFallback } from "./util.js"
+
+type AssistantMessageWithReasoning = OpenAI.Chat.ChatCompletionAssistantMessageParam & {
+  reasoning_content?: string
+}
 
 test("sanitizeMessages backfills empty reasoning_content for assistant history", () => {
   const messages = sanitizeMessages([
@@ -14,7 +19,7 @@ test("sanitizeMessages backfills empty reasoning_content for assistant history",
       content: "reply with reasoning",
       refusal: null,
       reasoning_content: "thinking...",
-    },
+    } as AssistantMessageWithReasoning,
   ])
 
   const assistant = messages[0] as (typeof messages)[number] & { reasoning_content?: string }

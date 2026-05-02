@@ -1,6 +1,6 @@
-import type OpenAI from "openai"
 import { recordMetric } from "../metrics.js"
 import { emit } from "../stream.js"
+import type { Message } from "../types.js"
 import {
   CONTEXT_COMPACT_TRIGGER_TOKENS,
   ENABLE_THINKING,
@@ -82,13 +82,13 @@ async function processAssistantTurn(convId: number, state: LoopState, hooks: Loo
  * conversational text but did not call discord_send. Injects a system
  * nudge so the next turn actually delivers the message.
  */
-function isDiscordInputMessage(message: OpenAI.Chat.ChatCompletionMessage | OpenAI.Chat.ChatCompletionMessageParam): boolean {
+function isDiscordInputMessage(message: Message): boolean {
   return message.role === "user" && typeof message.content === "string" && /\[discord\/(?:dm|batch|channel)\]/i.test(message.content)
 }
 
 function hasDiscordInputForTurn(
-  conversation: OpenAI.Chat.ChatCompletionMessageParam[],
-  turnMessages: OpenAI.Chat.ChatCompletionMessage[],
+  conversation: Message[],
+  turnMessages: Message[],
   turnStart: number,
 ): boolean {
   if (turnMessages.some(isDiscordInputMessage)) return true
@@ -108,8 +108,8 @@ function hasDiscordInputForTurn(
 
 function applyDiscordSendNudge(
   state: LoopState,
-  turnMessages: OpenAI.Chat.ChatCompletionMessage[],
-  turnStart: number,
+  turnMessages: Message[],
+  turnStart = state.conversation.length,
 ): boolean {
   // Check if the assistant is responding to active Discord input, including
   // the post-restart case where the triggering user message is already in the
