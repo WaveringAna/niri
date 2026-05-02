@@ -1,6 +1,10 @@
 import type OpenAI from "openai"
 
-export type Message = OpenAI.Chat.ChatCompletionMessageParam
+export type AssistantMessageWithReasoning = OpenAI.Chat.ChatCompletionAssistantMessageParam & {
+  reasoning_content?: string
+}
+
+export type Message = OpenAI.Chat.ChatCompletionMessageParam | AssistantMessageWithReasoning
 
 export type TriggerSource = "discord" | "bsky" | "webhook" | "cron" | "chat"
 

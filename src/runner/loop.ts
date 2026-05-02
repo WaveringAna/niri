@@ -33,14 +33,14 @@ enum CycleOutcome {
   Rest = "rest",
 }
 
-export type RunLoopExit = "rest" | "guard_stop"
+export type RunLoopExit = "rest"
 
 async function waitForNextEvent(convId: number, hooks: LoopHooks): Promise<void> {
   const incoming = await hooks.waitForEvent()
   hooks.injectIncomingEvent(convId, incoming)
 }
 
-async function stopLoopForGuard(state: LoopState, hooks: LoopHooks, reason: string): Promise<RunLoopExit> {
+async function applyLoopGuardNudge(state: LoopState, hooks: LoopHooks, reason: string): Promise<void> {
   const guardMessage =
     `[system] hey, you've been going for a while (${reason}). are you stuck and need to tell who you're talking to there's a problem? or is nothing happening and maybe it's time for a rest? remember to tell your important people you are resting if you are going to.`
   console.warn(`[runner] ${reason}`)
@@ -50,7 +50,6 @@ async function stopLoopForGuard(state: LoopState, hooks: LoopHooks, reason: stri
   })
   emit({ type: "text", text: guardMessage })
   await hooks.saveSession()
-  return "guard_stop"
 }
 
 async function processAssistantTurn(convId: number, state: LoopState, hooks: LoopHooks): Promise<CycleOutcome> {
@@ -121,6 +120,7 @@ function applyDiscordSendNudge(
   const hasDiscordSend = turnMessages.some(
     (m) =>
       m.role === "assistant" &&
+      "tool_calls" in m &&
       Array.isArray(m.tool_calls) &&
       m.tool_calls.some((tc) => tc.type === "function" && tc.function.name === "discord_send"),
   )
@@ -254,15 +254,22 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
     }
 
     if (turnCount >= RUNNER_MAX_TURNS) {
-      return stopLoopForGuard(state, hooks, `loop guard tripped after ${turnCount} turns`)
+      await applyLoopGuardNudge(state, hooks, `loop guard tripped after ${turnCount} turns`)
+      turnCount = 0
+      previousTurnSignature = null
+      consecutiveIdenticalToolTurns = 0
+      continue
     }
 
     if (consecutiveIdenticalToolTurns >= RUNNER_MAX_IDENTICAL_TOOL_TURNS && previousTurnSignature) {
-      return stopLoopForGuard(
+      await applyLoopGuardNudge(
         state,
         hooks,
         `loop guard tripped after ${consecutiveIdenticalToolTurns} identical assistant/tool turns`,
       )
+      previousTurnSignature = null
+      consecutiveIdenticalToolTurns = 0
+      continue
     }
 
     await applyLLMCompaction(state, "post-turn")
@@ -272,6 +279,7 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
 }
 
 export const __loopTest = {
+  applyLoopGuardNudge,
   applyDiscordSendNudge,
   hasDiscordInputForTurn,
   waitForNextEvent,

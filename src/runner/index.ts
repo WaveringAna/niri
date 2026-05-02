@@ -243,11 +243,7 @@ export async function wake(event: UserMessage): Promise<void> {
       clearSession,
       saveSession: async () => saveSession(state.conversation),
     })
-    if (exit === "rest") {
-      setRunnerPresence("resting")
-    } else {
-      console.warn("[runner] loop guard stopped the run; waiting for a new external event")
-    }
+    if (exit === "rest") setRunnerPresence("resting")
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error(`[runner] loop aborted: ${message}`)
