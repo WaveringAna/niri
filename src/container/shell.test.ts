@@ -1,0 +1,45 @@
+import test from "node:test"
+import assert from "node:assert/strict"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { closeBash } from "./shell.js"
+import { runCommand } from "./tools.js"
+
+test.afterEach(() => {
+  closeBash()
+})
+
+test("sudo commands run as one-off commands with stdin closed", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "niri-fake-sudo-"))
+  const fakeSudo = path.join(dir, "sudo")
+  await fs.writeFile(
+    fakeSudo,
+    [
+      "#!/bin/sh",
+      "if [ -t 0 ]; then",
+      "  echo stdin_tty",
+      "else",
+      "  echo stdin_not_tty",
+      "fi",
+      'exec "$@"',
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  )
+
+  const oldPath = process.env.PATH
+  process.env.PATH = `${dir}${path.delimiter}${oldPath ?? ""}`
+  try {
+    const output = await runCommand("echo before; sudo printf ok; echo after", 0, 5_000)
+
+    assert.equal(output, "before\nstdin_not_tty\nokafter")
+  } finally {
+    if (oldPath === undefined) {
+      delete process.env.PATH
+    } else {
+      process.env.PATH = oldPath
+    }
+    await fs.rm(dir, { recursive: true, force: true })
+  }
+})

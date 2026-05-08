@@ -1,5 +1,6 @@
 import * as pty from "node-pty"
 import { randomBytes } from "crypto"
+import { spawn } from "child_process"
 import {
   CONTAINER_NAME,
   CONTAINER_USER,
@@ -214,6 +215,55 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
       // PTY, so force a fresh docker exec session next time.
       session.kill()
       if (bash === session) bash = null
+      reject(new Error(`Command timed out after ${timeoutMs}ms: ${command}`))
+    }, timeoutMs)
+  })
+}
+
+/**
+ * Runs a command as a one-off child process instead of through the persistent
+ * PTY shell. This follows Codex's shell-tool execution model for commands
+ * that should not inherit interactive stdin, notably sudo.
+ */
+export async function runOneOff(command: string, cwd: string, options: RunRawOptions = {}): Promise<string> {
+  const timeoutMs = normalizeTimeoutMs(options.timeoutMs, DEFAULT_COMMAND_TIMEOUT_MS)
+  const args = USE_DOCKER_SHELL
+    ? ["exec", "-i", "-u", CONTAINER_USER, "-w", cwd, CONTAINER_NAME, "bash", "-c", command]
+    : ["-c", command]
+  const program = USE_DOCKER_SHELL ? "docker" : "bash"
+
+  return new Promise((resolve, reject) => {
+    let raw = ""
+    let settled = false
+    const child = spawn(program, args, {
+      cwd: USE_DOCKER_SHELL ? undefined : cwd,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+
+    child.stdout.on("data", (chunk) => {
+      raw += chunk.toString("utf8")
+    })
+    child.stderr.on("data", (chunk) => {
+      raw += chunk.toString("utf8")
+    })
+    child.on("error", (err) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(err)
+    })
+    child.on("close", () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(cleanOutput(raw).trimEnd())
+    })
+
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      child.kill("SIGKILL")
       reject(new Error(`Command timed out after ${timeoutMs}ms: ${command}`))
     }, timeoutMs)
   })

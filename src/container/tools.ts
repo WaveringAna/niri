@@ -10,8 +10,12 @@ import {
   normalizeTimeoutMs,
   resolveMaxLines,
 } from "./config.js"
-import { currentWorkingDirectory, runRaw } from "./shell.js"
+import { currentWorkingDirectory, runOneOff, runRaw } from "./shell.js"
 import type { EditResult, ImageToolPayload, ModelImageInput } from "./types.js"
+
+function invokesSudo(command: string): boolean {
+  return /(^|[;&|({]\s*)sudo(\s|$)/.test(String(command ?? ""))
+}
 
 function shouldRedirectStdinToDevNullByDefault(command: string): boolean {
   // This runner executes in a real PTY, but we still want to avoid accidentally
@@ -76,10 +80,13 @@ function shouldRedirectStdinToDevNullByDefault(command: string): boolean {
  */
 export async function runCommand(command: string, maxLines?: number, timeoutMs?: number): Promise<string> {
   const cap = resolveMaxLines(command, maxLines)
-  const raw = await runRaw(command, {
-    timeoutMs: normalizeTimeoutMs(timeoutMs, DEFAULT_COMMAND_TIMEOUT_MS),
-    redirectStdinToDevNull: shouldRedirectStdinToDevNullByDefault(command),
-  })
+  const opTimeoutMs = normalizeTimeoutMs(timeoutMs, DEFAULT_COMMAND_TIMEOUT_MS)
+  const raw = invokesSudo(command)
+    ? await runOneOff(command, await currentWorkingDirectory(opTimeoutMs), { timeoutMs: opTimeoutMs })
+    : await runRaw(command, {
+        timeoutMs: opTimeoutMs,
+        redirectStdinToDevNull: shouldRedirectStdinToDevNullByDefault(command),
+      })
 
   if (cap === 0) return raw
 
