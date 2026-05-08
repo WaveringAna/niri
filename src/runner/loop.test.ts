@@ -37,6 +37,26 @@ test("applyDiscordSendNudge appends a follow-up user nudge for unsent Discord re
   assert.match(String(state.conversation[0]?.content), /did not call discord_send/i)
 })
 
+test("applyDiscordSendNudge fires for [discord batch] envelopes (space, not slash)", () => {
+  const state = makeState()
+  const turnMessages: Message[] = [
+    {
+      role: "user",
+      content: "[user/discord] [discord batch] 2026-05-01T03:10:50.162Z -> 2026-05-01T03:11:22.198Z\n@meowskullz: hi\n@meowskullz: u there",
+    },
+    {
+      role: "assistant",
+      content: "yeah hi",
+    },
+  ]
+
+  const nudged = __loopTest.applyDiscordSendNudge(state, turnMessages)
+
+  assert.equal(nudged, true)
+  assert.equal(state.conversation.length, 1)
+  assert.match(String(state.conversation[0]?.content), /did not call discord_send/i)
+})
+
 test("applyDiscordSendNudge fires after a harness restart when the discord event is pre-turn context", () => {
   const state = makeState()
   state.conversation.push(

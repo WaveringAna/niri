@@ -82,7 +82,7 @@ async function processAssistantTurn(convId: number, state: LoopState, hooks: Loo
  * nudge so the next turn actually delivers the message.
  */
 function isDiscordInputMessage(message: Message): boolean {
-  return message.role === "user" && typeof message.content === "string" && /\[discord\/(?:dm|batch|channel)\]/i.test(message.content)
+  return message.role === "user" && typeof message.content === "string" && /\[discord(?:\/(?:dm|channel)| batch)\]/i.test(message.content)
 }
 
 function hasDiscordInputForTurn(
