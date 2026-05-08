@@ -9,6 +9,10 @@ export const USE_DOCKER_SHELL = configuredContainerName.length > 0 && configured
 export const CONTAINER_NAME = configuredContainerName || "niri"
 /** Linux user inside the container used for command execution. */
 export const CONTAINER_USER = configuredContainerUser || "niri"
+/** Repository fallback home used when a local OS home is unavailable. */
+export const REPO_HOME_DIR = path.resolve(process.cwd(), "home")
+/** Harness home for soul, memories, and local databases. */
+export const HOME_DIR = USE_DOCKER_SHELL ? REPO_HOME_DIR : path.resolve(process.env.HOME ?? REPO_HOME_DIR)
 
 /** Absolute image root allowed for `image_tool` operations. */
 export const IMAGE_ROOT = (() => {

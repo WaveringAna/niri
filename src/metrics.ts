@@ -1,8 +1,8 @@
 import Database from "better-sqlite3"
 import fs from "fs"
 import path from "path"
-import { fileURLToPath } from "url"
 import type OpenAI from "openai"
+import { HOME_DIR } from "./container/config.js"
 import { getDb } from "./db.js"
 import type { Message } from "./types.js"
 import type { MemorySearchResult } from "./memory.js"
@@ -152,7 +152,6 @@ interface MetricRow {
   createdAt: string
 }
 
-const HOME_DIR = path.resolve(fileURLToPath(import.meta.url), "../../home")
 const DB_PATH = path.join(HOME_DIR, "metrics.db")
 
 let db: Database.Database

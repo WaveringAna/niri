@@ -1,13 +1,12 @@
 import fs from "fs/promises"
 import path from "path"
 import { createHash } from "crypto"
-import { fileURLToPath } from "url"
+import { HOME_DIR } from "./container/config.js"
 import type { Message } from "./types.js"
 import { getDb, isVecAvailable, MEMORY_EMBEDDING_DIMENSIONS } from "./db.js"
 import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, embeddingsConfigured, embedTexts } from "./embeddings.js"
 import { recordMetric } from "./metrics.js"
 
-const HOME_DIR = path.resolve(fileURLToPath(import.meta.url), "../../home")
 const MEMORIES_DIR = path.join(HOME_DIR, "memories")
 const JOURNAL_DIR = path.join(MEMORIES_DIR, "journal")
 const PEOPLE_DIR = path.join(MEMORIES_DIR, "people")

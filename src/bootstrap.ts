@@ -1,11 +1,9 @@
 import fs from "fs/promises"
 import path from "path"
-import { fileURLToPath } from "url"
 import type { UserMessage, Message } from "./types.js"
-import { CONTAINER_USER, USE_DOCKER_SHELL } from "./container/config.js"
+import { CONTAINER_USER, HOME_DIR, USE_DOCKER_SHELL } from "./container/config.js"
 import { imageRootForModelInput } from "./container/index.js"
 
-const HOME_DIR = path.resolve(fileURLToPath(import.meta.url), "../../home")
 const SOUL_FILE = path.join(HOME_DIR, "soul.md")
 const MISPLACED_SOUL_FILE = path.join(HOME_DIR, "memories", "soul.md")
 
