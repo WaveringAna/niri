@@ -1,10 +1,10 @@
-import { openBash, closeBash } from "./container/index.js"
-import { createServer } from "./server.js"
-import { initDb } from "./db.js"
-import { initMetricsDb } from "./metrics.js"
-import { shutdown } from "./runner/index.js"
-import { startDiscordGateway } from "./discord/gateway.js"
-import { ensureSoulFilePlacement } from "./bootstrap.js"
+import { openBash, closeBash } from "./container/index"
+import { createServer } from "./server"
+import { initDb } from "./db"
+import { initMetricsDb } from "./metrics"
+import { shutdown } from "./runner/index"
+import { startDiscordGateway } from "./discord/gateway"
+import { ensureSoulFilePlacement } from "./bootstrap"
 
 const PORT = parseInt(process.env.PORT ?? "3000")
 

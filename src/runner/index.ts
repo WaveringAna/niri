@@ -1,11 +1,11 @@
-import { buildBootstrap } from "../bootstrap.js"
-import { endConversation, logMessage, startConversation } from "../db.js"
-import { emit } from "../stream.js"
-import { runLoop } from "./loop.js"
-import { setRunnerPresence } from "./presence.js"
-import type { RunnerStateInternal } from "./types.js"
-import { clearSession, loadSession, saveSession } from "./util.js"
-import type { UserMessage } from "../types.js"
+import { buildBootstrap } from "../bootstrap"
+import { endConversation, logMessage, startConversation } from "../db"
+import { emit } from "../stream"
+import { runLoop } from "./loop"
+import { setRunnerPresence } from "./presence"
+import type { RunnerStateInternal } from "./types"
+import { clearSession, loadSession, saveSession } from "./util"
+import type { UserMessage } from "../types"
 
 let eventResolvers: Array<(event: UserMessage) => void> = []
 let shutdownResolve: (() => void) | null = null

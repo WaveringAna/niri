@@ -1,7 +1,7 @@
 import OpenAI from "openai"
-import { normalizeTimeoutMs } from "../container/config.js"
-import { editFile, readFile, readImageForModel, runCommand } from "../container/index.js"
-import { logMessage } from "../db.js"
+import { normalizeTimeoutMs } from "../container/config"
+import { editFile, readFile, readImageForModel, runCommand } from "../container/index"
+import { logMessage } from "../db"
 import {
   listDiscordBackread,
   listDiscordChannels,
@@ -10,12 +10,12 @@ import {
   scanDiscordChannels,
   sendDiscordMessage,
   setDiscordChannelNote,
-} from "../discord/state.js"
-import { listAliases, removeAlias, searchMemories, setAlias } from "../memory.js"
-import { emit } from "../stream.js"
-import type { ToolHandler } from "./loop-shared.js"
-import { pushToolMessage, recordToolResult, runStandardTool, toolError } from "./loop-tool-runtime.js"
-import { parseImageDetail } from "./util.js"
+} from "../discord/state"
+import { listAliases, removeAlias, searchMemories, setAlias } from "../memory"
+import { emit } from "../stream"
+import type { ToolHandler } from "./loop-shared"
+import { pushToolMessage, recordToolResult, runStandardTool, toolError } from "./loop-tool-runtime"
+import { parseImageDetail } from "./util"
 
 const DEFAULT_WAIT_THEN_CONTINUE_MS = 10_000
 

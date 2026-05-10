@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { __completionTest } from "./loop-completion.js"
+import { __completionTest } from "./loop-completion"
 
 test("consumeCompletionStream preserves reasoning_content on assistant messages", async () => {
   async function* stream() {

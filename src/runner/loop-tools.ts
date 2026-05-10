@@ -1,8 +1,8 @@
-import { emit } from "../stream.js"
-import { buildToolHandlers } from "./loop-tool-registry.js"
-import { executeToolCall, pushToolMessage } from "./loop-tool-runtime.js"
-import type { FunctionToolCall } from "./loop-shared.js"
-import type { LoopHooks, LoopState } from "./types.js"
+import { emit } from "../stream"
+import { buildToolHandlers } from "./loop-tool-registry"
+import { executeToolCall, pushToolMessage } from "./loop-tool-runtime"
+import type { FunctionToolCall } from "./loop-shared"
+import type { LoopHooks, LoopState } from "./types"
 
 function skipRemainingToolCalls(
   convId: number,

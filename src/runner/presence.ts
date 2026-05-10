@@ -5,10 +5,6 @@ type Listener = (presence: RunnerPresence) => void
 const listeners = new Set<Listener>()
 let currentPresence: RunnerPresence = "resting"
 
-export function getRunnerPresence(): RunnerPresence {
-  return currentPresence
-}
-
 export function setRunnerPresence(presence: RunnerPresence): void {
   if (presence === currentPresence) return
   currentPresence = presence

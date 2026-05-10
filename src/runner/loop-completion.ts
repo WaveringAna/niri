@@ -1,9 +1,9 @@
 import OpenAI from "openai"
-import { logMessage } from "../db.js"
-import { buildCompletionMessages, rememberRecalledMemoryChunks } from "../memory.js"
-import { recordMetric } from "../metrics.js"
-import { emit } from "../stream.js"
-import type { LoopState } from "./types.js"
+import { logMessage } from "../db"
+import { buildCompletionMessages, rememberRecalledMemoryChunks } from "../memory"
+import { recordMetric } from "../metrics"
+import { emit } from "../stream"
+import type { LoopState } from "./types"
 import {
   API_BASE,
   ENABLE_THINKING,
@@ -28,9 +28,9 @@ import {
   shouldFallback,
   summaryClient,
   summarizeConversationViaLLM,
-} from "./util.js"
-import { assistantContentText } from "./loop-content.js"
-import type { CompletionRequest, CompletionTurnResult, ToolCallAssembly } from "./loop-shared.js"
+} from "./util"
+import { assistantContentText } from "./loop-content"
+import type { CompletionRequest, CompletionTurnResult, ToolCallAssembly } from "./loop-shared"
 
 /**
  * Resolves the configured summary client/model pair.

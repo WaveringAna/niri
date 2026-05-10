@@ -1,10 +1,8 @@
-export type StreamEvent =
-  | { type: "text"; text: string }
-  | { type: "user"; text: string; source: string; triggeredAt: string; clientId?: string }
-  | { type: "thinking"; text: string }
-  | { type: "tool"; name: string; args: Record<string, unknown>; result: string }
+import type { StreamEvent } from "@niri/chat-client"
 
-export type Listener = (event: StreamEvent) => void
+export type { StreamEvent }
+
+type Listener = (event: StreamEvent) => void
 
 const listeners = new Set<Listener>()
 const BUFFER_SIZE = 50

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { __loopTest } from "./loop.js"
-import type { Message } from "../types.js"
-import type { LoopState } from "./types.js"
-import type { Message } from "../types.js"
+import { __loopTest } from "./loop"
+import type { Message } from "../types"
+import type { LoopState } from "./types"
+import type { Message } from "../types"
 
 function makeState(): LoopState {
   return {

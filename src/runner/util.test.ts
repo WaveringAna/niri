@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import type OpenAI from "openai"
-import { isTransientTransportError, sanitizeMessages, shouldFallback } from "./util.js"
+import { isTransientTransportError, sanitizeMessages, shouldFallback } from "./util"
 
 type AssistantMessageWithReasoning = OpenAI.Chat.ChatCompletionAssistantMessageParam & {
   reasoning_content?: string

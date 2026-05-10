@@ -1,4 +1,4 @@
-import type { UserMessage } from "../types.js"
+import type { UserMessage } from "../types"
 
 export function fromCron(): UserMessage {
   return {

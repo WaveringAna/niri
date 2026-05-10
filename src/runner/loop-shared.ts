@@ -1,5 +1,5 @@
 import OpenAI from "openai"
-import type { LoopHooks, LoopState } from "./types.js"
+import type { LoopHooks, LoopState } from "./types"
 
 export type FunctionToolCall = OpenAI.Chat.ChatCompletionMessageToolCall & { type: "function" }
 

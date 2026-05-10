@@ -1,5 +1,6 @@
-import type { UserMessage } from "../types.js"
-import { getDb } from "../db.js"
+import type { UserMessage } from "../types"
+import { getDb } from "../db"
+import { asObject, asString } from "../discord/parse"
 
 function asIsoTimestamp(value: unknown, fallback: string): string {
   if (typeof value !== "string" && typeof value !== "number") return fallback
@@ -7,18 +8,7 @@ function asIsoTimestamp(value: unknown, fallback: string): string {
   return Number.isNaN(parsed.getTime()) ? fallback : parsed.toISOString()
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null
-}
-
-function asString(value: unknown): string | null {
-  if (typeof value === "string") {
-    const trimmed = value.trim()
-    return trimmed.length > 0 ? trimmed : null
-  }
-  if (typeof value === "number" && Number.isFinite(value)) return String(value)
-  return null
-}
+const asRecord = asObject
 
 function referencedMessageId(message: Record<string, unknown>, body: Record<string, unknown>): string | null {
   const reference =

@@ -7,8 +7,8 @@ import {
   Partials,
   type Message,
 } from "discord.js"
-import { handleDiscordIngress } from "./pipeline.js"
-import { subscribeRunnerPresence, type RunnerPresence } from "../runner/presence.js"
+import { handleDiscordIngress } from "./pipeline"
+import { subscribeRunnerPresence, type RunnerPresence } from "../runner/presence"
 
 function asEnabled(value: string | undefined, fallback: boolean): boolean {
   if (typeof value !== "string") return fallback

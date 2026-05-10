@@ -2,9 +2,10 @@ import fs from "fs/promises"
 import path from "path"
 import { fileURLToPath } from "url"
 import OpenAI from "openai"
-import { imageRootForModelInput } from "../container/index.js"
-import type { Message } from "../types.js"
-import type { ImageDetail, ToolArgs } from "./types.js"
+import { imageRootForModelInput } from "../container/index"
+import type { Message } from "../types"
+import type { ImageDetail } from "./types"
+import type { ToolArgs } from "./loop-shared"
 
 const PROJECT_ROOT = path.resolve(fileURLToPath(import.meta.url), "../../..")
 const SESSION_FILE = path.join(PROJECT_ROOT, "session.json")

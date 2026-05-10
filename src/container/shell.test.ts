@@ -3,8 +3,8 @@ import assert from "node:assert/strict"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { closeBash } from "./shell.js"
-import { runCommand } from "./tools.js"
+import { closeBash } from "./shell"
+import { runCommand } from "./tools"
 
 test.afterEach(() => {
   closeBash()

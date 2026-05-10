@@ -1,6 +1,6 @@
 import OpenAI from "openai"
-import type { LoopState } from "./types.js"
-import type { FunctionToolCall } from "./loop-shared.js"
+import type { LoopState } from "./types"
+import type { FunctionToolCall } from "./loop-shared"
 
 /**
  * Normalizes assistant/tool message content into plain text.

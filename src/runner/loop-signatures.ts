@@ -1,7 +1,7 @@
 import OpenAI from "openai"
-import { assistantContentText } from "./loop-content.js"
-import { parseToolArguments } from "./util.js"
-import type { FunctionToolCall } from "./loop-shared.js"
+import { assistantContentText } from "./loop-content"
+import { parseToolArguments } from "./util"
+import type { FunctionToolCall } from "./loop-shared"
 
 const MAX_TOOL_RESULT_SIGNATURE_CHARS = 600
 

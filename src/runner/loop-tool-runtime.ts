@@ -1,7 +1,7 @@
 import OpenAI from "openai"
-import { logMessage } from "../db.js"
-import { emit } from "../stream.js"
-import { latestAssistantContent } from "./loop-content.js"
+import { logMessage } from "../db"
+import { emit } from "../stream"
+import { latestAssistantContent } from "./loop-content"
 import type {
   ArgTuple,
   FunctionToolCall,
@@ -10,9 +10,9 @@ import type {
   ToolExecutionContext,
   ToolExecutionOutcome,
   ToolHandler,
-} from "./loop-shared.js"
-import type { LoopHooks, LoopState } from "./types.js"
-import { parseToolArguments } from "./util.js"
+} from "./loop-shared"
+import type { LoopHooks, LoopState } from "./types"
+import { parseToolArguments } from "./util"
 
 type StandardToolSpec<
   RunKeys extends readonly ToolArgKey[],

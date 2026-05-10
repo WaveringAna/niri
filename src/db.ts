@@ -2,7 +2,7 @@ import Database from "better-sqlite3"
 import fs from "fs"
 import path from "path"
 import * as sqliteVec from "sqlite-vec"
-import { HOME_DIR } from "./container/config.js"
+import { HOME_DIR } from "./container/config"
 
 const DB_PATH = path.join(HOME_DIR, "niri.db")
 export const MEMORY_EMBEDDING_DIMENSIONS = 3072

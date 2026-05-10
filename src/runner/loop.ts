@@ -1,6 +1,6 @@
-import { recordMetric } from "../metrics.js"
-import { emit } from "../stream.js"
-import type { Message } from "../types.js"
+import { recordMetric } from "../metrics"
+import { emit } from "../stream"
+import type { Message } from "../types"
 import {
   CONTEXT_COMPACT_TRIGGER_TOKENS,
   ENABLE_THINKING,
@@ -10,12 +10,12 @@ import {
   estimatePromptTokens,
   findSummaryMessageIndex,
   summarizeConversationViaLLM,
-} from "./util.js"
-import { addAssistantMessage, applyUsage, configuredSummaryProvider, emitThinking, fetchCompletion } from "./loop-completion.js"
-import { assistantContentText, isFunctionToolCall } from "./loop-content.js"
-import { buildTurnSignature, hasIncomingUserMessage } from "./loop-signatures.js"
-import { processToolCalls } from "./loop-tools.js"
-import type { LoopHooks, LoopState } from "./types.js"
+} from "./util"
+import { addAssistantMessage, applyUsage, configuredSummaryProvider, emitThinking, fetchCompletion } from "./loop-completion"
+import { assistantContentText, isFunctionToolCall } from "./loop-content"
+import { buildTurnSignature, hasIncomingUserMessage } from "./loop-signatures"
+import { processToolCalls } from "./loop-tools"
+import type { LoopHooks, LoopState } from "./types"
 
 const LLM_POST_TURN_RECENT_MESSAGES = 40
 const RUNNER_MAX_TURNS = parsePositiveIntEnv(process.env.RUNNER_MAX_TURNS, 120)

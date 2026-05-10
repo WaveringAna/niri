@@ -1,5 +1,5 @@
 import OpenAI from "openai"
-import { MEMORY_EMBEDDING_DIMENSIONS } from "./db.js"
+import { MEMORY_EMBEDDING_DIMENSIONS } from "./db"
 
 export const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL ?? "google/gemini-embedding-2-preview"
 export const EMBEDDING_DIMENSIONS = parseInt(

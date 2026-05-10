@@ -1,6 +1,6 @@
-import { enqueueEvent, isRunning, wake } from "../runner/index.js"
-import { fromDiscord } from "../triggers/discord.js"
-import { ingestDiscordEvent } from "./state.js"
+import { enqueueEvent, isRunning, wake } from "../runner/index"
+import { fromDiscord } from "../triggers/discord"
+import { ingestDiscordEvent } from "./state"
 
 const DISCORD_WAKE_ON_EVENT = (process.env.DISCORD_WAKE_ON_EVENT ?? "false").trim().toLowerCase() === "true"
 

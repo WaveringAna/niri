@@ -7,8 +7,8 @@ import {
   DEFAULT_COMMAND_TIMEOUT_MS,
   USE_DOCKER_SHELL,
   normalizeTimeoutMs,
-} from "./config.js"
-import type { RunRawOptions } from "./types.js"
+} from "./config"
+import type { RunRawOptions } from "./types"
 
 /**
  * Strip ANSI/VT escape sequences and normalize line endings from PTY output.

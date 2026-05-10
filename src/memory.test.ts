@@ -1,7 +1,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import type { Message } from "./types.js"
-import { __memoryTest } from "./memory.js"
+import type { Message } from "./types"
+import { __memoryTest } from "./memory/index"
 
 test("latestMemoryRecallQuery falls back past scheduled heartbeat", () => {
   const conversation: Message[] = [

@@ -2,10 +2,10 @@ import Database from "better-sqlite3"
 import fs from "fs"
 import path from "path"
 import type OpenAI from "openai"
-import { HOME_DIR } from "./container/config.js"
-import { getDb } from "./db.js"
-import type { Message } from "./types.js"
-import type { MemorySearchResult } from "./memory.js"
+import { HOME_DIR } from "./container/config"
+import { getDb } from "./db"
+import type { Message } from "./types"
+import type { MemorySearchResult } from "./memory/index"
 
 export interface BaseMetricEvent {
   timestamp: string
@@ -172,7 +172,7 @@ function metricsRetentionCutoff(days = metricsRetentionDays()): string {
   return new Date(Date.now() - days * 24 * 60 * 60_000).toISOString()
 }
 
-export function pruneOldMetrics(days = metricsRetentionDays()): number {
+function pruneOldMetrics(days = metricsRetentionDays()): number {
   if (!db) return 0
 
   const cutoff = metricsRetentionCutoff(days)

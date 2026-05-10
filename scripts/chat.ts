@@ -1,6 +1,6 @@
 import readline from "readline"
 import { createChatClient, type StreamEvent } from "@niri/chat-client"
-import { renderMarkdownAnsi } from "./terminal-markdown.js"
+import { renderMarkdownAnsi } from "./terminal-markdown"
 
 const HOST = process.env.NIRI_HOST ?? "http://localhost"
 const PORT = process.env.PORT ?? "3000"

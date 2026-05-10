@@ -9,9 +9,9 @@ import {
   USE_DOCKER_SHELL,
   normalizeTimeoutMs,
   resolveMaxLines,
-} from "./config.js"
-import { currentWorkingDirectory, runOneOff, runRaw } from "./shell.js"
-import type { EditResult, ImageToolPayload, ModelImageInput } from "./types.js"
+} from "./config"
+import { currentWorkingDirectory, runOneOff, runRaw } from "./shell"
+import type { EditResult, ImageToolPayload, ModelImageInput } from "./types"
 
 function invokesSudo(command: string): boolean {
   return /(^|[;&|({]\s*)sudo(\s|$)/.test(String(command ?? ""))

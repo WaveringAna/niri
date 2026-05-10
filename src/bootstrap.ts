@@ -1,8 +1,8 @@
 import fs from "fs/promises"
 import path from "path"
-import type { UserMessage, Message } from "./types.js"
-import { CONTAINER_USER, HOME_DIR, USE_DOCKER_SHELL } from "./container/config.js"
-import { imageRootForModelInput } from "./container/index.js"
+import type { UserMessage, Message } from "./types"
+import { CONTAINER_USER, HOME_DIR, USE_DOCKER_SHELL } from "./container/config"
+import { imageRootForModelInput } from "./container/index"
 
 const SOUL_FILE = path.join(HOME_DIR, "soul.md")
 const MISPLACED_SOUL_FILE = path.join(HOME_DIR, "memories", "soul.md")

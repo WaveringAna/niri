@@ -1,9 +1,5 @@
-import type { Message, RunnerState, UserMessage } from "../types.js"
+import type { Message, RunnerState, UserMessage } from "../types"
 
-/** Generic decoded tool arguments object. */
-export type ToolArgs = Record<string, any>
-
-/** Supported image detail levels for multimodal requests. */
 export type ImageDetail = "auto" | "low" | "high"
 
 /** Mutable state consumed by the runner loop on each turn. */
