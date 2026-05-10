@@ -3,7 +3,7 @@ import { createChatClient, type StreamEvent } from "@niri/chat-client"
 import { renderMarkdownAnsi } from "./terminal-markdown"
 
 const HOST = process.env.NIRI_HOST ?? "http://localhost"
-const PORT = process.env.PORT ?? "3000"
+const PORT = process.env.PORT ?? "4000"
 const BASE = `${HOST}:${PORT}`
 
 const c = {
@@ -121,7 +121,7 @@ const scheduleStreamSettleCheck = () => {
     streamStatusCheckInFlight = true
     try {
       const status = await client.getStatus()
-      if (!status.running) {
+      if (!status.running || status.idle) {
         endActiveStream()
       } else {
         scheduleStreamSettleCheck()
