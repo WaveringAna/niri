@@ -22,9 +22,11 @@ import {
   fallbackClient,
   fallbackContextWindow,
   findSummaryMessageIndex,
+  isContentFilterError,
   isPromptTooLargeError,
   retryDelayMs,
   sanitizeMessages,
+  scrubImagesFromConversation,
   shouldFallback,
   summaryClient,
   summarizeConversationViaLLM,
@@ -574,6 +576,23 @@ export async function fetchCompletion(
   baseConversation: OpenAI.Chat.ChatCompletionMessageParam[] = state.conversation,
 ): Promise<CompletionTurnResult> {
   let promptTooLargeAttempts = 0
+  let contentFilterScrubbed = false
+
+  const recoverFromContentFilter = (err: unknown, label: string): boolean => {
+    if (contentFilterScrubbed) return false
+    if (!isContentFilterError(err)) return false
+    const scrubbed = scrubImagesFromConversation(state.conversation)
+    contentFilterScrubbed = true
+    if (scrubbed > 0) {
+      console.warn(
+        `[api] ${label} content-filter rejection; scrubbed ${scrubbed} image attachment(s) from conversation and retrying`,
+      )
+      return true
+    }
+    console.warn(`[api] ${label} content-filter rejection but no images found to scrub`)
+    return false
+  }
+
   while (true) {
     if (baseConversation === state.conversation) {
       state.conversation = sanitizeMessages(state.conversation)
@@ -612,6 +631,7 @@ export async function fetchCompletion(
           promptTooLargeAttempts++
           if (recovered) continue
         }
+        if (recoverFromContentFilter(fallbackErr, "fallback")) continue
         if (shouldFallback(fallbackErr)) {
           const retryAfter = retryDelayMs(fallbackErr)
           console.warn(
@@ -645,6 +665,8 @@ export async function fetchCompletion(
         logApiError(primaryErr, `model=${MODEL} api=${API_BASE}`)
         throw primaryErr
       }
+
+      if (recoverFromContentFilter(primaryErr, "primary")) continue
 
       if (!shouldFallback(primaryErr)) {
         logApiError(primaryErr, `model=${MODEL} api=${API_BASE}`)
@@ -686,6 +708,7 @@ export async function fetchCompletion(
           promptTooLargeAttempts++
           if (recovered) continue
         }
+        if (recoverFromContentFilter(fallbackErr, "fallback-failover")) continue
         console.warn(
           `[api] fallback failed (${errorSummary(fallbackErr)}) after primary failure (${errorSummary(primaryErr)}); retrying primary after backoff`,
         )

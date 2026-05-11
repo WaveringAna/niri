@@ -698,6 +698,70 @@ export function isPromptTooLargeError(err: unknown): boolean {
   return PROMPT_TOO_LARGE_PHRASES.some((phrase) => message.includes(phrase))
 }
 
+const CONTENT_FILTER_PHRASES = [
+  "potentially unsafe or sensitive content",
+  "sensitive content in input or generation",
+  "content filter",
+  "content_filter",
+  "may generate sensitive content",
+]
+
+/**
+ * Detects provider content-safety rejections (typically 400-class).
+ *
+ * These errors can stick across turns when the offending content lives in the
+ * persisted conversation (e.g. a previously attached image); the caller is
+ * expected to scrub the conversation before retrying.
+ */
+export function isContentFilterError(err: unknown): boolean {
+  if (!(err instanceof OpenAI.APIError)) return false
+  if (err.status !== 400) return false
+
+  const errorRecord = err as unknown as { code?: unknown; error?: { code?: unknown; type?: unknown } }
+  const rootCode = typeof errorRecord.code === "string" ? errorRecord.code.toLowerCase() : ""
+  const innerCode = typeof errorRecord.error?.code === "string" ? (errorRecord.error.code as string).toLowerCase() : ""
+  const innerType = typeof errorRecord.error?.type === "string" ? (errorRecord.error.type as string).toLowerCase() : ""
+  if (rootCode === "content_filter" || innerCode === "content_filter" || innerType === "content_filter") return true
+
+  const message = (err.message || "").toLowerCase()
+  return CONTENT_FILTER_PHRASES.some((phrase) => message.includes(phrase))
+}
+
+const SCRUBBED_IMAGE_PLACEHOLDER = "[the system has rejected this :( its not your fault]"
+
+/**
+ * Replaces multimodal image parts in the conversation with a text placeholder.
+ *
+ * Used after a provider content-filter rejection so the offending image stops
+ * being re-sent on every subsequent turn.
+ *
+ * @returns The number of image parts that were scrubbed.
+ */
+export function scrubImagesFromConversation(msgs: Message[]): number {
+  let scrubbed = 0
+  for (const msg of msgs) {
+    const record = asRecord(msg)
+    if (!record) continue
+    const content = record.content
+    if (!Array.isArray(content)) continue
+
+    let changed = false
+    const next: unknown[] = []
+    for (const part of content) {
+      const partRecord = asRecord(part)
+      if (partRecord && partRecord.type === "image_url") {
+        next.push({ type: "text", text: SCRUBBED_IMAGE_PLACEHOLDER })
+        scrubbed++
+        changed = true
+        continue
+      }
+      next.push(part)
+    }
+    if (changed) record.content = next
+  }
+  return scrubbed
+}
+
 /**
  * Produces a concise, log-friendly error summary.
  *
