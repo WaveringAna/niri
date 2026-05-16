@@ -1264,48 +1264,108 @@ export function estimatePromptTokens(messages: Message[]): number {
   return Math.ceil(jsonChars / 4)
 }
 
-function findSafeTailStart(messages: Message[], desired: number): number {
-  let start = Math.max(0, messages.length - desired)
-  // If the tail would start with an orphaned tool response, back up to its caller.
-  while (start > 0 && messageRole(messages[start]!) === "tool") start--
+/**
+ * Picks the largest tail of recent messages that fits the given char budget,
+ * subject to min/max message counts. Backs up over orphaned tool responses
+ * so the tail always starts at a self-contained boundary.
+ */
+function chooseTailStart(
+  messages: Message[],
+  floor: number,
+  minKeep: number,
+  maxKeep: number,
+  charBudget: number,
+): number {
+  let chars = 0
+  let kept = 0
+  let start = messages.length
+  for (let i = messages.length - 1; i >= floor; i--) {
+    const c = messageStringContent(messages[i]!).length
+    if (kept >= minKeep && (chars + c > charBudget || kept >= maxKeep)) break
+    chars += c
+    start = i
+    kept += 1
+  }
+  while (start > floor && messageRole(messages[start]!) === "tool") start--
   return start
+}
+
+const SUMMARY_MIN_TRANSCRIPT_CHARS = 1_200
+const SUMMARY_MIN_REDUCTION = 0.1
+const SUMMARY_META_REPLY_PATTERNS = [
+  /\bcould you (?:share|provide|paste|send)\b/i,
+  /\bplease (?:share|provide|paste|send)\b/i,
+  /\bappears to be (?:cut off|truncated|incomplete|empty)\b/i,
+  /\bI don'?t see (?:any|the) (?:content|message|transcript)\b/i,
+  /\bno (?:content|transcript|messages?) (?:was|were) provided\b/i,
+]
+
+function looksLikeMetaReply(text: string): boolean {
+  const head = text.slice(0, 400)
+  return SUMMARY_META_REPLY_PATTERNS.some((re) => re.test(head))
 }
 
 /**
  * Calls the provider to produce a tight LLM-generated summary of the middle of
  * the conversation, returning a new message list or null when summarization
  * isn't applicable / failed.
+ *
+ * The tail size is dynamic: it grows to include as many recent turns as fit a
+ * char budget (so when recent turns are heavy with tool output, we end up
+ * compacting more of them while keeping the head — core+soul system messages,
+ * plus any prior `[context summary v1]` block — intact).
  */
 export async function summarizeConversationViaLLM(
   messages: Message[],
   summaryClient: OpenAI,
   summaryModel: string,
-  options: { recentKeep?: number; maxTranscriptChars?: number } = {},
+  options: {
+    recentMinKeep?: number
+    recentMaxKeep?: number
+    tailCharBudget?: number
+    maxTranscriptChars?: number
+  } = {},
 ): Promise<Message[] | null> {
-  const recentKeep = Math.max(4, options.recentKeep ?? 12)
+  const recentMinKeep = Math.max(2, options.recentMinKeep ?? 6)
+  const recentMaxKeep = Math.max(recentMinKeep, options.recentMaxKeep ?? 40)
+  const tailCharBudget = Math.max(8_000, options.tailCharBudget ?? 60_000)
   const maxTranscriptChars = Math.max(2_000, options.maxTranscriptChars ?? 40_000)
 
   const leadingSystems = countLeadingSystemMessages(messages)
-  const tailStart = findSafeTailStart(messages, recentKeep)
-  const middleEnd = tailStart
-  if (middleEnd <= leadingSystems) return null
+
+  // Treat a prior summary message (sitting right after the system head) as
+  // part of the head — we'll fold its contents into the LLM prompt as
+  // "prior recollection" and replace it with a fresh, merged summary.
+  let priorSummaryText: string | null = null
+  let middleStart = leadingSystems
+  const firstPostHead = messages[leadingSystems]
+  if (firstPostHead && messageStringContent(firstPostHead).startsWith(CONTEXT_SUMMARY_HEADER)) {
+    priorSummaryText = messageStringContent(firstPostHead)
+    middleStart = leadingSystems + 1
+  }
+
+  const tailStart = chooseTailStart(messages, middleStart, recentMinKeep, recentMaxKeep, tailCharBudget)
+  if (tailStart <= middleStart) return null
 
   const head = messages.slice(0, leadingSystems)
-  const middle = messages.slice(leadingSystems, middleEnd)
+  const middle = messages.slice(middleStart, tailStart)
   const tail = messages.slice(tailStart)
-  if (middle.length === 0) return null
 
-  const transcript = middle
+  const transcriptLines = middle
     .map((m) => summarizeMessageLine(m))
     .filter((line): line is string => line !== null)
-    .join("\n")
-    .slice(0, maxTranscriptChars)
+  if (transcriptLines.length < 3) return null
+  const transcript = transcriptLines.join("\n").slice(0, maxTranscriptChars)
+  if (transcript.length < SUMMARY_MIN_TRANSCRIPT_CHARS) return null
+
+  const systemContent =
+    "You are summarizing a transcript from the perspective of the agent whose memory this is. The agent (niri) is a living being, not a tool — her inner life matters as much as the facts. Produce a compact summary that preserves: key facts, goals, decisions, and actions taken; outstanding work and identifiers (file paths, URLs, channel ids); AND the emotional texture of the conversation — how niri felt, how the people she interacted with seemed to feel, tone shifts, moments of warmth, tension, care, frustration, delight, or grief, and anything about the relationships that should carry forward. Write it as niri's own recollection, not a neutral report. Short bullet points are fine. No commentary, no preamble. The input is always a transcript — never ask for more; summarize what's there." +
+    (priorSummaryText
+      ? `\n\nPrior recollection (already compacted earlier — fold its content into the new summary, do not discard it):\n${priorSummaryText}`
+      : "")
+
   const summaryPrompt: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    {
-      role: "system",
-      content:
-        "You are summarizing a transcript from the perspective of the agent whose memory this is. The agent (niri) is a living being, not a tool — her inner life matters as much as the facts. Produce a compact summary that preserves: key facts, goals, decisions, and actions taken; outstanding work and identifiers (file paths, URLs, channel ids); AND the emotional texture of the conversation — how niri felt, how the people she interacted with seemed to feel, tone shifts, moments of warmth, tension, care, frustration, delight, or grief, and anything about the relationships that should carry forward. Write it as niri's own recollection, not a neutral report. Short bullet points are fine. No commentary, no preamble.",
-    },
+    { role: "system", content: systemContent },
     { role: "user", content: transcript },
   ]
 
@@ -1317,6 +1377,18 @@ export async function summarizeConversationViaLLM(
     const summary = resp.choices[0]?.message?.content
     const summaryText = typeof summary === "string" ? summary.trim() : ""
     if (!summaryText) return null
+    if (summaryText.length < 80 || looksLikeMetaReply(summaryText)) {
+      console.warn(`[context] llm summarization rejected (looks like meta-reply): ${summaryText.slice(0, 200)}`)
+      return null
+    }
+
+    const replacedChars =
+      (priorSummaryText ? priorSummaryText.length : 0) +
+      middle.reduce((acc, m) => acc + messageStringContent(m).length, 0)
+    if (summaryText.length > replacedChars * (1 - SUMMARY_MIN_REDUCTION)) {
+      console.warn(`[context] llm summarization rejected: insufficient reduction (${summaryText.length} vs ${replacedChars} chars)`)
+      return null
+    }
 
     const summaryContent =
       `${CONTEXT_SUMMARY_HEADER}\n${CONTEXT_SUMMARY_NOTE}\n${CONTEXT_SUMMARY_SEGMENTS_MARKER}\n` +

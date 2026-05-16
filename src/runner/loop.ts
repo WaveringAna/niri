@@ -17,7 +17,9 @@ import { buildTurnSignature, hasIncomingUserMessage } from "./loop-signatures"
 import { processToolCalls } from "./loop-tools"
 import type { LoopHooks, LoopState } from "./types"
 
-const LLM_POST_TURN_RECENT_MESSAGES = 40
+const LLM_RECENT_MIN_KEEP = 6
+const LLM_RECENT_MAX_KEEP = 40
+const LLM_TAIL_CHAR_BUDGET = 60_000
 const RUNNER_MAX_TURNS = parsePositiveIntEnv(process.env.RUNNER_MAX_TURNS, 120)
 const RUNNER_MAX_IDENTICAL_TOOL_TURNS = parsePositiveIntEnv(process.env.RUNNER_MAX_IDENTICAL_TOOL_TURNS, 10)
 
@@ -161,9 +163,11 @@ function applyContextNudge(state: LoopState): void {
 }
 
 async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-turn"): Promise<boolean> {
+  // Gate strictly on the model-reported prompt_tokens (state.contextSize).
+  // The char-based estimatePromptTokens inflates the tools schema ~3×, which
+  // used to fire compaction at ~22-31k real tokens and produce nonsense summaries.
+  if (state.contextSize < CONTEXT_COMPACT_TRIGGER_TOKENS) return false
   const beforeEstimate = estimatePromptTokens(state.conversation)
-  const contextPressure = Math.max(state.contextSize, beforeEstimate)
-  if (contextPressure < CONTEXT_COMPACT_TRIGGER_TOKENS) return false
 
   const summaryProvider = configuredSummaryProvider()
   if (!summaryProvider.client || !summaryProvider.model) {
@@ -176,7 +180,11 @@ async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-tu
     state.conversation,
     summaryProvider.client,
     summaryProvider.model,
-    { recentKeep: LLM_POST_TURN_RECENT_MESSAGES },
+    {
+      recentMinKeep: LLM_RECENT_MIN_KEEP,
+      recentMaxKeep: LLM_RECENT_MAX_KEEP,
+      tailCharBudget: LLM_TAIL_CHAR_BUDGET,
+    },
   )
   if (!summarized) {
     console.warn(`[context] ${phase}: llm summary unavailable; keeping raw conversation`)
