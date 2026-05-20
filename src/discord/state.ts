@@ -11,6 +11,7 @@ import { Routes } from "discord.js"
 import {
   asNumber,
   asString,
+  extractImageAttachmentsFromRawJson,
   parseChannelIds,
   parseChannelRecord,
   parseMessageRecord,
@@ -116,6 +117,12 @@ function formatBatchTimestamp(value: string | null | undefined): string {
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return value
   return parsed.toISOString().replace("T", " ").replace(".000Z", "Z")
+}
+
+function formatBatchImages(rawJson: string): string {
+  const images = extractImageAttachmentsFromRawJson(rawJson)
+  if (images.length === 0) return ""
+  return ` [images: ${images.map((img) => img.url).join(" ")}]`
 }
 
 function formatReplyContext(reply: DiscordReplyContext | undefined): string {
@@ -349,6 +356,9 @@ export function buildDiscordBatchDigest(params?: {
 
   const uniqueChannels = new Set(recentMessages.map((row) => row.channel_id))
   const replyContextByMessageId = buildReplyTargetContextMap([...recentMessages, ...pendingPreview])
+  const hasImages = [...recentMessages, ...pendingPreview].some(
+    (row) => extractImageAttachmentsFromRawJson(row.raw_json).length > 0,
+  )
 
   const lines: string[] = [
     `[discord batch] ${from} -> ${nowIso}`,
@@ -356,6 +366,9 @@ export function buildDiscordBatchDigest(params?: {
     `auto_seen_timeout=${autoSeenMinutes}m auto_demoted=${autoDemotedCount}`,
     `channel_flag_repairs=${repairedMessageCount}`,
     "channel messages are context, not direct requests. replying is optional; use judgment.",
+    ...(hasImages
+      ? ["image attachments appear as [images: <discord cdn urls>]; download with shell, then inspect with image_tool if useful."]
+      : []),
     "",
     "recent messages:",
   ]
@@ -365,7 +378,7 @@ export function buildDiscordBatchDigest(params?: {
     const author = row.author_username ? `@${row.author_username}` : "@unknown"
     const ts = formatBatchTimestamp(row.created_at)
     const replyTo = replyContextByMessageId.get(row.message_id)
-    lines.push(`- [${label}] [${ts}] ${author}${formatReplyContext(replyTo)}: ${fullMessageText(row.content)}`)
+    lines.push(`- [${label}] [${ts}] ${author}${formatReplyContext(replyTo)}: ${fullMessageText(row.content)}${formatBatchImages(row.raw_json)}`)
   }
 
   if (truncated) {
@@ -382,7 +395,7 @@ export function buildDiscordBatchDigest(params?: {
       const author = row.author_username ? `@${row.author_username}` : "@unknown"
       const ts = formatBatchTimestamp(row.created_at)
       const replyTo = replyContextByMessageId.get(row.message_id)
-      lines.push(`- ${row.item_id} [${row.bucket}] [${label}] [${ts}] ${author}${formatReplyContext(replyTo)}: ${compactText(row.content, 120)}`)
+      lines.push(`- ${row.item_id} [${row.bucket}] [${label}] [${ts}] ${author}${formatReplyContext(replyTo)}: ${compactText(row.content, 120)}${formatBatchImages(row.raw_json)}`)
     }
   }
 

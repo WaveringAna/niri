@@ -132,6 +132,73 @@ export function configuredChannelIdSet(input?: string[] | string | null): Set<st
   return new Set(parseChannelIds(input))
 }
 
+export type DiscordImageAttachment = {
+  url: string
+  filename: string | null
+  contentType: string | null
+}
+
+const IMAGE_EXTENSION_RE = /\.(png|jpe?g|gif|webp|bmp|heic|heif|tiff?|avif)$/i
+
+/**
+ * Determines whether a Discord attachment object is an image.
+ *
+ * @param attachment - Attachment object from a Discord message.
+ * @returns `true` when the attachment is an image by content-type or filename.
+ */
+function isImageAttachment(attachment: DiscordObject): boolean {
+  const contentType = asString(attachment.content_type)
+  if (contentType && contentType.toLowerCase().startsWith("image/")) return true
+  const name = asString(attachment.filename) ?? asString(attachment.url)
+  if (!name) return false
+  const pathPart = name.split("?")[0] ?? name
+  return IMAGE_EXTENSION_RE.test(pathPart)
+}
+
+/**
+ * Extracts image attachment CDN links from a Discord message object.
+ *
+ * Accepts either a raw event payload (with a `message` wrapper) or a message
+ * object directly. Returns the Discord CDN url for each image attachment so the
+ * agent can download it and run its own image tool on it.
+ *
+ * @param payload - Raw event payload or message object.
+ * @returns Array of image attachments with CDN urls.
+ */
+export function extractImageAttachments(payload: unknown): DiscordImageAttachment[] {
+  const root = asObject(payload)
+  if (!root) return []
+  const message = asObject(root.message) ?? root
+  const attachments = Array.isArray(message.attachments) ? message.attachments : []
+  const out: DiscordImageAttachment[] = []
+  for (const entry of attachments) {
+    const attachment = asObject(entry)
+    if (!attachment || !isImageAttachment(attachment)) continue
+    const url = asString(attachment.url) ?? asString(attachment.proxy_url)
+    if (!url) continue
+    out.push({
+      url,
+      filename: asString(attachment.filename),
+      contentType: asString(attachment.content_type),
+    })
+  }
+  return out
+}
+
+/**
+ * Extracts image attachment CDN links from a stored raw JSON payload.
+ *
+ * @param rawJson - Stored raw JSON for a Discord message.
+ * @returns Array of image attachments, empty on parse failure.
+ */
+export function extractImageAttachmentsFromRawJson(rawJson: string): DiscordImageAttachment[] {
+  try {
+    return extractImageAttachments(JSON.parse(rawJson))
+  } catch {
+    return []
+  }
+}
+
 /**
  * Parses a raw Discord gateway/webhook payload into a structured message record.
  *

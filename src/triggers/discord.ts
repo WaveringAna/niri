@@ -1,6 +1,6 @@
 import type { UserMessage } from "../types"
 import { getDb } from "../db"
-import { asObject, asString } from "../discord/parse"
+import { asObject, asString, extractImageAttachments } from "../discord/parse"
 
 function asIsoTimestamp(value: unknown, fallback: string): string {
   if (typeof value !== "string" && typeof value !== "number") return fallback
@@ -58,6 +58,15 @@ function replyContextLine(message: Record<string, unknown>, body: Record<string,
   return `reply_to: ${author} msg/${reply.message_id}: ${JSON.stringify(reply.content)}`
 }
 
+function formatImageBlock(images: ReturnType<typeof extractImageAttachments>): string {
+  if (images.length === 0) return ""
+  const lines = images.map((img) => {
+    const meta = [img.filename, img.contentType].filter(Boolean).join(", ")
+    return `- ${img.url}${meta ? ` (${meta})` : ""}`
+  })
+  return `\n\nimages (discord cdn links — download with shell, then inspect with image_tool if useful):\n${lines.join("\n")}`
+}
+
 export function fromDiscord(body: unknown): UserMessage {
   const b = body as Record<string, unknown>
   const message = (typeof b.message === "object" && b.message
@@ -98,11 +107,12 @@ export function fromDiscord(body: unknown): UserMessage {
     ? "This is a direct message. Reply if it needs a response."
     : "This is a server channel message, not a DM. You may choose not to reply; only respond if useful."
   const replyLine = replyContextLine(message, b)
+  const imageBlock = formatImageBlock(extractImageAttachments(body))
 
   return {
     source: "discord",
     triggeredAt,
-    content: `${header} @${authorName}\ncontext: ${location}\nmessage_id: ${messageId}\ntimestamp: ${timestamp}${replyLine ? `\n${replyLine}` : ""}\naction: ${action}\n\n${content}`,
+    content: `${header} @${authorName}\ncontext: ${location}\nmessage_id: ${messageId}\ntimestamp: ${timestamp}${replyLine ? `\n${replyLine}` : ""}\naction: ${action}\n\n${content}${imageBlock}`,
     raw: body,
   }
 }

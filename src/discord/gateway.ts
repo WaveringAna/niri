@@ -67,6 +67,16 @@ function buildIngressPayload(message: Message): Record<string, unknown> {
         id: u.id,
         bot: u.bot,
       })),
+      attachments: message.attachments.map((a) => ({
+        id: a.id,
+        url: a.url,
+        proxy_url: a.proxyURL,
+        filename: a.name,
+        content_type: a.contentType ?? null,
+        width: a.width ?? null,
+        height: a.height ?? null,
+        size: a.size,
+      })),
     },
     channel: {
       id: message.channelId,
