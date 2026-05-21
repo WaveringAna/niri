@@ -121,7 +121,7 @@ const scheduleStreamSettleCheck = () => {
     streamStatusCheckInFlight = true
     try {
       const status = await client.getStatus()
-      if (!status.running || status.idle) {
+      if (!status.running) {
         endActiveStream()
       } else {
         scheduleStreamSettleCheck()

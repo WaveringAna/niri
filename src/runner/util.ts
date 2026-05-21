@@ -727,6 +727,41 @@ export function isContentFilterError(err: unknown): boolean {
   return CONTENT_FILTER_PHRASES.some((phrase) => message.includes(phrase))
 }
 
+const IMAGE_PARSE_CODES = new Set(["1210"])
+
+const IMAGE_PARSE_PHRASES = [
+  "图片输入格式", // z.ai / GLM: image input format / parse error
+  "图片解析",
+  "图片格式",
+  "image parse",
+  "image format",
+  "invalid image",
+  "failed to parse image",
+  "decode image",
+]
+
+/**
+ * Detects provider rejections caused by an unparseable/malformed image part
+ * (e.g. z.ai/GLM code 1210 "图片输入格式/解析错误").
+ *
+ * Like content-filter errors, these stick across turns when the offending image
+ * lives in the persisted conversation; the caller is expected to scrub the
+ * conversation's image parts before retrying so the loop doesn't crash-loop.
+ */
+export function isImageParseError(err: unknown): boolean {
+  if (!(err instanceof OpenAI.APIError)) return false
+  if (err.status !== 400) return false
+
+  const errorRecord = err as unknown as { code?: unknown; error?: { code?: unknown } }
+  const rootCode = typeof errorRecord.code === "string" ? errorRecord.code.toLowerCase() : ""
+  const innerCode = typeof errorRecord.error?.code === "string" ? (errorRecord.error.code as string).toLowerCase() : ""
+  if (rootCode && IMAGE_PARSE_CODES.has(rootCode)) return true
+  if (innerCode && IMAGE_PARSE_CODES.has(innerCode)) return true
+
+  const message = (err.message || "").toLowerCase()
+  return IMAGE_PARSE_PHRASES.some((phrase) => message.includes(phrase.toLowerCase()))
+}
+
 const SCRUBBED_IMAGE_PLACEHOLDER = "[the system has rejected this :( its not your fault]"
 
 /**

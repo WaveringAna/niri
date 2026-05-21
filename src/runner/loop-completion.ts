@@ -23,6 +23,7 @@ import {
   fallbackContextWindow,
   findSummaryMessageIndex,
   isContentFilterError,
+  isImageParseError,
   isPromptTooLargeError,
   retryDelayMs,
   sanitizeMessages,
@@ -576,20 +577,26 @@ export async function fetchCompletion(
   baseConversation: OpenAI.Chat.ChatCompletionMessageParam[] = state.conversation,
 ): Promise<CompletionTurnResult> {
   let promptTooLargeAttempts = 0
-  let contentFilterScrubbed = false
+  let imagesScrubbed = false
 
-  const recoverFromContentFilter = (err: unknown, label: string): boolean => {
-    if (contentFilterScrubbed) return false
-    if (!isContentFilterError(err)) return false
+  // Both content-filter rejections and image parse/format rejections (e.g.
+  // z.ai/GLM code 1210) stick across turns when the offending image lives in
+  // the persisted conversation, which crash-loops the runner on restart.
+  // Scrub the image parts (replacing them with a placeholder the model sees)
+  // and retry so the loop survives instead of aborting.
+  const recoverByScrubbingImages = (err: unknown, label: string): boolean => {
+    if (imagesScrubbed) return false
+    if (!isContentFilterError(err) && !isImageParseError(err)) return false
+    const reason = isContentFilterError(err) ? "content-filter rejection" : "image parse/format rejection"
     const scrubbed = scrubImagesFromConversation(state.conversation)
-    contentFilterScrubbed = true
+    imagesScrubbed = true
     if (scrubbed > 0) {
       console.warn(
-        `[api] ${label} content-filter rejection; scrubbed ${scrubbed} image attachment(s) from conversation and retrying`,
+        `[api] ${label} ${reason}; scrubbed ${scrubbed} image attachment(s) from conversation and retrying`,
       )
       return true
     }
-    console.warn(`[api] ${label} content-filter rejection but no images found to scrub`)
+    console.warn(`[api] ${label} ${reason} but no images found to scrub`)
     return false
   }
 
@@ -631,7 +638,7 @@ export async function fetchCompletion(
           promptTooLargeAttempts++
           if (recovered) continue
         }
-        if (recoverFromContentFilter(fallbackErr, "fallback")) continue
+        if (recoverByScrubbingImages(fallbackErr, "fallback")) continue
         if (shouldFallback(fallbackErr)) {
           const retryAfter = retryDelayMs(fallbackErr)
           console.warn(
@@ -666,7 +673,7 @@ export async function fetchCompletion(
         throw primaryErr
       }
 
-      if (recoverFromContentFilter(primaryErr, "primary")) continue
+      if (recoverByScrubbingImages(primaryErr, "primary")) continue
 
       if (!shouldFallback(primaryErr)) {
         logApiError(primaryErr, `model=${MODEL} api=${API_BASE}`)
@@ -708,7 +715,7 @@ export async function fetchCompletion(
           promptTooLargeAttempts++
           if (recovered) continue
         }
-        if (recoverFromContentFilter(fallbackErr, "fallback-failover")) continue
+        if (recoverByScrubbingImages(fallbackErr, "fallback-failover")) continue
         console.warn(
           `[api] fallback failed (${errorSummary(fallbackErr)}) after primary failure (${errorSummary(primaryErr)}); retrying primary after backoff`,
         )
