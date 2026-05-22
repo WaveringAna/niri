@@ -202,6 +202,7 @@ export function createServer() {
 
   app.get("/status", async () => ({
     running: isRunning(),
+    idle: isWaitingForEvent(),
   }))
 
   app.get("/metrics", async (req) => {

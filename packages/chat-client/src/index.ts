@@ -19,7 +19,7 @@ export interface StreamOptions {
 
 export interface ChatClient {
   send: (content: string) => Promise<{ ok: true }>
-  getStatus: () => Promise<{ running: boolean }>
+  getStatus: () => Promise<{ running: boolean; idle: boolean }>
   stream: (options: StreamOptions) => Promise<void>
 }
 
@@ -129,8 +129,8 @@ export function createChatClient(options: CreateChatClientOptions): ChatClient {
       throw new Error(await parseError(res))
     }
 
-    const data = (await res.json()) as { running?: unknown }
-    return { running: data.running === true }
+    const data = (await res.json()) as { running?: unknown; idle?: unknown }
+    return { running: data.running === true, idle: data.idle === true }
   }
 
   const stream: ChatClient["stream"] = async ({ signal, onEvent }) => {

@@ -152,6 +152,26 @@ function shouldRetryWithoutReasoningForTools(err: unknown): boolean {
   return /function call should not be used with prefix/i.test(apiErrorSearchText(err))
 }
 
+function shouldRetryWithReasoningEnabled(err: unknown): boolean {
+  if (!(err instanceof OpenAI.APIError)) return false
+  return /reasoning is mandatory|reasoning cannot be disabled|reasoning is required/i.test(apiErrorSearchText(err))
+}
+
+function enableReasoningForRequest(request: CompletionRequest): CompletionRequest {
+  const next: CompletionRequest = {
+    ...request,
+    include_reasoning: true,
+    reasoning: { enabled: true, effort: "low" },
+  }
+  delete next.enable_thinking
+  if (next.chat_template_kwargs) {
+    const { enable_thinking: _ignored, ...rest } = next.chat_template_kwargs
+    next.chat_template_kwargs = Object.keys(rest).length > 0 ? rest : undefined
+    if (!next.chat_template_kwargs) delete next.chat_template_kwargs
+  }
+  return next
+}
+
 function toolCompatibleReasoningExtras(
   request?: Pick<CompletionRequest, "provider" | "chat_template_kwargs">,
 ): Partial<CompletionRequest> {
@@ -443,6 +463,7 @@ async function createFallbackCompletion(messages: OpenAI.Chat.ChatCompletionMess
   let currentRequest = request
   let retriedAutoToolChoice = false
   let retriedWithoutReasoning = false
+  let retriedWithReasoning = false
   while (true) {
     try {
       return await createStreamedCompletion(fallbackClient, currentRequest)
@@ -464,6 +485,12 @@ async function createFallbackCompletion(messages: OpenAI.Chat.ChatCompletionMess
         currentRequest = disableReasoningForToolCalls(currentRequest)
         continue
       }
+      if (!retriedWithReasoning && shouldRetryWithReasoningEnabled(err)) {
+        retriedWithReasoning = true
+        console.warn(`[fallback] model ${currentRequest.model} requires reasoning; retrying fallback with reasoning enabled`)
+        currentRequest = enableReasoningForRequest(currentRequest)
+        continue
+      }
       throw err
     }
   }
@@ -482,6 +509,7 @@ async function createPrimaryCompletion(messages: OpenAI.Chat.ChatCompletionMessa
   let currentRequest = request
   let retriedAutoToolChoice = false
   let retriedWithoutReasoning = false
+  let retriedWithReasoning = false
   while (true) {
     try {
       return await createStreamedCompletion(client!, currentRequest)
@@ -499,6 +527,12 @@ async function createPrimaryCompletion(messages: OpenAI.Chat.ChatCompletionMessa
         retriedWithoutReasoning = true
         console.warn("[api] provider rejected function calling in reasoning/prefix mode; retrying primary with tool-compatible reasoning disabled")
         currentRequest = disableReasoningForToolCalls(currentRequest)
+        continue
+      }
+      if (!retriedWithReasoning && shouldRetryWithReasoningEnabled(err)) {
+        retriedWithReasoning = true
+        console.warn(`[api] model ${currentRequest.model} requires reasoning; retrying primary with reasoning enabled`)
+        currentRequest = enableReasoningForRequest(currentRequest)
         continue
       }
       throw err
