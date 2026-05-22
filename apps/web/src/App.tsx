@@ -36,6 +36,19 @@ const toolSummary = (name: string, args: Record<string, unknown>): string => {
   }
 }
 
+const formatNumber = (value: number): string =>
+  value >= 100 ? value.toFixed(0) : value >= 10 ? value.toFixed(1) : value.toFixed(2)
+
+const formatUsage = (event: Extract<StreamEvent, { type: "usage" }>): string => {
+  const parts: string[] = []
+  if (typeof event.tokensPerSecond === "number") parts.push(`${formatNumber(event.tokensPerSecond)} tok/s`)
+  if (typeof event.completionTokens === "number") parts.push(`${event.completionTokens} out`)
+  if (typeof event.promptTokens === "number") parts.push(`${event.promptTokens} ctx`)
+  if (typeof event.totalTokens === "number") parts.push(`${event.totalTokens} total`)
+  if (typeof event.elapsedMs === "number") parts.push(`${(event.elapsedMs / 1000).toFixed(1)}s`)
+  return parts.length ? parts.join(" · ") : "usage unavailable"
+}
+
 const hiddenToolSummary = (result: string): string => {
   const normalized = result || "(no output)"
   const lines = normalized.split("\n")
@@ -139,6 +152,11 @@ export function App() {
           if (event.type === "user") {
             if (event.clientId === clientId) return
             push({ kind: "incoming", source: event.source, text: event.text })
+            return
+          }
+
+          if (event.type === "usage") {
+            push({ kind: "info", text: `stats: ${formatUsage(event)}` })
             return
           }
 

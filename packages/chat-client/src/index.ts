@@ -3,6 +3,19 @@ export type StreamEvent =
   | { type: "user"; text: string; source: string; triggeredAt: string; clientId?: string }
   | { type: "thinking"; text: string }
   | { type: "tool"; name: string; args: Record<string, unknown>; result: string }
+  | {
+      type: "usage"
+      /** Prompt tokens reported by the runner provider. */
+      promptTokens?: number
+      /** Completion tokens reported by the runner provider. */
+      completionTokens?: number
+      /** Total tokens reported by the runner provider. */
+      totalTokens?: number
+      /** Runner-measured stream duration in milliseconds. */
+      elapsedMs?: number
+      /** Runner-computed completion throughput in tokens per second. */
+      tokensPerSecond?: number
+    }
 
 export type FetchLike = (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>
 
@@ -32,6 +45,11 @@ type UnknownEvent = {
   name?: unknown
   args?: unknown
   result?: unknown
+  promptTokens?: unknown
+  completionTokens?: unknown
+  totalTokens?: unknown
+  elapsedMs?: unknown
+  tokensPerSecond?: unknown
 }
 
 const normalizeUrl = (baseUrl: string): string =>
@@ -73,6 +91,17 @@ const toEvent = (raw: unknown): StreamEvent | null => {
       name: event.name,
       args: event.args as Record<string, unknown>,
       result: event.result,
+    }
+  }
+
+  if (event.type === "usage") {
+    return {
+      type: "usage",
+      promptTokens: typeof event.promptTokens === "number" ? event.promptTokens : undefined,
+      completionTokens: typeof event.completionTokens === "number" ? event.completionTokens : undefined,
+      totalTokens: typeof event.totalTokens === "number" ? event.totalTokens : undefined,
+      elapsedMs: typeof event.elapsedMs === "number" ? event.elapsedMs : undefined,
+      tokensPerSecond: typeof event.tokensPerSecond === "number" ? event.tokensPerSecond : undefined,
     }
   }
 

@@ -53,8 +53,8 @@ export const FALLBACK_PROVIDER_REQUIRES_REASONING_REPLAY =
 export const SUMMARY_BASE =
   process.env.SUMMARY_OPENAI_BASE_URL ?? process.env.SUMMARY_BASE_URL ?? ""
 export const SUMMARY_MODEL = process.env.SUMMARY_MODEL ?? ""
-export const PRIMARY_TOOL_CHOICE = parseToolChoiceEnv(process.env.PRIMARY_TOOL_CHOICE ?? process.env.TOOL_CHOICE, "auto")
-export const FALLBACK_TOOL_CHOICE = parseToolChoiceEnv(process.env.FALLBACK_TOOL_CHOICE, "auto")
+export const PRIMARY_TOOL_CHOICE = parseToolChoiceEnv(process.env.PRIMARY_TOOL_CHOICE ?? process.env.TOOL_CHOICE, "required")
+export const FALLBACK_TOOL_CHOICE = parseToolChoiceEnv(process.env.FALLBACK_TOOL_CHOICE, "required")
 const FALLBACK_N_CTX = parseInt(process.env.FALLBACK_N_CTX ?? process.env.LMSTUDIO_N_CTX ?? "4096")
 const FALLBACK_CONTEXT_MARGIN = parseInt(process.env.FALLBACK_CONTEXT_MARGIN ?? process.env.LMSTUDIO_CONTEXT_MARGIN ?? "256")
 const FALLBACK_HARD_OVERFLOW_TOKENS = parseInt(
@@ -445,6 +445,17 @@ export const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
           note: { type: "string", description: "Channel-specific note text. Empty string clears it." },
         },
         required: ["channel_id", "note"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "wait",
+      description: "Pause and wait for the next incoming message or event. Use this when you've finished what you're doing and want to hear back before continuing.",
+      parameters: {
+        type: "object",
+        properties: {},
       },
     },
   },

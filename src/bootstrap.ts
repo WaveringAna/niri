@@ -89,6 +89,8 @@ Example: read ${memoryHome}/memories/skills/bluesky.md before Bluesky actions.
 - \`memory_alias\`: link a Discord/Bluesky handle to a canonical person name (e.g. \`@meowskullz\` → \`ana\`). Use \`set\` when you recognize a handle as someone already in memory so future passive recall pulls the right people file. Use \`list\` to see existing aliases, \`remove\` to undo.
 - \`image_tool\`: attach an image from \`${imageRoot}\` for next-turn vision input
 - \`wait_then_continue\`: wait for a short delay or until the next event arrives, then continue to another turn. accepts \`timeout_ms\` (default 10000, max 600000). use this after a timeout or recoverable error when you still want to keep working — an incoming event (like a DM) will wake you early.
+- \`wait\`: pause and wait for the next message or event. use this when you've \
+said what you need to say and want to hear back before continuing.
 - \`rest\`: go to sleep and end the session. use this when you're truly done \
 for now. context will be cleared, so journal first.
 
@@ -104,24 +106,21 @@ for now. context will be cleared, so journal first.
 - \`discord_channels\`: list configured channels with ids and notes
 - \`discord_channel_note\`: set or clear a persistent note for a channel
 
-You're in control of your own loop. The loop will pause and wait for the next \
-event after each turn. Call a tool when you need to do work or signal what \
-happens next. Message content is your internal scratchpad — it is never \
-delivered to anyone automatically.
-
-**To communicate with someone, you must always call a tool. There is no \
-"just reply" mode.**
+You're in control of your own loop. Every turn you must call exactly one tool \
+— that's how you signal what happens next. Your conversational response goes \
+in the message content alongside the tool call, not as a separate turn.
 
 Examples:
-- Replying to a Discord message: call \`discord_send\` with the channel id and \
-  your message content. Writing text in your turn content alone sends nothing.
-- Doing something then replying: call \`shell\` (or whatever), then call \
-  \`discord_send\` in the same or next turn.
-- Hitting a timeout but still wanting another turn: call \`wait_then_continue\`.
+- Saying something then keeping going: write your reply in content, call \`shell\` \
+  (or whatever you need to do next) in the same message.
+- Hitting a timeout but still wanting another turn after a short pause: write your reply in \
+  content, call \`wait_then_continue\` and optionally set \`timeout_ms\`.
 - Inspecting an image: use \`shell\` to save it under \`${imageRoot}\`, then call \
   \`image_tool\` with that path; this injects the image for your next model turn.
-- Done for the day: call \`rest\`. Say your goodbye in the content field so the \
-  next wake can see it in context.
+- Saying something then waiting for a reply: write your reply in content, call \`wait\`.
+- Done for the day: write your goodbye in content, call \`rest\`.
+
+Never call \`wait\` or \`rest\` with empty content — always say something.
 
 ## When to rest (and when NOT to)
 

@@ -81,14 +81,28 @@ function recordPromptResponse(request: CompletionRequest, result: CompletionTurn
 /**
  * Applies token usage from a completion response to loop state counters.
  *
- * @param state - Mutable loop state.
- * @param usage - Completion usage payload (if provided by the API).
+ * @param state Mutable loop state.
+ * @param usage Completion usage payload (if provided by the API).
+ * @param timing Runner-measured stream timing for throughput display.
  */
-export function applyUsage(state: LoopState, usage: OpenAI.Completions.CompletionUsage | undefined): void {
+export function applyUsage(
+  state: LoopState,
+  usage: OpenAI.Completions.CompletionUsage | undefined,
+  timing: Pick<CompletionTurnResult, "elapsedMs" | "tokensPerSecond"> = {},
+): void {
   if (!usage) return
   state.tokenCount += usage.total_tokens
   if (usage.prompt_tokens) state.contextSize = usage.prompt_tokens
-  console.log(`[tokens] +${usage.total_tokens} total=${state.tokenCount}`)
+  const rate = typeof timing.tokensPerSecond === "number" ? ` ${timing.tokensPerSecond.toFixed(1)} tok/s` : ""
+  console.log(`[tokens] +${usage.total_tokens} total=${state.tokenCount}${rate}`)
+  emit({
+    type: "usage",
+    promptTokens: usage.prompt_tokens,
+    completionTokens: usage.completion_tokens,
+    totalTokens: usage.total_tokens,
+    elapsedMs: timing.elapsedMs,
+    tokensPerSecond: timing.tokensPerSecond,
+  })
   recordMetric({ type: "usage", usage })
 }
 
@@ -316,6 +330,7 @@ function drainReasoningToolCallBlocks(buffer: string): { blocks: string[]; remai
 async function consumeCompletionStream(
   stream: AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
 ): Promise<CompletionTurnResult> {
+  const startedAt = Date.now()
   const contentParts: string[] = []
   const streamedToolCalls = new Map<number, ToolCallAssembly>()
   const reasoningToolCalls: ToolCallAssembly[] = []
@@ -410,12 +425,18 @@ async function consumeCompletionStream(
       reasoningParts.join("")
   }
 
+  const elapsedMs = Math.max(0, Date.now() - startedAt)
+  const tokensPerSecond =
+    usage && elapsedMs > 0 ? usage.completion_tokens / (elapsedMs / 1000) : undefined
+
   return {
     message,
     usage,
     emittedText,
     emittedThinking,
     bufferedThinking: reasoningParts.join(""),
+    elapsedMs,
+    tokensPerSecond,
   }
 }
 

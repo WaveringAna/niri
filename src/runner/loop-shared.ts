@@ -37,6 +37,10 @@ export type CompletionTurnResult = {
   emittedText: boolean
   emittedThinking: boolean
   bufferedThinking: string
+  /** Runner-measured completion stream duration in milliseconds. */
+  elapsedMs?: number
+  /** Runner-computed completion throughput in tokens per second. */
+  tokensPerSecond?: number
 }
 
 export type CompletionRequest = {

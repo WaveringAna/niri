@@ -3,7 +3,7 @@ import { createChatClient, type StreamEvent } from "@niri/chat-client"
 import { renderMarkdownAnsi } from "./terminal-markdown"
 
 const HOST = process.env.NIRI_HOST ?? "http://localhost"
-const PORT = process.env.PORT ?? "4000"
+const PORT = process.env.PORT ?? "3000"
 const BASE = `${HOST}:${PORT}`
 
 const c = {
@@ -16,6 +16,19 @@ const c = {
 }
 
 const lineCount = (text: string): number => text.split("\n").length
+
+const formatNumber = (value: number): string =>
+  value >= 100 ? value.toFixed(0) : value >= 10 ? value.toFixed(1) : value.toFixed(2)
+
+const formatUsage = (event: Extract<StreamEvent, { type: "usage" }>): string => {
+  const parts: string[] = []
+  if (typeof event.tokensPerSecond === "number") parts.push(`${formatNumber(event.tokensPerSecond)} tok/s`)
+  if (typeof event.completionTokens === "number") parts.push(`${event.completionTokens} out`)
+  if (typeof event.promptTokens === "number") parts.push(`${event.promptTokens} ctx`)
+  if (typeof event.totalTokens === "number") parts.push(`${event.totalTokens} total`)
+  if (typeof event.elapsedMs === "number") parts.push(`${(event.elapsedMs / 1000).toFixed(1)}s`)
+  return parts.length ? parts.join(" · ") : "usage unavailable"
+}
 
 const toolSummary = (name: string, args: Record<string, unknown>): string => {
   switch (name) {
@@ -54,22 +67,106 @@ let showAllTools = false
 let showThinking = false
 let activeStreamKind: "text" | "thinking" | null = null
 let activeStreamMuted = false
+let activeStreamText = ""
+let activeStreamRenderedLines = 0
 let streamSettleTimer: ReturnType<typeof setTimeout> | null = null
 let streamStatusCheckInFlight = false
 
 const STREAM_SETTLE_CHECK_MS = 250
 
-const restorePrompt = () => {
-  rl.resume()
+const isTerminal = (): boolean => Boolean(process.stdin.isTTY && process.stdout.isTTY)
+
+const stripAnsi = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, "")
+
+const charCellWidth = (char: string): number => {
+  const code = char.codePointAt(0) ?? 0
+  if (code === 0) return 0
+  if (code < 32 || (code >= 0x7f && code < 0xa0)) return 0
+  if (
+    (code >= 0x300 && code <= 0x36f) ||
+    (code >= 0x1ab0 && code <= 0x1aff) ||
+    (code >= 0x1dc0 && code <= 0x1dff) ||
+    (code >= 0x20d0 && code <= 0x20ff) ||
+    (code >= 0xfe20 && code <= 0xfe2f)
+  ) {
+    return 0
+  }
+  if (
+    code >= 0x1100 &&
+    (code <= 0x115f ||
+      code === 0x2329 ||
+      code === 0x232a ||
+      (code >= 0x2e80 && code <= 0xa4cf) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe10 && code <= 0xfe19) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6))
+  ) {
+    return 2
+  }
+  return 1
+}
+
+const visibleLineCount = (text: string): number => {
+  const columns = Math.max(1, process.stdout.columns ?? 80)
+  return stripAnsi(text)
+    .split("\n")
+    .reduce((rows, line) => {
+      const width = Array.from(line).reduce((sum, char) => sum + charCellWidth(char), 0)
+      return rows + Math.max(1, Math.ceil(width / columns))
+    }, 0)
+}
+
+const repaintPrompt = () => {
   process.stdin.resume()
-  rl.prompt()
+  rl.resume()
+  rl.prompt(true)
+}
+
+const clearPromptLine = () => {
+  readline.clearLine(process.stdout, 0)
+  readline.cursorTo(process.stdout, 0)
+}
+
+const renderActiveStream = (): string | null => {
+  if (!activeStreamKind) return null
+  if (activeStreamKind === "text") return `${c.magentaBright("niri: ")}${activeStreamText}`
+  if (activeStreamMuted) return c.gray("⟨ thinking ⟩")
+  return c.gray(`⟨ thinking ⟩ ${activeStreamText}`)
+}
+
+const repaintActiveStream = () => {
+  if (!isTerminal()) return
+
+  clearPromptLine()
+  if (activeStreamRenderedLines > 0) {
+    readline.moveCursor(process.stdout, 0, -activeStreamRenderedLines)
+  }
+  readline.clearScreenDown(process.stdout)
+
+  const rendered = renderActiveStream()
+  if (rendered) {
+    process.stdout.write(`${rendered}\n`)
+    activeStreamRenderedLines = visibleLineCount(rendered)
+  } else {
+    activeStreamRenderedLines = 0
+  }
+
+  repaintPrompt()
 }
 
 const print = (line: string) => {
   endActiveStream()
-  rl.pause()
-  process.stdout.write(`\r\x1b[K${line}\n`)
-  restorePrompt()
+  if (isTerminal()) {
+    clearPromptLine()
+    process.stdout.write(`${line}\n`)
+    repaintPrompt()
+    return
+  }
+
+  process.stdout.write(`${line}\n`)
 }
 
 const startActiveStream = (kind: "text" | "thinking") => {
@@ -78,9 +175,13 @@ const startActiveStream = (kind: "text" | "thinking") => {
 
   activeStreamKind = kind
   activeStreamMuted = kind === "thinking" && !showThinking
+  activeStreamText = ""
 
-  rl.pause()
-  process.stdout.write("\r\x1b[K")
+  if (isTerminal()) {
+    repaintActiveStream()
+    return
+  }
+
   if (kind === "text") {
     process.stdout.write(c.magentaBright("niri: "))
   } else if (activeStreamMuted) {
@@ -94,6 +195,12 @@ const appendActiveStream = (kind: "text" | "thinking", chunk: string) => {
   startActiveStream(kind)
   if (!chunk || activeStreamMuted) return
 
+  if (isTerminal()) {
+    activeStreamText += kind === "thinking" ? c.gray(chunk) : chunk
+    repaintActiveStream()
+    return
+  }
+
   const rendered = kind === "thinking" ? c.gray(chunk) : chunk
   process.stdout.write(rendered)
 }
@@ -106,10 +213,12 @@ function endActiveStream(): void {
 
   if (!activeStreamKind) return
 
-  process.stdout.write("\n")
+  if (!isTerminal()) process.stdout.write("\n")
   activeStreamKind = null
   activeStreamMuted = false
-  restorePrompt()
+  activeStreamText = ""
+  activeStreamRenderedLines = 0
+  repaintPrompt()
 }
 
 const scheduleStreamSettleCheck = () => {
@@ -121,7 +230,7 @@ const scheduleStreamSettleCheck = () => {
     streamStatusCheckInFlight = true
     try {
       const status = await client.getStatus()
-      if (!status.running) {
+      if (!status.running || status.idle) {
         endActiveStream()
       } else {
         scheduleStreamSettleCheck()
@@ -157,6 +266,12 @@ const handleStreamEvent = (event: StreamEvent) => {
     endActiveStream()
     print(c.cyan(`${event.source}:`))
     print(renderMarkdownAnsi(event.text))
+    return
+  }
+
+  if (event.type === "usage") {
+    endActiveStream()
+    print(c.gray(`stats: ${formatUsage(event)}`))
     return
   }
 
