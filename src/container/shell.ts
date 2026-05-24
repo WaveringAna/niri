@@ -263,18 +263,30 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
       ].join("\n"),
     )
 
-    const timer = setTimeout(() => {
+    let timer = setTimeout(() => {
       if (settled) return
-      settled = true
-      dataDisposable.dispose()
+      // Phase 1: Interrupt the hanging command with Ctrl+C.
+      // Some CLI tools (e.g. wispctl with TUI spinners) hang after completing
+      // their work — they need a nudge to exit and let bash process the
+      // remaining command group (including the end sentinel echo).
       session.write("\x03\n")
-      // After a timeout we no longer know whether bash consumed Ctrl+C,
-      // returned to a prompt, or still has a foreground process attached.
-      // Reuse would interleave the next command with a potentially poisoned
-      // PTY, so force a fresh docker exec session next time.
-      session.kill()
-      if (bash === session) bash = null
-      reject(new Error(`Command timed out after ${timeoutMs}ms: ${command}`))
+
+      // Phase 2: Grace period — give bash a moment to process the interrupt
+      // and write the end sentinel. If sentinel appears during this window,
+      // the data listener fires `resolve()` and clears this grace timer
+      // (since it captures the `timer` variable binding, now reassigned).
+      timer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        dataDisposable.dispose()
+        // After a timeout + grace period we no longer know whether bash
+        // consumed Ctrl+C, returned to a prompt, or still has a foreground
+        // process attached. Reuse would interleave the next command with a
+        // potentially poisoned PTY, so force a fresh session next time.
+        session.kill()
+        if (bash === session) bash = null
+        reject(new Error(`Command timed out after ${timeoutMs}ms: ${command}`))
+      }, 3_000)
     }, timeoutMs)
   })
 }
