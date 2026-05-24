@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { closeBash } from "./shell"
+import { cleanOutput, closeBash } from "./shell"
 import { runCommand } from "./tools"
 
 test.afterEach(() => {
@@ -18,6 +18,17 @@ test("shell disables git pager and terminal prompts", async () => {
   )
 
   assert.equal(output, "cat\n0\ncat\nFRX")
+})
+
+test("shell recovers when a command leaves terminal echo enabled", async () => {
+  assert.equal(await runCommand("stty echo; echo first", 0, 5_000), "first")
+  assert.equal(await runCommand("echo second", 0, 5_000), "second")
+})
+
+test("cleanOutput collapses terminal redraw controls", () => {
+  assert.equal(cleanOutput("one\rspinner\rdone\n"), "done\n")
+  assert.equal(cleanOutput("abc\b \bd\n"), "abd\n")
+  assert.equal(cleanOutput("\x1b[?25lhidden\x1b[?25h\n"), "hidden\n")
 })
 
 test("sudo commands run as one-off commands with stdin closed", async () => {

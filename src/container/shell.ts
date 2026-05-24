@@ -10,19 +10,55 @@ import {
 } from "./config"
 import type { RunRawOptions } from "./types"
 
+function applyTerminalControls(str: string): string {
+  let out = ""
+
+  for (let i = 0; i < str.length; i += 1) {
+    const ch = str[i]
+
+    if (ch === "\r") {
+      if (str[i + 1] === "\n") {
+        out += "\n"
+        i += 1
+      } else {
+        const lineStart = out.lastIndexOf("\n") + 1
+        out = out.slice(0, lineStart)
+      }
+      continue
+    }
+
+    if (ch === "\b" || ch === "\x7f") {
+      if (out.length > 0 && out[out.length - 1] !== "\n") out = out.slice(0, -1)
+      continue
+    }
+
+    if (ch === "\x00") continue
+    out += ch
+  }
+
+  return out
+}
+
 /**
- * Strip ANSI/VT escape sequences and normalize line endings from PTY output.
- * PTYs emit CRLF and control sequences that we don't want in command results.
+ * Strip ANSI/VT escape sequences and apply simple terminal line controls.
+ * PTYs emit redraw-oriented output (CR, backspace, ANSI cursor commands) that
+ * should not be preserved as literal command result text.
  */
-function cleanOutput(str: string): string {
-  return str
-    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "") // CSI sequences (colors, cursor, etc.)
+export function cleanOutput(str: string): string {
+  const withoutEscapes = str
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "") // CSI sequences (colors, cursor, erase, etc.)
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "") // OSC sequences (title, etc.)
     .replace(/\x1b[^[\]]/g, "") // other 2-char ESC sequences
     .replace(/(?:\x03|\^C)\s*/g, "") // Ctrl+C echo after interrupt
-    .replace(/\r\n/g, "\n") // CRLF -> LF
-    .replace(/\r/g, "\n") // stray CR -> LF
-    .replace(/\x00/g, "") // null bytes
+
+  return applyTerminalControls(withoutEscapes)
+}
+
+function removeInternalPtyControlEchoes(str: string): string {
+  return str
+    .split("\n")
+    .filter((line) => line !== "stty -echo 2>/dev/null")
+    .join("\n")
 }
 
 let bash: pty.IPty | null = null
@@ -201,7 +237,7 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
         const end = cleaned.indexOf(endSentinel)
         // Drop the single newline that echo adds after the start sentinel,
         // then trim trailing whitespace from the command output.
-        resolve(cleaned.slice(start, end).replace(/^\n/, "").trimEnd())
+        resolve(removeInternalPtyControlEchoes(cleaned.slice(start, end).replace(/^\n/, "")).trimEnd())
       }
     })
 
@@ -209,9 +245,23 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
     // /dev/null so accidental interactive reads do not hang forever.
     // The closing } is on its own line so heredocs inside the command still
     // get their correct delimiter line.
+    //
+    // Re-assert `stty -echo` before both sentinels. Full-screen tools,
+    // prompts, and some spinners can leave terminal echo enabled; if that
+    // happens, bash echoes the sentinel input lines before executing them and
+    // completion detection fires on our own command text.
     const groupedCommand = redirectStdinToDevNull ? `{ ${command}\n} < /dev/null` : `{ ${command}\n}`
 
-    session.write(`echo ${startSentinel}\n${groupedCommand}\necho ${endSentinel}\n`)
+    session.write(
+      [
+        "stty -echo 2>/dev/null",
+        `echo ${startSentinel}`,
+        groupedCommand,
+        "stty -echo 2>/dev/null",
+        `echo ${endSentinel}`,
+        "",
+      ].join("\n"),
+    )
 
     const timer = setTimeout(() => {
       if (settled) return
