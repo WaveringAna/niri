@@ -9,6 +9,7 @@ import {
   sanitizeMessages,
   scrubImagesFromConversation,
   shouldFallback,
+  summarizeConversationViaLLM,
 } from "./util"
 
 type AssistantMessageWithReasoning = OpenAI.Chat.ChatCompletionAssistantMessageParam & {
@@ -95,4 +96,58 @@ test("scrubImagesFromConversation replaces image parts with the placeholder text
   assert.equal(parts.length, 2)
   assert.equal(parts[1]!.type, "text")
   assert.equal(parts[1]!.text, "[the system has rejected this :( its not your fault]")
+})
+
+test("summarizeConversationViaLLM folds prior summary even when it is not directly after the system head", async () => {
+  let capturedSystemPrompt = ""
+  const summaryClient = {
+    chat: {
+      completions: {
+        create: async (params: { messages: OpenAI.Chat.ChatCompletionMessageParam[] }) => {
+          capturedSystemPrompt = String(params.messages[0]?.content)
+          return {
+            choices: [
+              {
+                message: {
+                  content:
+                    "Thread: Project memory\n- I carried forward the older recollection and the newer transcript as one living thread, keeping the emotional texture and concrete work together.",
+                },
+              },
+            ],
+          }
+        },
+      },
+    },
+  } as unknown as OpenAI
+
+  const priorSummary = "[context summary v1]\nold recollection about niri's project and feelings"
+  const longTurn = "new transcript details with identifiers and emotional texture ".repeat(80)
+  const messages: Message[] = [
+    { role: "system", content: "soul and core bootstrap" },
+    { role: "user", content: "[harness restarted]\n\nwake before summary" },
+    { role: "user", content: priorSummary },
+    { role: "assistant", content: longTurn },
+    { role: "user", content: longTurn },
+    { role: "assistant", content: longTurn },
+    { role: "user", content: longTurn },
+    { role: "user", content: "recent raw turn 1" },
+    { role: "assistant", content: "recent raw turn 2" },
+  ]
+
+  const summarized = await summarizeConversationViaLLM(messages, summaryClient, "summary-model", {
+    recentMinKeep: 2,
+    recentMaxKeep: 2,
+  })
+
+  assert.ok(summarized)
+  assert.equal(summarized[0]?.role, "system")
+  assert.equal(summarized[1]?.role, "user")
+  assert.match(String(summarized[1]?.content), /^\[context summary v1\]/)
+  assert.equal(summarized.filter((m) => String(m.content).startsWith("[context summary v1]")).length, 1)
+  assert.equal(summarized.at(-2)?.content, "recent raw turn 1")
+  assert.equal(summarized.at(-1)?.content, "recent raw turn 2")
+
+  assert.match(capturedSystemPrompt, /Prior recollection/)
+  assert.match(capturedSystemPrompt, /old recollection about niri's project and feelings/)
+  assert.match(capturedSystemPrompt, /Organize the summary as a set of ongoing threads/)
 })

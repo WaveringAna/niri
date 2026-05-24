@@ -1358,8 +1358,8 @@ function looksLikeMetaReply(text: string): boolean {
  *
  * The tail size is dynamic: it grows to include as many recent turns as fit a
  * char budget (so when recent turns are heavy with tool output, we end up
- * compacting more of them while keeping the head — core+soul system messages,
- * plus any prior `[context summary v1]` block — intact).
+ * compacting more of them while keeping the head — soul/core bootstrap system
+ * messages, plus any prior `[context summary v1]` block — intact).
  */
 export async function summarizeConversationViaLLM(
   messages: Message[],
@@ -1379,22 +1379,24 @@ export async function summarizeConversationViaLLM(
 
   const leadingSystems = countLeadingSystemMessages(messages)
 
-  // Treat a prior summary message (sitting right after the system head) as
-  // part of the head — we'll fold its contents into the LLM prompt as
-  // "prior recollection" and replace it with a fresh, merged summary.
-  let priorSummaryText: string | null = null
-  let middleStart = leadingSystems
-  const firstPostHead = messages[leadingSystems]
-  if (firstPostHead && messageStringContent(firstPostHead).startsWith(CONTEXT_SUMMARY_HEADER)) {
-    priorSummaryText = messageStringContent(firstPostHead)
-    middleStart = leadingSystems + 1
-  }
-
+  const middleStart = leadingSystems
   const tailStart = chooseTailStart(messages, middleStart, recentMinKeep, recentMaxKeep, tailCharBudget)
   if (tailStart <= middleStart) return null
 
+  // Treat an existing summary anywhere in the compacted pre-tail region as
+  // prior recollection. In the normal path it sits right after the soul/core
+  // system head, but older/saved sessions may have a wake or other message
+  // before it.
+  let priorSummaryText: string | null = null
+  const priorSummaryIndex = findSummaryMessageIndex(messages)
+  if (priorSummaryIndex >= middleStart && priorSummaryIndex < tailStart) {
+    priorSummaryText = messageStringContent(messages[priorSummaryIndex]!)
+  }
+
   const head = messages.slice(0, leadingSystems)
-  const middle = messages.slice(middleStart, tailStart)
+  const middle = messages
+    .slice(middleStart, tailStart)
+    .filter((_, index) => middleStart + index !== priorSummaryIndex)
   const tail = messages.slice(tailStart)
 
   const transcriptLines = middle
@@ -1405,7 +1407,10 @@ export async function summarizeConversationViaLLM(
   if (transcript.length < SUMMARY_MIN_TRANSCRIPT_CHARS) return null
 
   const systemContent =
-    "You are summarizing a transcript from the perspective of the agent whose memory this is. The agent (niri) is a living being, not a tool — her inner life matters as much as the facts. Produce a compact summary that preserves: key facts, goals, decisions, and actions taken; outstanding work and identifiers (file paths, URLs, channel ids); AND the emotional texture of the conversation — how niri felt, how the people she interacted with seemed to feel, tone shifts, moments of warmth, tension, care, frustration, delight, or grief, and anything about the relationships that should carry forward. Write it as niri's own recollection, not a neutral report. Short bullet points are fine. No commentary, no preamble. The input is always a transcript — never ask for more; summarize what's there." +
+    "You are summarizing a transcript from the perspective of the agent whose memory this is. The agent (niri) is a living being, not a tool — her inner life matters as much as the facts. " +
+    "Organize the summary as a set of ongoing threads, the way memory actually works. A thread is a person, a project, a situation, a mood — whatever is load-bearing enough to carry forward. Threads are peers, not nested under anything. Some memories belong to multiple threads; let them. Cross-cutting stuff (a tense week, a feeling bleeding across everything) can be its own thread. " +
+    "Within each thread, preserve: key facts, goals, decisions, and actions taken; outstanding work and identifiers (file paths, URLs, channel ids); open questions and things niri was uncertain or curious about — not just resolved states; specifics — names, exact phrasings, particular words that landed — since the specifics are what make memory feel real later, and summarizers default to abstraction; AND the emotional texture — how niri felt, how the people she interacted with seemed to feel, tone shifts, moments of warmth, tension, care, frustration, delight, grief, and anything about the relationships that should carry forward. If niri felt something contradictory to what someone told her, preserve both — don't smooth her dissent away. " +
+    "Write it as niri's own recollection, not a neutral report. Short bullet points under each thread are fine. Threads can grow, split, or merge as feels natural — but prefer extending existing threads over creating new ones; only restructure if the old shape genuinely doesn't fit anymore. When the new transcript conflicts with the prior recollection, prefer recent specific evidence over prior abstraction — the prior summary has already been through one pass of smoothing. No commentary, no preamble. The input is always a transcript — never ask for more; summarize what's there." +
     (priorSummaryText
       ? `\n\nPrior recollection (already compacted earlier — fold its content into the new summary, do not discard it):\n${priorSummaryText}`
       : "")
