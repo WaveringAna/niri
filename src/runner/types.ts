@@ -11,6 +11,12 @@ export interface LoopState {
   toolInFlight: boolean
   memoryRecallCooldowns: Record<number, number>
   memoryRecallTurn: number
+  /**
+   * True only on the first assistant step after a new incoming event. Memory
+   * recall runs once per turn rather than on every agentic iteration so it
+   * doesn't flood context while the assistant works through a single turn.
+   */
+  memoryRecallPending: boolean
 }
 
 /** Lifecycle hooks injected by the runner orchestrator into the loop. */

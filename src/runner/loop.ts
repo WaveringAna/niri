@@ -57,6 +57,9 @@ async function applyLoopGuardNudge(state: LoopState, hooks: LoopHooks, reason: s
 async function processAssistantTurn(convId: number, state: LoopState, hooks: LoopHooks): Promise<CycleOutcome> {
   state.memoryRecallTurn += 1
   const response = await fetchCompletion(state)
+  // Recall (if any) has been applied for this turn; don't re-recall on the
+  // follow-up iterations that work through the same incoming event.
+  state.memoryRecallPending = false
   applyUsage(state, response.usage, {
     elapsedMs: response.elapsedMs,
     tokensPerSecond: response.tokensPerSecond,

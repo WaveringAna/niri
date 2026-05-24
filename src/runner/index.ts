@@ -19,6 +19,7 @@ const state: RunnerStateInternal = {
   toolInFlight: false,
   memoryRecallCooldowns: {},
   memoryRecallTurn: 0,
+  memoryRecallPending: false,
   deferredEvents: [],
 }
 
@@ -189,6 +190,8 @@ function injectIncomingEvent(convId: number, event: UserMessage): void {
   })
   logMessage(convId, "user", incomingMessage)
   emitUserEvent(event)
+  // A new incoming event starts a new turn — recall once for it.
+  state.memoryRecallPending = true
   console.log("[runner] injected event from", event.source)
 }
 
@@ -212,6 +215,8 @@ export async function wake(event: UserMessage): Promise<void> {
   state.contextSize = 0
   state.memoryRecallCooldowns = {}
   state.memoryRecallTurn = 0
+  // The wake event is the first turn — recall once for it.
+  state.memoryRecallPending = true
 
   const saved = await loadSession()
   if (saved) {
@@ -260,6 +265,7 @@ export async function wake(event: UserMessage): Promise<void> {
     state.toolInFlight = false
     state.memoryRecallCooldowns = {}
     state.memoryRecallTurn = 0
+    state.memoryRecallPending = false
     flushDeferredEvents()
     state.deferredEvents = []
     eventResolvers = []

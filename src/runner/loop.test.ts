@@ -13,6 +13,7 @@ function makeState(): LoopState {
     toolInFlight: false,
     memoryRecallCooldowns: {},
     memoryRecallTurn: 0,
+    memoryRecallPending: false,
   }
 }
 

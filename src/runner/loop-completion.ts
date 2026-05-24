@@ -663,11 +663,16 @@ export async function fetchCompletion(
       baseConversation = sanitizeMessages(baseConversation)
     }
 
-    const requestContext = await buildCompletionMessages(
-      baseConversation,
-      state.memoryRecallCooldowns,
-      state.memoryRecallTurn,
-    )
+    // Only run memory recall on the first step of a new turn. Re-running it on
+    // every agentic iteration floods context with the same recalled chunks for
+    // the same (unchanged) user message.
+    const requestContext = state.memoryRecallPending
+      ? await buildCompletionMessages(
+          baseConversation,
+          state.memoryRecallCooldowns,
+          state.memoryRecallTurn,
+        )
+      : { messages: baseConversation, recalledChunkIds: [] as number[] }
     const requestMessages = requestContext.messages
 
     if (USE_FALLBACK) {

@@ -24,4 +24,5 @@ export interface RunnerState {
   contextSize: number
   memoryRecallCooldowns: Record<number, number>
   memoryRecallTurn: number
+  memoryRecallPending: boolean
 }
