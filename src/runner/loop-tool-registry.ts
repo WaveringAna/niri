@@ -15,7 +15,7 @@ import { listAliases, removeAlias, searchMemories, setAlias } from "../memory"
 import { emit } from "../stream"
 import type { ToolHandler } from "./loop-shared"
 import { pushToolMessage, recordToolResult, runStandardTool, toolError } from "./loop-tool-runtime"
-import { parseImageDetail } from "./util"
+import { parseImageDetail, saveRestSnapshot } from "./util"
 
 const DEFAULT_WAIT_THEN_CONTINUE_MS = 10_000
 
@@ -58,6 +58,7 @@ export function buildToolHandlers(): Record<string, ToolHandler> {
     rest: async ({ convId, state, hooks, call, args }) => {
       if (args.note) console.log("[runner] rest note:", args.note)
       recordToolResult(convId, state, call, "rest", args, "Goodnight.")
+      await saveRestSnapshot(state.conversation, args.note as string | undefined)
       await hooks.clearSession()
       return { shouldRest: true }
     },

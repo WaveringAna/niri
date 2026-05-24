@@ -6,6 +6,7 @@ import {
   isContentFilterError,
   isImageParseError,
   isTransientTransportError,
+  restForestFromMessages,
   sanitizeMessages,
   scrubImagesFromConversation,
   shouldFallback,
@@ -96,6 +97,20 @@ test("scrubImagesFromConversation replaces image parts with the placeholder text
   assert.equal(parts.length, 2)
   assert.equal(parts[1]!.type, "text")
   assert.equal(parts[1]!.text, "[the system has rejected this :( its not your fault]")
+})
+
+test("restForestFromMessages returns the llm context summary", () => {
+  const messages: Message[] = [
+    { role: "system", content: "soul and core bootstrap" },
+    { role: "user", content: "[wake]\n\nhello" },
+    { role: "user", content: "[context summary v1]\n[llm-summary now]\nThread: project\n- carried context forward" },
+    { role: "assistant", content: "recent turn" },
+  ]
+
+  const forest = restForestFromMessages(messages)
+
+  assert.match(forest, /^\[context summary v1\]/)
+  assert.match(forest, /Thread: project/)
 })
 
 test("summarizeConversationViaLLM folds prior summary even when it is not directly after the system head", async () => {

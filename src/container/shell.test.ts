@@ -10,6 +10,16 @@ test.afterEach(() => {
   closeBash()
 })
 
+test("shell disables git pager and terminal prompts", async () => {
+  const output = await runCommand(
+    "printf '%s\\n%s\\n%s\\n%s' \"$GIT_PAGER\" \"$GIT_TERMINAL_PROMPT\" \"$PAGER\" \"$LESS\"",
+    0,
+    5_000,
+  )
+
+  assert.equal(output, "cat\n0\ncat\nFRX")
+})
+
 test("sudo commands run as one-off commands with stdin closed", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "niri-fake-sudo-"))
   const fakeSudo = path.join(dir, "sudo")

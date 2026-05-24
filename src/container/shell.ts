@@ -28,7 +28,16 @@ function cleanOutput(str: string): string {
 let bash: pty.IPty | null = null
 
 function spawnBash(): { proc: pty.IPty; backend: string } {
-  const env = process.env as Record<string, string>
+  const env = {
+    ...(process.env as Record<string, string>),
+    // Commands run in a PTY, so Git otherwise assumes an interactive terminal
+    // and may launch a pager for `log`, `show`, `diff`, etc. The pager blocks
+    // the sentinel that marks command completion, causing tool-level timeouts.
+    GIT_PAGER: "cat",
+    GIT_TERMINAL_PROMPT: "0",
+    PAGER: "cat",
+    LESS: "FRX",
+  }
   const options = {
     name: "xterm-256color",
     cols: 220, // wide enough to avoid line-wrapping sentinels

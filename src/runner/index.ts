@@ -4,7 +4,7 @@ import { emit } from "../stream"
 import { runLoop } from "./loop"
 import { setRunnerPresence } from "./presence"
 import type { RunnerStateInternal } from "./types"
-import { clearSession, loadSession, saveSession } from "./util"
+import { clearSession, consumeRestSnapshot, loadSession, saveSession } from "./util"
 import type { UserMessage } from "../types"
 
 let eventResolvers: Array<(event: UserMessage) => void> = []
@@ -226,7 +226,7 @@ export async function wake(event: UserMessage): Promise<void> {
       content: `[harness restarted — ${event.source} @ ${event.triggeredAt}]\n\n${event.content}`,
     })
   } else {
-    state.conversation = await buildBootstrap(event)
+    state.conversation = await buildBootstrap(event, await consumeRestSnapshot())
   }
 
   const convId = startConversation(event.source, event.triggeredAt)

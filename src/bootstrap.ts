@@ -7,6 +7,12 @@ import { imageRootForModelInput } from "./container/index"
 const SOUL_FILE = path.join(HOME_DIR, "soul.md")
 const MISPLACED_SOUL_FILE = path.join(HOME_DIR, "memories", "soul.md")
 
+type PriorRestContext = {
+  restedAt: string
+  note?: string
+  forest: string
+}
+
 async function readFile(filePath: string): Promise<string | null> {
   try {
     return await fs.readFile(filePath, "utf-8")
@@ -190,7 +196,7 @@ There is a soul.example.md in your home directory you can use as a starting poin
 ${buildEnvironmentSection()}`
 }
 
-export async function buildBootstrap(event: UserMessage): Promise<Message[]> {
+export async function buildBootstrap(event: UserMessage, priorRest?: PriorRestContext | null): Promise<Message[]> {
   await ensureSoulFilePlacement()
 
   const soul = await readFile(SOUL_FILE)
@@ -210,7 +216,7 @@ ${buildEnvironmentSection()}`.trim()
     console.warn("[bootstrap] soul.md not found — using first-run bootstrap")
   }
 
-  const wakeMessage = formatUserMessage(event)
+  const wakeMessage = formatUserMessage(event, priorRest)
 
   return [
     { role: "system", content: system },
@@ -218,7 +224,10 @@ ${buildEnvironmentSection()}`.trim()
   ]
 }
 
-function formatUserMessage(event: UserMessage): string {
+function formatUserMessage(event: UserMessage, priorRest?: PriorRestContext | null): string {
   const time = new Date(event.triggeredAt).toLocaleString()
-  return `[wake] ${time} — triggered by ${event.source}\n\n${event.content}`
+  const priorRestSection = priorRest
+    ? `\n\n[prior session]\nrested_at: ${priorRest.restedAt}\nrest_note: ${priorRest.note?.trim() || "(none)"}\n\nforest:\n${priorRest.forest}`
+    : ""
+  return `[wake] ${time} — triggered by ${event.source}${priorRestSection}\n\n${event.content}`
 }
