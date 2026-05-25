@@ -201,9 +201,10 @@ export async function currentWorkingDirectory(timeoutMs?: number): Promise<strin
  */
 export async function runRaw(command: string, options: RunRawOptions = {}): Promise<string> {
   const timeoutMs = normalizeTimeoutMs(options.timeoutMs, DEFAULT_COMMAND_TIMEOUT_MS)
-  // Default: keep stdin attached to the PTY for more natural command behavior.
-  // Higher-level helpers (e.g. runCommand) can opt into /dev/null for commands
-  // that are likely to block waiting for stdin.
+  // Default: keep stdin attached to the PTY (used by internal heredoc-based
+  // helpers that supply their own stdin). The model-facing runner (runCommand)
+  // opts every command into /dev/null so interactive children cannot consume
+  // the trailing completion sentinels buffered in the PTY.
   const redirectStdinToDevNull = options.redirectStdinToDevNull ?? false
 
   // Reconnect lazily if the session was lost.
