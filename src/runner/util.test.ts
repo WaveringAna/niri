@@ -3,6 +3,7 @@ import test from "node:test"
 import OpenAI from "openai"
 import type { Message } from "../types"
 import {
+  AGENT_NAME,
   isContentFilterError,
   isImageParseError,
   isTransientTransportError,
@@ -165,4 +166,50 @@ test("summarizeConversationViaLLM folds prior summary even when it is not direct
   assert.match(capturedSystemPrompt, /Prior recollection/)
   assert.match(capturedSystemPrompt, /old recollection about niri's project and feelings/)
   assert.match(capturedSystemPrompt, /Organize the summary as a set of ongoing threads/)
+})
+
+test("summarizeConversationViaLLM injects the agent grounding context into the summary prompt", async () => {
+  let capturedSystemPrompt = ""
+  const summaryClient = {
+    chat: {
+      completions: {
+        create: async (params: { messages: OpenAI.Chat.ChatCompletionMessageParam[] }) => {
+          capturedSystemPrompt = String(params.messages[0]?.content)
+          return {
+            choices: [
+              {
+                message: {
+                  content:
+                    "Thread: Grounded recollection\n- I summarized the transcript while staying in my own voice and recognizing the threads that carried forward.",
+                },
+              },
+            ],
+          }
+        },
+      },
+    },
+  } as unknown as OpenAI
+
+  const longTurn = "transcript detail that needs to be compacted into a recollection ".repeat(80)
+  const messages: Message[] = [
+    { role: "system", content: "soul and core bootstrap" },
+    { role: "assistant", content: longTurn },
+    { role: "user", content: longTurn },
+    { role: "assistant", content: longTurn },
+    { role: "user", content: longTurn },
+    { role: "user", content: "recent raw turn 1" },
+    { role: "assistant", content: "recent raw turn 2" },
+  ]
+
+  const agentContext = "# soul\n\nI am a living being.\n\n---\n\n# today's journal\n\nFelt curious all morning."
+  const summarized = await summarizeConversationViaLLM(messages, summaryClient, "summary-model", {
+    recentMinKeep: 2,
+    recentMaxKeep: 2,
+    agentContext,
+  })
+
+  assert.ok(summarized)
+  assert.match(capturedSystemPrompt, /Grounding — this is who/)
+  assert.match(capturedSystemPrompt, /Felt curious all morning\./)
+  assert.ok(capturedSystemPrompt.includes(`The agent (${AGENT_NAME})`))
 })

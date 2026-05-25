@@ -25,6 +25,7 @@ import {
   isContentFilterError,
   isImageParseError,
   isPromptTooLargeError,
+  loadAgentSummaryContext,
   retryDelayMs,
   sanitizeMessages,
   scrubImagesFromConversation,
@@ -587,7 +588,10 @@ async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Pro
   }
 
   console.warn(`[context] recovery: attempting llm summarization via ${summaryProvider.model} (attempt=${attempt + 1})`)
-  const summarized = await summarizeConversationViaLLM(state.conversation, summaryProvider.client, summaryProvider.model)
+  const agentContext = await loadAgentSummaryContext()
+  const summarized = await summarizeConversationViaLLM(state.conversation, summaryProvider.client, summaryProvider.model, {
+    agentContext,
+  })
   if (!summarized) {
     console.warn(`[context] recovery: llm summarization returned no changes`)
     return false

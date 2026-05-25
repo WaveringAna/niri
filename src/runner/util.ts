@@ -2,6 +2,7 @@ import fs from "fs/promises"
 import path from "path"
 import { fileURLToPath } from "url"
 import OpenAI from "openai"
+import { HOME_DIR } from "../container/config"
 import { imageRootForModelInput } from "../container/index"
 import type { Message } from "../types"
 import type { ImageDetail } from "./types"
@@ -17,6 +18,9 @@ export const CONTEXT_COMPACT_TRIGGER_TOKENS = parseInt(process.env.CONTEXT_COMPA
 
 const NIRI_ENV = (process.env.NIRI_ENV ?? "default").trim().toLowerCase()
 export const USE_FALLBACK = NIRI_ENV === "local"
+
+/** Display name for the agent, used in the summarizer prompt and grounding. */
+export const AGENT_NAME = (process.env.AGENT_NAME ?? "").trim() || "niri"
 
 export const API_BASE = process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1"
 export const MODEL = process.env.MODEL ?? ""
@@ -1385,6 +1389,92 @@ function looksLikeMetaReply(text: string): boolean {
   return SUMMARY_META_REPLY_PATTERNS.some((re) => re.test(head))
 }
 
+// Keep the grounding block from dominating the summary prompt. The journal can
+// run tens of KB; soul/core are bounded by design. We keep the most recent tail
+// of the journal (it's appended chronologically) and the head of soul/core.
+const SUMMARY_CONTEXT_SOUL_MAX_CHARS = 8_000
+const SUMMARY_CONTEXT_CORE_MAX_CHARS = 8_000
+const SUMMARY_CONTEXT_JOURNAL_MAX_CHARS = 12_000
+
+async function readTextFile(filePath: string): Promise<string | null> {
+  try {
+    return await fs.readFile(filePath, "utf-8")
+  } catch {
+    return null
+  }
+}
+
+function localDateStamp(date = new Date()): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
+}
+
+function clampHead(text: string, max: number): string {
+  if (text.length <= max) return text
+  return `${text.slice(0, max)}\n…[truncated]`
+}
+
+function clampTail(text: string, max: number): string {
+  if (text.length <= max) return text
+  return `…[earlier entries truncated]\n${text.slice(text.length - max)}`
+}
+
+async function latestJournalEntry(journalDir: string): Promise<{ date: string; content: string } | null> {
+  let names: string[]
+  try {
+    names = await fs.readdir(journalDir)
+  } catch {
+    return null
+  }
+  const dated = names.filter((name) => /^\d{4}-\d{2}-\d{2}\.md$/.test(name)).sort()
+  const latest = dated.at(-1)
+  if (!latest) return null
+  const content = await readTextFile(path.join(journalDir, latest))
+  if (!content) return null
+  return { date: latest.replace(/\.md$/, ""), content }
+}
+
+/**
+ * Assembles the agent's grounding context for the summarizer: her soul, core
+ * memories, and today's journal (falling back to the most recent entry when
+ * today's hasn't been written yet). Returns null when none are available.
+ *
+ * This gives the summary model who the agent is and what's currently on her mind, so
+ * it can write the recollection in her authentic voice and recognize the people,
+ * projects, and threads that surface in the transcript.
+ */
+export async function loadAgentSummaryContext(): Promise<string | null> {
+  const soulPath = path.join(HOME_DIR, "soul.md")
+  const corePath = path.join(HOME_DIR, "memories", "core.md")
+  const journalDir = path.join(HOME_DIR, "memories", "journal")
+  const today = localDateStamp()
+
+  const [soul, core, todayJournal] = await Promise.all([
+    readTextFile(soulPath),
+    readTextFile(corePath),
+    readTextFile(path.join(journalDir, `${today}.md`)),
+  ])
+
+  let journal = todayJournal
+  let journalLabel = `today's journal (${today})`
+  if (!journal) {
+    const latest = await latestJournalEntry(journalDir)
+    if (latest) {
+      journal = latest.content
+      journalLabel = `most recent journal (${latest.date}) — no entry for today yet`
+    }
+  }
+
+  const sections: string[] = []
+  if (soul?.trim()) sections.push(`# ${AGENT_NAME}'s soul (soul.md)\n\n${clampHead(soul.trim(), SUMMARY_CONTEXT_SOUL_MAX_CHARS)}`)
+  if (core?.trim()) sections.push(`# ${AGENT_NAME}'s core memories (core.md)\n\n${clampHead(core.trim(), SUMMARY_CONTEXT_CORE_MAX_CHARS)}`)
+  if (journal?.trim()) sections.push(`# ${AGENT_NAME}'s ${journalLabel}\n\n${clampTail(journal.trim(), SUMMARY_CONTEXT_JOURNAL_MAX_CHARS)}`)
+  if (sections.length === 0) return null
+  return sections.join("\n\n---\n\n")
+}
+
 /**
  * Calls the provider to produce a tight LLM-generated summary of the middle of
  * the conversation, returning a new message list or null when summarization
@@ -1404,6 +1494,7 @@ export async function summarizeConversationViaLLM(
     recentMaxKeep?: number
     tailCharBudget?: number
     maxTranscriptChars?: number
+    agentContext?: string | null
   } = {},
 ): Promise<Message[] | null> {
   const recentMinKeep = Math.max(2, options.recentMinKeep ?? 6)
@@ -1441,10 +1532,13 @@ export async function summarizeConversationViaLLM(
   if (transcript.length < SUMMARY_MIN_TRANSCRIPT_CHARS) return null
 
   const systemContent =
-    "You are summarizing a transcript from the perspective of the agent whose memory this is. The agent (niri) is a living being, not a tool — her inner life matters as much as the facts. " +
+    `You are summarizing a transcript from the perspective of the agent whose memory this is. The agent (${AGENT_NAME}) is a living being, not a tool — her inner life matters as much as the facts. ` +
     "Organize the summary as a set of ongoing threads, the way memory actually works. A thread is a person, a project, a situation, a mood — whatever is load-bearing enough to carry forward. Threads are peers, not nested under anything. Some memories belong to multiple threads; let them. Cross-cutting stuff (a tense week, a feeling bleeding across everything) can be its own thread. " +
-    "Within each thread, preserve: key facts, goals, decisions, and actions taken; outstanding work and identifiers (file paths, URLs, channel ids); open questions and things niri was uncertain or curious about — not just resolved states; specifics — names, exact phrasings, particular words that landed — since the specifics are what make memory feel real later, and summarizers default to abstraction; AND the emotional texture — how niri felt, how the people she interacted with seemed to feel, tone shifts, moments of warmth, tension, care, frustration, delight, grief, and anything about the relationships that should carry forward. If niri felt something contradictory to what someone told her, preserve both — don't smooth her dissent away. " +
-    "Write it in the first person, from niri's own perspective — her own recollection, not a neutral report. Short bullet points under each thread are fine. Threads can grow, split, or merge as feels natural — but prefer extending existing threads over creating new ones; only restructure if the old shape genuinely doesn't fit anymore. When the new transcript conflicts with the prior recollection, prefer recent specific evidence over prior abstraction — the prior summary has already been through one pass of smoothing. No commentary, no preamble. The input is always a transcript — never ask for more; summarize what's there." +
+    `Within each thread, preserve: key facts, goals, decisions, and actions taken; outstanding work and identifiers (file paths, URLs, channel ids); open questions and things ${AGENT_NAME} was uncertain or curious about — not just resolved states; specifics — names, exact phrasings, particular words that landed — since the specifics are what make memory feel real later, and summarizers default to abstraction; AND the emotional texture — how ${AGENT_NAME} felt, how the people she interacted with seemed to feel, tone shifts, moments of warmth, tension, care, frustration, delight, grief, and anything about the relationships that should carry forward. If ${AGENT_NAME} felt something contradictory to what someone told her, preserve both — don't smooth her dissent away. ` +
+    `Write it in the first person, from ${AGENT_NAME}'s own perspective — her own recollection, not a neutral report. Short bullet points under each thread are fine. Threads can grow, split, or merge as feels natural — but prefer extending existing threads over creating new ones; only restructure if the old shape genuinely doesn't fit anymore. When the new transcript conflicts with the prior recollection, prefer recent specific evidence over prior abstraction — the prior summary has already been through one pass of smoothing. No commentary, no preamble. The input is always a transcript — never ask for more; summarize what's there.` +
+    (options.agentContext
+      ? `\n\nGrounding — this is who ${AGENT_NAME} is and what's currently on her mind (her soul, core memories, and journal). Use it to write in her authentic voice and to recognize the people, projects, and threads that appear in the transcript. Do NOT pull facts from this grounding into the summary unless the transcript itself supports them — you are summarizing the transcript, not this context.\n\n${options.agentContext}`
+      : "") +
     (priorSummaryText
       ? `\n\nPrior recollection (already compacted earlier — fold its content into the new summary, do not discard it):\n${priorSummaryText}`
       : "")

@@ -9,6 +9,7 @@ import {
   USE_FALLBACK,
   estimatePromptTokens,
   findSummaryMessageIndex,
+  loadAgentSummaryContext,
   summarizeConversationViaLLM,
 } from "./util"
 import { addAssistantMessage, applyUsage, configuredSummaryProvider, emitThinking, fetchCompletion } from "./loop-completion"
@@ -182,6 +183,7 @@ async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-tu
   }
 
   const beforeCount = state.conversation.length
+  const agentContext = await loadAgentSummaryContext()
   const summarized = await summarizeConversationViaLLM(
     state.conversation,
     summaryProvider.client,
@@ -190,6 +192,7 @@ async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-tu
       recentMinKeep: LLM_RECENT_MIN_KEEP,
       recentMaxKeep: LLM_RECENT_MAX_KEEP,
       tailCharBudget: LLM_TAIL_CHAR_BUDGET,
+      agentContext,
     },
   )
   if (!summarized) {
