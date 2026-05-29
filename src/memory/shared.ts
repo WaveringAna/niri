@@ -18,7 +18,7 @@ export const ALIASES_FILE = path.join(MEMORIES_DIR, "aliases.json")
 
 // ── tuning constants ───────────────────────────────────────────────────
 
-export const MEMORY_RECALL_HEADER = "[memory recall v1]"
+export const MEMORY_RECALL_HEADER = "[injected recalled memories]"
 export const MEMORY_RECALL_NOTE =
   "Potentially relevant long-term notes. Use only if helpful; trust newer conversation details if anything conflicts."
 export const MEMORY_RECALL_MAX_CHUNKS = 4

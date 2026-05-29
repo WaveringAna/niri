@@ -668,7 +668,7 @@ export function toMemorySearchResult(hit: MemoryHit): import("./shared").MemoryS
  * @returns Formatted recall message.
  */
 export function buildMemoryRecallMessage(hits: MemoryHit[], maxChars: number): string {
-  const MEMORY_RECALL_HEADER = "[memory recall v1]"
+  const MEMORY_RECALL_HEADER = "[injected recalled memories]"
   const MEMORY_RECALL_NOTE =
     "Potentially relevant long-term notes. Use only if helpful; trust newer conversation details if anything conflicts."
 
