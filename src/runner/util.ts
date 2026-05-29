@@ -576,15 +576,6 @@ export async function consumeRestSnapshot(): Promise<RestSnapshot | null> {
 
 function normalizeReasoningReplay(msgs: Message[]): Message[] {
   if (!ENABLE_THINKING) return msgs
-  const needsReplayNormalization =
-    PRIMARY_PROVIDER_REQUIRES_REASONING_REPLAY ||
-    FALLBACK_PROVIDER_REQUIRES_REASONING_REPLAY ||
-    msgs.some(
-      (msg) =>
-        msg.role === "assistant" &&
-        typeof (msg as OpenAI.Chat.ChatCompletionMessage & { reasoning_content?: string }).reasoning_content === "string",
-    )
-  if (!needsReplayNormalization) return msgs
 
   let changed = false
   const normalized = msgs.map((msg) => {

@@ -89,6 +89,16 @@ function extractAssistantContentBlocks(
 ): AnthropicContentBlock[] {
   const blocks: AnthropicContentBlock[] = []
 
+  if (ENABLE_THINKING) {
+    const reasoning = (msg as any).reasoning_content
+    const thinkingText =
+      typeof reasoning === "string" && reasoning.trim().length > 0 ? reasoning : "Thinking..."
+    blocks.push({
+      type: "thinking" as any,
+      thinking: thinkingText,
+    } as any)
+  }
+
   if (typeof msg.content === "string" && msg.content) {
     blocks.push({ type: "text" as const, text: msg.content })
   } else if (Array.isArray(msg.content)) {
