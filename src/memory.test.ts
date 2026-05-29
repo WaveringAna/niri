@@ -36,12 +36,12 @@ pending preview:
   })
 })
 
-test("latestMemoryRecallQuery skips ambient discord batch without pending items", () => {
+test("latestMemoryRecallQuery skips ambient discord batch without items", () => {
   const batch = `[user/discord] [discord batch] 2026-05-01T03:10:50.162Z -> 2026-05-01T03:11:22.198Z
 new_messages=1 channels=1 pending_inbox=0 scope=configured+dm
 
 recent messages:
-- [channel/meowskullz's server/#ai-sister-yap] [2026-05-01 08:01:35.639Z] @rose: foxie emoji
+- (none)
 
 pending preview:
 - (none)`
@@ -58,7 +58,7 @@ pending preview:
   )
 })
 
-test("memoryQueryForUserMessage ignores ambient discord batch recent messages", () => {
+test("memoryQueryForUserMessage processes discord batch recent messages when pending preview is empty", () => {
   const batch = `[user/discord] [discord batch] 2026-05-01T03:10:50.162Z -> 2026-05-01T03:11:22.198Z
 new_messages=1 channels=1 pending_inbox=0 scope=configured+dm
 
@@ -69,9 +69,9 @@ pending preview:
 - (none)`
 
   assert.deepEqual(__memoryTest.memoryQueryForUserMessage(batch), {
-    sender: null,
-    source: null,
-    body: batch,
+    sender: "rose",
+    source: "channel/meowskullz's server/#ai-sister-yap",
+    body: "foxie emoji",
   })
 })
 

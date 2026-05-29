@@ -141,7 +141,11 @@ export function conciseDiscordBatchMemoryQuery(raw: string): MemoryQueryParts | 
   if (!/\[discord batch\]/i.test(withoutWakeEnvelope)) return null
 
   const pending = extractBulletSection(withoutWakeEnvelope, "pending preview")
-  const selected = pending.filter((entry) => !/^\(none\)$/i.test(entry)).slice(-3)
+  let selected = pending.filter((entry) => !/^\(none\)$/i.test(entry)).slice(-3)
+  if (selected.length === 0) {
+    const recent = extractBulletSection(withoutWakeEnvelope, "recent messages")
+    selected = recent.filter((entry) => !/^\(none\)$/i.test(entry)).slice(-3)
+  }
   if (selected.length === 0) return null
 
   const senders: string[] = []
