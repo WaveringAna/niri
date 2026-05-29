@@ -10,10 +10,12 @@ import {
   FALLBACK_BASE,
   FALLBACK_MODEL,
   FALLBACK_TOOL_CHOICE,
+  ANTHROPIC_MODEL,
   MODEL,
   PRIMARY_TOOL_CHOICE,
   SUMMARY_MODEL,
   TOOLS,
+  USE_ANTHROPIC,
   USE_FALLBACK,
   apiErrorDetails,
   client,
@@ -33,6 +35,7 @@ import {
   summaryClient,
   summarizeConversationViaLLM,
 } from "./util"
+import { createAnthropicCompletion } from "./anthropic"
 import { assistantContentText } from "./loop-content"
 import type { CompletionRequest, CompletionTurnResult, ToolCallAssembly } from "./loop-shared"
 
@@ -519,6 +522,15 @@ async function createFallbackCompletion(messages: OpenAI.Chat.ChatCompletionMess
 }
 
 async function createPrimaryCompletion(messages: OpenAI.Chat.ChatCompletionMessageParam[]): Promise<CompletionTurnResult> {
+  if (USE_ANTHROPIC) {
+    return createAnthropicCompletion({
+      model: ANTHROPIC_MODEL,
+      messages,
+      tools: TOOLS,
+      tool_choice: PRIMARY_TOOL_CHOICE,
+    })
+  }
+
   const request: CompletionRequest = {
     model: MODEL,
     messages,

@@ -61,6 +61,13 @@ export const SUMMARY_BASE =
 export const SUMMARY_MODEL = process.env.SUMMARY_MODEL ?? ""
 export const PRIMARY_TOOL_CHOICE = parseToolChoiceEnv(process.env.PRIMARY_TOOL_CHOICE ?? process.env.TOOL_CHOICE, "required")
 export const FALLBACK_TOOL_CHOICE = parseToolChoiceEnv(process.env.FALLBACK_TOOL_CHOICE, "required")
+
+export const USE_ANTHROPIC = parseBooleanEnv(process.env.USE_ANTHROPIC, false)
+export const ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com/v1"
+export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? ""
+export const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL ?? ""
+export const ANTHROPIC_MAX_TOKENS = Math.max(1, Number.parseInt(process.env.ANTHROPIC_MAX_TOKENS ?? "8192", 10)) || 8192
+export const ANTHROPIC_VERSION = process.env.ANTHROPIC_VERSION ?? "2024-10-22"
 const FALLBACK_N_CTX = parseInt(process.env.FALLBACK_N_CTX ?? process.env.LMSTUDIO_N_CTX ?? "4096")
 const FALLBACK_CONTEXT_MARGIN = parseInt(process.env.FALLBACK_CONTEXT_MARGIN ?? process.env.LMSTUDIO_CONTEXT_MARGIN ?? "256")
 const FALLBACK_HARD_OVERFLOW_TOKENS = parseInt(
@@ -96,12 +103,20 @@ const summaryHeaders = openAIHeaders([
   ["User-Agent", openAIUserAgent(process.env.SUMMARY_OPENAI_USER_AGENT)],
 ])
 
-if (!USE_FALLBACK && !MODEL) {
-  throw new Error("MODEL is required unless fallback is forced (NIRI_ENV=local).")
+if (!USE_FALLBACK && !USE_ANTHROPIC && !MODEL) {
+  throw new Error("MODEL is required unless fallback is forced (NIRI_ENV=local) or Anthropic is used (USE_ANTHROPIC=true).")
 }
 
-if (!USE_FALLBACK && !process.env.OPENAI_API_KEY) {
-  throw new Error("OPENAI_API_KEY is required unless fallback is forced (NIRI_ENV=local).")
+if (!USE_FALLBACK && !USE_ANTHROPIC && !process.env.OPENAI_API_KEY) {
+  throw new Error("OPENAI_API_KEY is required unless fallback is forced (NIRI_ENV=local) or Anthropic is used (USE_ANTHROPIC=true).")
+}
+
+if (USE_ANTHROPIC && !ANTHROPIC_API_KEY) {
+  throw new Error("ANTHROPIC_API_KEY is required when USE_ANTHROPIC=true.")
+}
+
+if (USE_ANTHROPIC && !ANTHROPIC_MODEL) {
+  throw new Error("ANTHROPIC_MODEL is required when USE_ANTHROPIC=true.")
 }
 
 if (USE_FALLBACK && !fallbackApiKey) {
@@ -139,7 +154,11 @@ export const summaryClient =
       })
     : null
 
-console.log(`[config] primary=${MODEL} @ ${API_BASE}`)
+if (USE_ANTHROPIC) {
+  console.log(`[config] primary=${ANTHROPIC_MODEL} @ ${ANTHROPIC_BASE_URL} (anthropic)`)
+} else {
+  console.log(`[config] primary=${MODEL} @ ${API_BASE}`)
+}
 console.log(`[config] fallback=${FALLBACK_MODEL} @ ${FALLBACK_BASE}`)
 if (summaryClient) console.log(`[config] summary=${SUMMARY_MODEL} @ ${SUMMARY_BASE}`)
 console.log(`[config] env=${NIRI_ENV} use_fallback=${USE_FALLBACK}`)
