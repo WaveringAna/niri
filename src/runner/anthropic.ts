@@ -431,7 +431,12 @@ export async function createAnthropicCompletion(
 
   if (request.tools.length > 0 && request.tool_choice !== "none") {
     body.tools = toAnthropicTools(request.tools)
-    const tc = toAnthropicToolChoice(request.tool_choice)
+    let tc = toAnthropicToolChoice(request.tool_choice)
+    // Anthropic rejects tool_choice 'any' when thinking is enabled.
+    if (tc && (tc as unknown as { type: string }).type === "any" && ENABLE_THINKING) {
+      console.warn("[anthropic] tool_choice='any' is incompatible with thinking; downgrading to 'auto'")
+      tc = { type: "auto" }
+    }
     if (tc) body.tool_choice = tc
   }
 
