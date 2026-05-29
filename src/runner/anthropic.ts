@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 import { recordMetric } from "../metrics"
 import { emit } from "../stream"
+import { ENABLE_THINKING } from "./util"
 import type { CompletionRequest, CompletionTurnResult, ToolCallAssembly } from "./loop-shared"
 
 // ── config ──────────────────────────────────────────────────────────────
@@ -11,6 +12,10 @@ export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? ""
 export const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL ?? ""
 export const ANTHROPIC_MAX_TOKENS = Math.max(1, Number.parseInt(process.env.ANTHROPIC_MAX_TOKENS ?? "8192", 10)) || 8192
 export const ANTHROPIC_VERSION = process.env.ANTHROPIC_VERSION ?? "2024-10-22"
+export const ANTHROPIC_THINKING_BUDGET = Math.max(
+  1024,
+  Number.parseInt(process.env.ANTHROPIC_THINKING_BUDGET ?? "4096", 10) || 4096,
+)
 
 const client = new Anthropic({
   apiKey: ANTHROPIC_API_KEY,
@@ -204,9 +209,10 @@ function toAnthropicToolChoice(
 
 // ── streaming conversion (Anthropic SSE → OpenAI chunks) ────────────────
 
-function makeChunk(partial: Omit<OpenAI.Chat.ChatCompletionChunk.Choice.Delta, "role" | "content" | "tool_calls"> & {
+function makeChunk(partial: Omit<OpenAI.Chat.ChatCompletionChunk.Choice.Delta, "role" | "content" | "tool_calls" | "reasoning_content"> & {
   role?: "assistant"
   content?: string | null
+  reasoning_content?: string
   tool_calls?: OpenAI.Chat.ChatCompletionChunk.Choice.Delta.ToolCall[]
 }): OpenAI.Chat.ChatCompletionChunk {
   return {
@@ -259,6 +265,8 @@ async function* anthropicStreamToOpenAI(
         const delta = event.delta
         if (delta.type === "text_delta") {
           yield makeChunk({ content: delta.text })
+        } else if (delta.type === "thinking_delta") {
+          yield makeChunk({ reasoning_content: delta.thinking })
         } else if (delta.type === "input_json_delta") {
           const tool = toolBuffers.get(index)
           if (tool) {
@@ -319,6 +327,7 @@ async function consumeAnthropicStream(
   let usage: OpenAI.Completions.CompletionUsage | undefined
   let emittedText = false
   let emittedThinking = false
+  const reasoningParts: string[] = []
 
   for await (const chunk of stream) {
     if (chunk.usage) usage = chunk.usage
@@ -330,7 +339,15 @@ async function consumeAnthropicStream(
       reasoning_content?: string
     }
 
+    if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+      reasoningParts.push(delta.reasoning_content)
+    }
+
     if (typeof delta.content === "string" && delta.content.length > 0) {
+      if (ENABLE_THINKING && !emittedThinking && reasoningParts.length > 0) {
+        emit({ type: "thinking", text: reasoningParts.join("") })
+        emittedThinking = true
+      }
       contentParts.push(delta.content)
       emit({ type: "text", text: delta.content })
       emittedText = true
@@ -368,6 +385,11 @@ async function consumeAnthropicStream(
     ...(finalToolCalls.length > 0 ? { tool_calls: finalToolCalls } : {}),
   }
 
+  if (reasoningParts.length > 0) {
+    ;(message as OpenAI.Chat.ChatCompletionMessage & { reasoning_content?: string }).reasoning_content =
+      reasoningParts.join("")
+  }
+
   const elapsedMs = Math.max(0, Date.now() - startedAt)
   const tokensPerSecond =
     usage && elapsedMs > 0 ? usage.completion_tokens / (elapsedMs / 1000) : undefined
@@ -377,7 +399,7 @@ async function consumeAnthropicStream(
     usage,
     emittedText,
     emittedThinking,
-    bufferedThinking: "",
+    bufferedThinking: reasoningParts.join(""),
     elapsedMs,
     tokensPerSecond,
   }
@@ -395,6 +417,16 @@ export async function createAnthropicCompletion(
     max_tokens: ANTHROPIC_MAX_TOKENS,
     messages,
     ...(system ? { system } : {}),
+  }
+
+  if (ENABLE_THINKING) {
+    const thinkingBudget = Math.min(ANTHROPIC_MAX_TOKENS - 1, ANTHROPIC_THINKING_BUDGET)
+    if (thinkingBudget >= 1024) {
+      ;(body as unknown as Record<string, unknown>).thinking = {
+        type: "enabled",
+        budget_tokens: thinkingBudget,
+      }
+    }
   }
 
   if (request.tools.length > 0 && request.tool_choice !== "none") {
