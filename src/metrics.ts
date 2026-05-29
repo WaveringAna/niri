@@ -2,6 +2,7 @@ import Database from "better-sqlite3"
 import fs from "fs"
 import path from "path"
 import type OpenAI from "openai"
+import { publishWorkerEvent } from "./awp/outbox"
 import { HOME_DIR } from "./container/config"
 import { getDb } from "./db"
 import type { Message } from "./types"
@@ -256,6 +257,7 @@ export function recordMetric(event: MetricEventInput): number | null {
       if (events.length > MAX_IN_MEMORY) {
         events.shift()
       }
+      publishWorkerEvent("metric.recorded", fullEvent)
       return fullEvent.id
     } catch (err) {
       console.error("[metrics] failed to record to db:", err)

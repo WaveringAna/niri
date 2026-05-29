@@ -2,6 +2,7 @@ import Database from "better-sqlite3"
 import fs from "fs"
 import path from "path"
 import * as sqliteVec from "sqlite-vec"
+import { publishWorkerEvent } from "./awp/outbox"
 import { HOME_DIR } from "./container/config"
 
 const DB_PATH = path.join(HOME_DIR, "niri.db")
@@ -236,7 +237,13 @@ export function initDb(): void {
 export function startConversation(source: string, startedAt: string): number {
   const stmt = db.prepare("insert into conversations (startedAt, source) values (?, ?)")
   const result = stmt.run(startedAt, source)
-  return result.lastInsertRowid as number
+  const conversationId = result.lastInsertRowid as number
+  publishWorkerEvent("conversation.started", {
+    conversationId,
+    source,
+    startedAt,
+  })
+  return conversationId
 }
 
 export function logMessage(
@@ -246,8 +253,9 @@ export function logMessage(
   toolCalls?: unknown,
   toolCallId?: string,
 ): void {
+  const createdAt = new Date().toISOString()
   const stmt = db.prepare(
-    "insert into messages (convId, role, content, toolCalls, toolCallId) values (?, ?, ?, ?, ?)",
+    "insert into messages (convId, role, content, toolCalls, toolCallId, createdAt) values (?, ?, ?, ?, ?, ?)",
   )
   stmt.run(
     convId,
@@ -255,11 +263,25 @@ export function logMessage(
     content,
     toolCalls ? JSON.stringify(toolCalls) : null,
     toolCallId ?? null,
+    createdAt,
   )
+  publishWorkerEvent("conversation.message", {
+    conversationId: convId,
+    role,
+    content,
+    ...(toolCalls ? { toolCalls } : {}),
+    ...(toolCallId ? { toolCallId } : {}),
+    createdAt,
+  })
 }
 
 export function endConversation(id: number, tokens: number): void {
   db.prepare("update conversations set tokens = ? where id = ?").run(tokens, id)
+  publishWorkerEvent("conversation.ended", {
+    conversationId: id,
+    tokens,
+    endedAt: new Date().toISOString(),
+  })
 }
 
 export function getDb(): Database.Database {

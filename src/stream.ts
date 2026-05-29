@@ -1,4 +1,5 @@
 import type { StreamEvent } from "@niri/chat-client"
+import { publishWorkerEvent } from "./awp/outbox"
 
 export type { StreamEvent }
 
@@ -28,6 +29,7 @@ export function emit(event: StreamEvent): void {
   }
   buffer.push(event)
   if (buffer.length > BUFFER_SIZE) buffer.shift()
+  publishWorkerEvent("stream.event", event)
   for (const fn of listeners) fn(event)
 }
 

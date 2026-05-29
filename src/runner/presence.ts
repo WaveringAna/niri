@@ -1,3 +1,5 @@
+import { publishWorkerEvent } from "../awp/outbox"
+
 export type RunnerPresence = "awake" | "resting"
 
 type Listener = (presence: RunnerPresence) => void
@@ -8,6 +10,7 @@ let currentPresence: RunnerPresence = "resting"
 export function setRunnerPresence(presence: RunnerPresence): void {
   if (presence === currentPresence) return
   currentPresence = presence
+  publishWorkerEvent("runner.status", { presence })
   for (const listener of listeners) listener(presence)
 }
 

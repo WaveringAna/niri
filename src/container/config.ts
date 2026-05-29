@@ -1,4 +1,5 @@
 import path from "path"
+import { REPO_HOME_DIR as CONFIG_REPO_HOME_DIR } from "../agent-config"
 
 const configuredContainerName = (process.env.NIRI_CONTAINER ?? "").trim()
 const configuredContainerUser = (process.env.NIRI_USER ?? "").trim()
@@ -10,9 +11,11 @@ export const CONTAINER_NAME = configuredContainerName || "niri"
 /** Linux user inside the container used for command execution. */
 export const CONTAINER_USER = configuredContainerUser || "niri"
 /** Repository fallback home used when a local OS home is unavailable. */
-export const REPO_HOME_DIR = path.resolve(process.cwd(), "home")
+export const REPO_HOME_DIR = CONFIG_REPO_HOME_DIR
 /** Harness home for soul, memories, and local databases. */
-export const HOME_DIR = USE_DOCKER_SHELL ? REPO_HOME_DIR : path.resolve(process.env.HOME ?? REPO_HOME_DIR)
+export const HOME_DIR = path.resolve(
+  (process.env.NIRI_HOME ?? "").trim() || (USE_DOCKER_SHELL ? REPO_HOME_DIR : (process.env.HOME ?? REPO_HOME_DIR)),
+)
 
 /** Absolute image root allowed for `image_tool` operations. */
 export const IMAGE_ROOT = (() => {

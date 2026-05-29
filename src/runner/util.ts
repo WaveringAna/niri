@@ -4,6 +4,7 @@ import { fileURLToPath } from "url"
 import OpenAI from "openai"
 import { HOME_DIR } from "../container/config"
 import { imageRootForModelInput } from "../container/index"
+import { openAIHeaders, openAIUserAgent } from "../openai-headers"
 import type { Message } from "../types"
 import type { ImageDetail } from "./types"
 import type { ToolArgs } from "./loop-shared"
@@ -83,12 +84,17 @@ const summaryApiKey =
   (SUMMARY_BASE === process.env.LMSTUDIO_BASE_URL ? process.env.LMSTUDIO_API_KEY : undefined) ??
   process.env.OPENAI_API_KEY ??
   (SUMMARY_BASE && isLikelyLocalBase(SUMMARY_BASE) ? "lm-studio" : "")
-const fallbackHeaders: Record<string, string> = {}
-if (process.env.FALLBACK_OPENAI_REFERER) fallbackHeaders["HTTP-Referer"] = process.env.FALLBACK_OPENAI_REFERER
-if (process.env.FALLBACK_OPENAI_TITLE) fallbackHeaders["X-Title"] = process.env.FALLBACK_OPENAI_TITLE
-const summaryHeaders: Record<string, string> = {}
-if (process.env.SUMMARY_OPENAI_REFERER) summaryHeaders["HTTP-Referer"] = process.env.SUMMARY_OPENAI_REFERER
-if (process.env.SUMMARY_OPENAI_TITLE) summaryHeaders["X-Title"] = process.env.SUMMARY_OPENAI_TITLE
+const primaryHeaders = openAIHeaders([["User-Agent", openAIUserAgent()]])
+const fallbackHeaders = openAIHeaders([
+  ["HTTP-Referer", process.env.FALLBACK_OPENAI_REFERER],
+  ["X-Title", process.env.FALLBACK_OPENAI_TITLE],
+  ["User-Agent", openAIUserAgent(process.env.FALLBACK_OPENAI_USER_AGENT)],
+])
+const summaryHeaders = openAIHeaders([
+  ["HTTP-Referer", process.env.SUMMARY_OPENAI_REFERER],
+  ["X-Title", process.env.SUMMARY_OPENAI_TITLE],
+  ["User-Agent", openAIUserAgent(process.env.SUMMARY_OPENAI_USER_AGENT)],
+])
 
 if (!USE_FALLBACK && !MODEL) {
   throw new Error("MODEL is required unless fallback is forced (NIRI_ENV=local).")
@@ -115,12 +121,13 @@ export const client = USE_FALLBACK
   : new OpenAI({
       baseURL: API_BASE,
       apiKey: process.env.OPENAI_API_KEY!,
+      defaultHeaders: primaryHeaders,
     })
 
 export const fallbackClient = new OpenAI({
   baseURL: FALLBACK_BASE,
   apiKey: fallbackApiKey || "lm-studio", // Keep LM Studio default when running against localhost.
-  defaultHeaders: Object.keys(fallbackHeaders).length ? fallbackHeaders : undefined,
+  defaultHeaders: fallbackHeaders,
 })
 
 export const summaryClient =
@@ -128,7 +135,7 @@ export const summaryClient =
     ? new OpenAI({
         baseURL: SUMMARY_BASE,
         apiKey: summaryApiKey,
-        defaultHeaders: Object.keys(summaryHeaders).length ? summaryHeaders : undefined,
+        defaultHeaders: summaryHeaders,
       })
     : null
 

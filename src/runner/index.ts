@@ -9,6 +9,7 @@ import type { UserMessage } from "../types"
 
 let eventResolvers: Array<(event: UserMessage) => void> = []
 let shutdownResolve: (() => void) | null = null
+const PROCESS_STARTED_AT = new Date().toISOString()
 
 const state: RunnerStateInternal = {
   contextSize: 0,
@@ -35,6 +36,24 @@ export function isRunning(): boolean {
 /** Returns whether the runner is currently blocked in wait or wait_then_continue. */
 export function isWaitingForEvent(): boolean {
   return eventResolvers.length > 0
+}
+
+export function getRunnerStatus(): {
+  running: boolean
+  idle: boolean
+  tokenCount: number
+  contextSize: number
+  processStartedAt: string
+  uptimeMs: number
+} {
+  return {
+    running: state.running,
+    idle: isWaitingForEvent(),
+    tokenCount: state.tokenCount,
+    contextSize: state.contextSize,
+    processStartedAt: PROCESS_STARTED_AT,
+    uptimeMs: Math.max(0, Date.now() - new Date(PROCESS_STARTED_AT).getTime()),
+  }
 }
 
 type EnqueueOptions = {

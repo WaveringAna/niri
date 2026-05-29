@@ -1,5 +1,6 @@
 import OpenAI from "openai"
 import { MEMORY_EMBEDDING_DIMENSIONS } from "./db"
+import { openAIHeaders, openAIUserAgent } from "./openai-headers"
 
 export const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL ?? "google/gemini-embedding-2-preview"
 export const EMBEDDING_DIMENSIONS = parseInt(
@@ -9,15 +10,17 @@ export const EMBEDDING_DIMENSIONS = parseInt(
 
 const EMBEDDING_BASE_URL = process.env.EMBEDDING_BASE_URL ?? "https://openrouter.ai/api/v1"
 const EMBEDDING_API_KEY = process.env.EMBEDDING_API_KEY
+const embeddingHeaders = openAIHeaders([
+  ["HTTP-Referer", process.env.EMBEDDING_OPENAI_REFERER],
+  ["X-Title", process.env.EMBEDDING_TITLE],
+  ["User-Agent", openAIUserAgent(process.env.EMBEDDING_OPENAI_USER_AGENT)],
+])
 
 const embeddingClient = EMBEDDING_API_KEY
   ? new OpenAI({
       baseURL: EMBEDDING_BASE_URL,
       apiKey: EMBEDDING_API_KEY,
-      defaultHeaders: {
-        ...(process.env.EMBEDDING_OPENAI_REFERER ? { "HTTP-Referer": process.env.EMBEDDING_OPENAI_REFERER } : {}),
-        ...(process.env.EMBEDDING_TITLE ? { "X-Title": process.env.EMBEDDING_TITLE } : {}),
-      },
+      defaultHeaders: embeddingHeaders,
     })
   : null
 

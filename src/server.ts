@@ -3,7 +3,10 @@ import fastifyStatic from "@fastify/static"
 import { existsSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { wake, isRunning, isWaitingForEvent, enqueueEvent } from "./runner/index"
+import { AGENT_ID } from "./agent-config"
+import { listWorkerEvents, publishWorkerEvent, subscribeWorkerEvents } from "./awp/outbox"
+import type { ControlCommand } from "./awp/types"
+import { wake, isRunning, isWaitingForEvent, enqueueEvent, shutdown, getRunnerStatus } from "./runner/index"
 import { buildDiscordBatchDigest, scanDiscordChannels } from "./discord/state"
 import { handleDiscordIngress } from "./discord/pipeline"
 import { fromBsky } from "./triggers/bsky"
@@ -38,6 +41,7 @@ const METRIC_TYPE_ALIASES: Record<string, MetricListType> = {
   "prompt-response": "response",
   completion: "response",
 }
+const TRIGGER_SOURCES = new Set(["discord", "bsky", "webhook", "cron", "chat"])
 
 function parseMetricTypes(raw: string | undefined): MetricListType[] | undefined {
   if (!raw?.trim()) return undefined
@@ -111,6 +115,152 @@ export function createServer() {
     if (!discordBatchTimer) return
     clearInterval(discordBatchTimer)
     discordBatchTimer = null
+  })
+
+  publishWorkerEvent("worker.hello", {
+    agentId: AGENT_ID,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+  })
+
+  function isUserMessage(value: unknown): value is UserMessage {
+    if (!value || typeof value !== "object") return false
+    const event = value as Partial<UserMessage>
+    return (
+      typeof event.content === "string" &&
+      typeof event.triggeredAt === "string" &&
+      typeof event.source === "string" &&
+      TRIGGER_SOURCES.has(event.source)
+    )
+  }
+
+  function dispatchEvent(event: UserMessage, options: { onlyIfWaiting?: boolean; priority?: boolean } = {}): boolean {
+    if (isRunning()) return enqueueEvent(event, options)
+    if (options.onlyIfWaiting) return false
+    void wake(event)
+    return true
+  }
+
+  app.get("/awp/status", async () => ({
+    agentId: AGENT_ID,
+    ...getRunnerStatus(),
+  }))
+
+  app.post("/awp/events", async (req, reply) => {
+    const body =
+      req.body && typeof req.body === "object"
+        ? (req.body as Partial<ControlCommand> | UserMessage)
+        : ({} as Partial<ControlCommand>)
+    const isEnqueueCommand = "type" in body && body.type === "event.enqueue"
+    const event = isEnqueueCommand ? body.event : body
+    const options = isEnqueueCommand ? body.options : undefined
+
+    if (!isUserMessage(event)) {
+      return reply.code(400).send({ error: "expected a UserMessage or event.enqueue command" })
+    }
+
+    const accepted = dispatchEvent(event, options)
+    return reply.send({
+      ok: accepted,
+      agentId: AGENT_ID,
+      running: isRunning(),
+    })
+  })
+
+  app.get("/awp/events", async (req) => {
+    const query = req.query as { after_seq?: string; limit?: string; tail?: string }
+    const mode = query.tail === "1" || query.tail === "true" ? "tail" : "after"
+    return {
+      agentId: AGENT_ID,
+      events: listWorkerEvents(
+        Number.parseInt(query.after_seq ?? "0", 10) || 0,
+        Number.parseInt(query.limit ?? "500", 10) || 500,
+        mode,
+      ),
+    }
+  })
+
+  app.post("/awp/shutdown", async (_req, reply) => {
+    await shutdown()
+    return reply.send({ ok: true, agentId: AGENT_ID })
+  })
+
+  app.get("/awp/stream", (req, reply) => {
+    const query = req.query as { after_seq?: string; limit?: string }
+    const afterSeq = Math.max(0, Number.parseInt(query.after_seq ?? "0", 10) || 0)
+    const limit = Math.max(1, Math.min(1000, Number.parseInt(query.limit ?? "500", 10) || 500))
+
+    reply.hijack()
+
+    const res = reply.raw
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    })
+
+    res.write(":ok\n\n")
+
+    const liveBuffer: ReturnType<typeof listWorkerEvents> = []
+    let replaying = true
+    let lastSeq = afterSeq
+    const seenIds = new Set<string>()
+
+    const send = (event: ReturnType<typeof listWorkerEvents>[number]) => {
+      if (seenIds.has(event.id)) return
+      seenIds.add(event.id)
+      if (event.seq > 0) lastSeq = Math.max(lastSeq, event.seq)
+      try {
+        res.write(`id: ${event.seq}\n`)
+        res.write(`event: ${event.type}\n`)
+        res.write(`data: ${JSON.stringify(event)}\n\n`)
+      } catch {
+        // connection closed
+      }
+    }
+
+    const unsubscribe = subscribeWorkerEvents((event) => {
+      if (replaying) {
+        liveBuffer.push(event)
+        return
+      }
+      send(event)
+    })
+
+    try {
+      for (const event of listWorkerEvents(afterSeq, limit)) send(event)
+    } catch (err) {
+      send(
+        publishWorkerEvent("worker.heartbeat", {
+          error: `failed to replay worker events: ${err instanceof Error ? err.message : String(err)}`,
+        }),
+      )
+    }
+
+    replaying = false
+    for (const event of liveBuffer.sort((a, b) => a.seq - b.seq)) {
+      if (event.seq === 0 || event.seq > lastSeq || !seenIds.has(event.id)) send(event)
+    }
+
+    const keepalive = setInterval(() => {
+      try {
+        publishWorkerEvent("worker.heartbeat", {
+          agentId: AGENT_ID,
+          running: isRunning(),
+          idle: isWaitingForEvent(),
+        })
+        res.write(":ping\n\n")
+      } catch {
+        clearInterval(keepalive)
+        unsubscribe()
+      }
+    }, 15_000)
+
+    req.raw.on("close", () => {
+      clearInterval(keepalive)
+      unsubscribe()
+    })
   })
 
   if (existsSync(WEB_DIST_DIR)) {
@@ -201,8 +351,7 @@ export function createServer() {
   })
 
   app.get("/status", async () => ({
-    running: isRunning(),
-    idle: isWaitingForEvent(),
+    ...getRunnerStatus(),
   }))
 
   app.get("/metrics", async (req) => {

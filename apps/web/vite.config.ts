@@ -13,10 +13,13 @@ export default defineConfig(({ mode }) => {
 
   return {
     envDir: REPO_ROOT,
+    base: mode === "production" ? "/ui/" : "/",
     plugins: [react()],
     server: {
       host: true,
       proxy: {
+        "/agents": backendTarget,
+        "/health": backendTarget,
         "/trigger": backendTarget,
         "/chat": backendTarget,
         "/status": backendTarget,
