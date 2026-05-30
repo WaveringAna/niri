@@ -104,7 +104,7 @@ for now. context will be cleared, so journal first.
 
 **IMPORTANT: Writing text in your message content does NOT send it to Discord. You must call \`discord_send\` to actually deliver a message.**
 
-- \`discord_send\`: send a message to a Discord channel or DM. requires \`channel_id\` and \`content\`. use \`source_item_id\` to mark the inbox item as acted in the same call.
+- \`discord_send\`: send a message to a Discord channel or DM. requires \`content\` plus either \`channel_id\` or a \`source_item_id\` from the target Discord message. Prefer \`source_item_id\` for replies; it routes to that message's channel and marks inbox items acted when applicable.
 - \`discord_inbox\`: list pending Discord inbox items (messages waiting for your attention)
 - \`discord_backread\`: read message history for a channel
 - \`discord_scan\`: scan configured channels and ingest new messages into the inbox

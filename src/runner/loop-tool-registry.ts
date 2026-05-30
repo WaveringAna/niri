@@ -13,11 +13,140 @@ import {
 } from "../discord/state"
 import { listAliases, removeAlias, searchMemories, setAlias } from "../memory"
 import { emit } from "../stream"
+import type { Message } from "../types"
 import type { ToolHandler } from "./loop-shared"
 import { pushToolMessage, recordToolResult, runStandardTool, toolError } from "./loop-tool-runtime"
 import { parseImageDetail, saveRestSnapshot } from "./util"
 
 const DEFAULT_WAIT_THEN_CONTINUE_MS = 10_000
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null
+}
+
+function messageContentText(message: Message): string {
+  const content = (message as { content?: unknown }).content
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+
+  const chunks: string[] = []
+  for (const part of content) {
+    const partRecord = asRecord(part)
+    if (partRecord?.type === "text" && typeof partRecord.text === "string") chunks.push(partRecord.text)
+  }
+  return chunks.join("\n")
+}
+
+function isDiscordUserMessage(message: Message): boolean {
+  return message.role === "user" && /\[discord(?:\/(?:dm|channel)| batch)\]|\[incoming — discord\]/i.test(messageContentText(message))
+}
+
+function isInjectedImageUserMessage(message: Message): boolean {
+  const content = (message as { content?: unknown }).content
+  return Array.isArray(content) && content.some((part) => asRecord(part)?.type === "image_url")
+}
+
+function isInternalUserMessage(message: Message): boolean {
+  const text = messageContentText(message).trim()
+  return text.startsWith("[context summary") || text.startsWith("[system]")
+}
+
+function toolNameForMessage(conversation: Message[], index: number): string | null {
+  const message = conversation[index] as (Message & { tool_call_id?: unknown }) | undefined
+  const toolCallId = typeof message?.tool_call_id === "string" ? message.tool_call_id : ""
+  if (!toolCallId) return null
+
+  for (let i = index - 1; i >= 0; i--) {
+    const candidate = conversation[i]
+    if (!candidate || candidate.role !== "assistant") continue
+    const calls = (candidate as { tool_calls?: unknown }).tool_calls
+    if (!Array.isArray(calls)) continue
+    for (const call of calls) {
+      const callRecord = asRecord(call)
+      if (callRecord?.id !== toolCallId) continue
+      const fn = asRecord(callRecord.function)
+      return typeof fn?.name === "string" ? fn.name : null
+    }
+  }
+
+  return null
+}
+
+function isDiscordTargetContextMessage(conversation: Message[], index: number): boolean {
+  const message = conversation[index]
+  if (!message) return false
+  if (isDiscordUserMessage(message)) return true
+  if (message.role !== "tool") return false
+  return ["discord_backread", "discord_inbox"].includes(toolNameForMessage(conversation, index) ?? "")
+}
+
+function activeSourceContextStart(conversation: Message[]): number {
+  let lastUser = -1
+  let lastDiscordUser = -1
+  for (let i = conversation.length - 1; i >= 0; i--) {
+    const message = conversation[i]
+    if (!message || message.role !== "user") continue
+    if (lastUser < 0) lastUser = i
+    if (isDiscordUserMessage(message)) {
+      lastDiscordUser = i
+      break
+    }
+  }
+
+  if (lastUser < 0) return 0
+  const latestUser = conversation[lastUser]
+  if (lastDiscordUser >= 0 && latestUser && (isInjectedImageUserMessage(latestUser) || isInternalUserMessage(latestUser))) {
+    return lastDiscordUser
+  }
+  return lastUser
+}
+
+function sourceItemIdAppearsInActiveContext(conversation: Message[], sourceItemId: string): boolean {
+  const safeSourceItemId = sourceItemId.trim()
+  if (!safeSourceItemId) return false
+
+  const pattern = new RegExp(`(^|\\D)${safeSourceItemId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\D|$)`)
+  const activeStart = activeSourceContextStart(conversation)
+  let targetStart = activeStart
+  for (let i = conversation.length - 1; i >= activeStart; i--) {
+    if (isDiscordTargetContextMessage(conversation, i)) {
+      targetStart = i
+      break
+    }
+  }
+
+  const activeMessages = conversation.slice(targetStart)
+  return activeMessages.some((message) => {
+    if (message.role !== "user" && message.role !== "tool") return false
+    return pattern.test(messageContentText(message))
+  })
+}
+
+function validateNoChannelDiscordSendTarget(state: { conversation: Message[] }, channelId: unknown, sourceItemId: unknown): string | null {
+  if (typeof channelId === "string" && channelId.trim()) return null
+  if (typeof sourceItemId !== "string" || !sourceItemId.trim()) return null
+  if (sourceItemIdAppearsInActiveContext(state.conversation, sourceItemId)) return null
+  return "error: source_item_id is not in the latest Discord target context. Use a source_item_id shown in the current Discord message, latest discord_inbox, or latest discord_backread output; otherwise provide channel_id."
+}
+
+function resultValue(result: Record<string, unknown>, key: string): string | null {
+  const value = result[key]
+  return typeof value === "string" && value.trim() ? value.trim() : null
+}
+
+function formatDiscordSendResult(result: Record<string, unknown>): string {
+  if (result.ok !== true) return JSON.stringify(result, null, 2)
+
+  const parts = [
+    "discord_send ok",
+    resultValue(result, "sent_message_id") ? `sent_message_id=${resultValue(result, "sent_message_id")}` : null,
+    resultValue(result, "channel_id") ? `channel_id=${resultValue(result, "channel_id")}` : null,
+    resultValue(result, "used_reference_message_id") ? `reply_to=${resultValue(result, "used_reference_message_id")}` : null,
+    resultValue(result, "resolved_source_item_id") ? `source_item_id=${resultValue(result, "resolved_source_item_id")}` : null,
+  ].filter((part): part is string => Boolean(part))
+
+  return parts.join(" ")
+}
 
 /**
  * Builds the function-tool handler table for the runner loop.
@@ -249,24 +378,29 @@ export function buildToolHandlers(): Record<string, ToolHandler> {
         },
       }),
 
-    discord_send: (ctx) =>
-      runStandardTool(ctx, {
+    discord_send: (ctx) => {
+      const targetError = validateNoChannelDiscordSendTarget(ctx.state, ctx.args.channel_id, ctx.args.source_item_id)
+      if (targetError) {
+        recordToolResult(ctx.convId, ctx.state, ctx.call, "discord_send", { _invalid_target: true }, targetError)
+        return Promise.resolve({})
+      }
+
+      return runStandardTool(ctx, {
         name: "discord_send",
         logArgKeys: ["channel_id", "source_item_id", "reply_mode"] as const,
         runArgKeys: ["channel_id", "content", "source_item_id", "reply_mode", "reference_message"] as const,
-        run: async (channel_id, content, source_item_id, reply_mode, reference_message) =>
-          JSON.stringify(
-            await sendDiscordMessage({
-              channelId: channel_id as string,
-              content: content as string,
-              sourceItemId: source_item_id as string | undefined,
-              replyMode: reply_mode as string | undefined,
-              referenceMessage: reference_message as string | undefined,
-            }),
-            null,
-            2,
-          ),
-      }),
+        run: async (channel_id, content, source_item_id, reply_mode, reference_message) => {
+          const result = await sendDiscordMessage({
+            channelId: channel_id as string,
+            content: content as string,
+            sourceItemId: source_item_id as string | undefined,
+            replyMode: reply_mode as string | undefined,
+            referenceMessage: reference_message as string | undefined,
+          })
+          return formatDiscordSendResult(result)
+        },
+      })
+    },
 
     discord_channels: (ctx) =>
       runStandardTool(ctx, {
@@ -285,4 +419,9 @@ export function buildToolHandlers(): Record<string, ToolHandler> {
           JSON.stringify(setDiscordChannelNote(channel_id as string, (note as string | undefined) ?? ""), null, 2),
       }),
   }
+}
+
+export const __toolRegistryTest = {
+  formatDiscordSendResult,
+  validateNoChannelDiscordSendTarget,
 }

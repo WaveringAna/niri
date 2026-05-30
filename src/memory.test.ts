@@ -24,10 +24,10 @@ channel_flag_repairs=0
 channel messages are context, not direct requests. replying is optional; use judgment.
 
 recent messages:
-- [channel/staying up till 1 billion oclock/#niri] [2026-05-01 03:11:14.553Z] @meowskullz: awa
+- source_item_id=1499679672404021248 [channel/staying up till 1 billion oclock/#niri] [2026-05-01 03:11:14.553Z] @meowskullz: awa
 
 pending preview:
-- 1499679672404021248 [mention] [channel/staying up till 1 billion oclock/#niri] [2026-05-01 03:11:14.553Z] @meowskullz: awa`
+- source_item_id=1499679672404021248 bucket=mention [channel/staying up till 1 billion oclock/#niri] [2026-05-01 03:11:14.553Z] @meowskullz: awa`
 
   assert.deepEqual(__memoryTest.memoryQueryForUserMessage(batch), {
     sender: "meowskullz",
@@ -63,7 +63,7 @@ test("memoryQueryForUserMessage processes discord batch recent messages when pen
 new_messages=1 channels=1 pending_inbox=0 scope=configured+dm
 
 recent messages:
-- [channel/meowskullz's server/#ai-sister-yap] [2026-05-01 08:01:35.639Z] @rose: foxie emoji
+- source_item_id=1499680000000000000 [channel/meowskullz's server/#ai-sister-yap] [2026-05-01 08:01:35.639Z] @rose: foxie emoji
 
 pending preview:
 - (none)`

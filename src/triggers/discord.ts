@@ -8,6 +8,20 @@ function asIsoTimestamp(value: unknown, fallback: string): string {
   return Number.isNaN(parsed.getTime()) ? fallback : parsed.toISOString()
 }
 
+function formatDiscordTimestamp(value: string): string {
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  return parsed.toLocaleString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZoneName: "short",
+  })
+}
+
 const asRecord = asObject
 
 function referencedMessageId(message: Record<string, unknown>, body: Record<string, unknown>): string | null {
@@ -95,7 +109,7 @@ export function fromDiscord(body: unknown): UserMessage {
     String(message.content ?? b.content ?? "").trim() ||
     "(no text content)"
   const triggeredAt = new Date().toISOString()
-  const timestamp = asIsoTimestamp(message.timestamp ?? b.timestamp, triggeredAt)
+  const timestamp = formatDiscordTimestamp(asIsoTimestamp(message.timestamp ?? b.timestamp, triggeredAt))
   const authorName = String(author?.global_name ?? author?.username ?? b.author_username ?? b.author ?? "unknown")
   const channelId = String(message.channel_id ?? b.channel_id ?? channel?.id ?? "unknown")
   const messageId = String(message.id ?? b.message_id ?? "unknown")
@@ -112,7 +126,7 @@ export function fromDiscord(body: unknown): UserMessage {
   return {
     source: "discord",
     triggeredAt,
-    content: `${header} @${authorName}\ncontext: ${location}\nmessage_id: ${messageId}\ntimestamp: ${timestamp}${replyLine ? `\n${replyLine}` : ""}\naction: ${action}\n\n${content}${imageBlock}`,
+    content: `${header} @${authorName}\ncontext: ${location}\nmessage_id: ${messageId}\nsource_item_id: ${messageId}\ntimestamp: ${timestamp}${replyLine ? `\n${replyLine}` : ""}\naction: ${action}\n\n${content}${imageBlock}`,
     raw: body,
   }
 }

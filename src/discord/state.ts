@@ -116,7 +116,15 @@ function formatBatchTimestamp(value: string | null | undefined): string {
   if (!value) return "unknown-time"
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return value
-  return parsed.toISOString().replace("T", " ").replace(".000Z", "Z")
+  return parsed.toLocaleString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZoneName: "short",
+  })
 }
 
 function formatBatchImages(rawJson: string): string {
@@ -237,6 +245,7 @@ export function listDiscordBackread(channelId: string, limit = 40, beforeMessage
   const replyByMessageId = buildReplyTargetContextMap(rows)
   return rows.map(({ raw_json: _rawJson, ...row }) => ({
     ...row,
+    source_item_id: row.message_id,
     created_at: formatHumanTimestamp(row.created_at),
     ...(replyByMessageId.has(row.message_id) ? { reply_to: replyByMessageId.get(row.message_id) } : {}),
   }))
@@ -334,8 +343,8 @@ export function buildDiscordBatchDigest(params?: {
     : ""
   const botUserId = process.env.DISCORD_BOT_USER_ID?.trim() ?? ""
 
-  const autoDemotedCount = autoDemoteStalePendingItems(autoSeenMinutes)
-  const repairedMessageCount = repairDiscordMessageChannelFlags()
+  autoDemoteStalePendingItems(autoSeenMinutes)
+  repairDiscordMessageChannelFlags()
 
   const from =
     getDiscordMeta("discord_batch_last_dispatched_at") ??
@@ -354,17 +363,13 @@ export function buildDiscordBatchDigest(params?: {
 
   const pendingPreview = queryBatchPendingPreview({ ...queryOpts, limit: previewLimit })
 
-  const uniqueChannels = new Set(recentMessages.map((row) => row.channel_id))
   const replyContextByMessageId = buildReplyTargetContextMap([...recentMessages, ...pendingPreview])
   const hasImages = [...recentMessages, ...pendingPreview].some(
     (row) => extractImageAttachmentsFromRawJson(row.raw_json).length > 0,
   )
 
   const lines: string[] = [
-    `[discord batch] ${from} -> ${nowIso}`,
-    `new_messages=${recentMessages.length}${truncated ? "+" : ""} channels=${uniqueChannels.size} pending_inbox=${pendingCount} scope=${batchOnlyConfigured ? "configured+dm" : "all"}`,
-    `auto_seen_timeout=${autoSeenMinutes}m auto_demoted=${autoDemotedCount}`,
-    `channel_flag_repairs=${repairedMessageCount}`,
+    `[discord batch] ${formatBatchTimestamp(from)} -> ${formatBatchTimestamp(nowIso)}`,
     "channel messages are context, not direct requests. replying is optional; use judgment.",
     ...(hasImages
       ? ["image attachments appear as [images: <discord cdn urls>]; download with shell, then inspect with image_tool if useful."]
@@ -378,7 +383,7 @@ export function buildDiscordBatchDigest(params?: {
     const author = row.author_username ? `@${row.author_username}` : "@unknown"
     const ts = formatBatchTimestamp(row.created_at)
     const replyTo = replyContextByMessageId.get(row.message_id)
-    lines.push(`- [${label}] [${ts}] ${author}${formatReplyContext(replyTo)}: ${fullMessageText(row.content)}${formatBatchImages(row.raw_json)}`)
+    lines.push(`- source_item_id=${row.message_id} [${label}] [${ts}] ${author}${formatReplyContext(replyTo)}: ${fullMessageText(row.content)}${formatBatchImages(row.raw_json)}`)
   }
 
   if (truncated) {
@@ -395,12 +400,12 @@ export function buildDiscordBatchDigest(params?: {
       const author = row.author_username ? `@${row.author_username}` : "@unknown"
       const ts = formatBatchTimestamp(row.created_at)
       const replyTo = replyContextByMessageId.get(row.message_id)
-      lines.push(`- ${row.item_id} [${row.bucket}] [${label}] [${ts}] ${author}${formatReplyContext(replyTo)}: ${compactText(row.content, 120)}${formatBatchImages(row.raw_json)}`)
+      lines.push(`- source_item_id=${row.item_id} bucket=${row.bucket} [${label}] [${ts}] ${author}${formatReplyContext(replyTo)}: ${compactText(row.content, 120)}${formatBatchImages(row.raw_json)}`)
     }
   }
 
   lines.push("")
-  lines.push("you can reply if useful via discord_send, or choose not to reply. mark decisions with discord_mark when you handle pending items.")
+  lines.push("you can reply if useful via discord_send using source_item_id from the target message, or choose not to reply. mark decisions with discord_mark when you handle pending items.")
 
   setDiscordMeta("discord_batch_last_dispatched_at", nowIso)
 
@@ -433,8 +438,19 @@ function resolveReferenceMessage(channelId: string, sourceItemId?: string, refer
     return null
   }
 
-  if (!sourceItemId?.trim()) return null
-  return getItemMessageId(sourceItemId.trim())
+  return resolveSourceMessageId(sourceItemId)
+}
+
+function resolveSourceMessageId(sourceItemId?: string): string | null {
+  const safeSourceItemId = sourceItemId?.trim()
+  if (!safeSourceItemId) return null
+  return getItemMessageId(safeSourceItemId) ?? (messageExistsById(safeSourceItemId) ? safeSourceItemId : null)
+}
+
+function resolveSourceChannelId(sourceItemId?: string): string | null {
+  const sourceMessageId = resolveSourceMessageId(sourceItemId)
+  if (!sourceMessageId) return null
+  return getMessageForReference(sourceMessageId)?.channel_id?.trim() || null
 }
 
 const AUTO_REPLY_STALE_MINUTES = 10
@@ -494,7 +510,7 @@ export async function sendDiscordMessage(params: {
 }): Promise<Record<string, unknown>> {
   let channelId = String(params.channelId ?? "").trim()
   if (!channelId && params.sourceItemId?.trim()) {
-    channelId = getItemChannelId(params.sourceItemId.trim()) ?? ""
+    channelId = getItemChannelId(params.sourceItemId.trim()) ?? resolveSourceChannelId(params.sourceItemId) ?? ""
   }
   if (!channelId) throw new Error("channel_id is required (or provide source_item_id that maps to one)")
 
@@ -505,6 +521,7 @@ export async function sendDiscordMessage(params: {
   const explicitSourceItemId = params.sourceItemId?.trim() ? params.sourceItemId.trim() : null
   const inferredSourceItemId = explicitSourceItemId ? null : inferPendingDmItemId(channelId)
   const resolvedSourceItemId = explicitSourceItemId ?? inferredSourceItemId
+  const resolvedSourceMessageId = resolveSourceMessageId(resolvedSourceItemId ?? undefined)
   const referenceMessageId = await chooseMessageReference({
     channelId,
     replyMode,
@@ -547,7 +564,7 @@ export async function sendDiscordMessage(params: {
     { botUserId },
   )
 
-  if (resolvedSourceItemId) {
+  if (resolvedSourceItemId && getItemMessageId(resolvedSourceItemId)) {
     const wasInferred = !explicitSourceItemId
     markDiscordItem(
       resolvedSourceItemId,
@@ -564,6 +581,7 @@ export async function sendDiscordMessage(params: {
     reply_mode: replyMode,
     used_reference_message_id: referenceMessageId,
     resolved_source_item_id: resolvedSourceItemId,
+    resolved_source_message_id: resolvedSourceMessageId,
     inferred_source_item_id: inferredSourceItemId,
     stored: ingest.stored,
   }

@@ -427,15 +427,15 @@ export const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: "discord_send",
       description:
-        "Send a Discord message. reply_mode=auto sends plain unless conversation continuity is ambiguous, then it uses an explicit reply reference.",
+        "Send a Discord message. Provide content plus either channel_id or source_item_id. Prefer source_item_id from the target Discord message; it routes to that message's channel. reply_mode=auto sends plain unless conversation continuity is ambiguous, then it uses an explicit reply reference.",
       parameters: {
         type: "object",
         properties: {
-          channel_id: { type: "string", description: "Target channel id." },
+          channel_id: { type: "string", description: "Optional target channel id. You can omit this when source_item_id is provided." },
           content: { type: "string", description: "Message content to send." },
           source_item_id: {
             type: "string",
-            description: "Optional inbox item id to mark as acted after sending.",
+            description: "Inbox item id or Discord message_id from the target message. Use this instead of channel_id for replies; it resolves the destination channel and marks inbox items acted when applicable.",
           },
           reference_message: {
             type: "string",
