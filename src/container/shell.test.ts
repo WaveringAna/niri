@@ -77,3 +77,9 @@ test("sudo commands run as one-off commands with stdin closed", async () => {
     await fs.rm(dir, { recursive: true, force: true })
   }
 })
+
+test("runCommand truncates excessively long lines", async () => {
+  const output = await runCommand("node -e \"console.log('a'.repeat(2010))\"", undefined, 5_000)
+  assert.equal(output.length, 2000 + " ... [truncated line of 2010 characters]".length)
+  assert.ok(output.endsWith(" ... [truncated line of 2010 characters]"))
+})

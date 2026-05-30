@@ -38,6 +38,14 @@ export const IMAGE_MAX_BYTES = (() => {
 /** Default max lines returned by shell enough for most output without flooding context. */
 const DEFAULT_MAX_LINES = 150
 
+const DEFAULT_MAX_LINE_LENGTH = 2000
+/** Maximum length of a single output line before it gets truncated. */
+export const MAX_LINE_LENGTH = (() => {
+  const parsed = parseInt(process.env.NIRI_MAX_LINE_LENGTH ?? `${DEFAULT_MAX_LINE_LENGTH}`, 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MAX_LINE_LENGTH
+  return parsed
+})()
+
 /**
  * Commands that routinely produce thousands of lines of noise.
  * When matched, the default cap is tightened to VERBOSE_MAX_LINES.

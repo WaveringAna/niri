@@ -6,6 +6,7 @@ import {
   DEFAULT_FILE_TIMEOUT_MS,
   IMAGE_MAX_BYTES,
   IMAGE_ROOT,
+  MAX_LINE_LENGTH,
   USE_DOCKER_SHELL,
   normalizeTimeoutMs,
   resolveMaxLines,
@@ -47,9 +48,18 @@ export async function runCommand(command: string, maxLines?: number, timeoutMs?:
   if (cap === 0) return raw
 
   const lines = raw.split("\n")
-  if (lines.length <= cap) return raw
+  const processedLines = lines.map((line) => {
+    if (line.length > MAX_LINE_LENGTH) {
+      return line.slice(0, MAX_LINE_LENGTH) + ` ... [truncated line of ${line.length} characters]`
+    }
+    return line
+  })
 
-  const kept = lines.slice(-cap)
+  if (processedLines.length <= cap) {
+    return processedLines.join("\n")
+  }
+
+  const kept = processedLines.slice(-cap)
   return `[truncated — showing last ${cap} of ${lines.length} lines]\n${kept.join("\n")}`
 }
 
