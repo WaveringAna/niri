@@ -10,6 +10,7 @@ import {
   FALLBACK_BASE,
   FALLBACK_MODEL,
   FALLBACK_TOOL_CHOICE,
+  ANTHROPIC_BASE_URL,
   ANTHROPIC_MODEL,
   MODEL,
   PRIMARY_TOOL_CHOICE,
@@ -19,6 +20,7 @@ import {
   USE_FALLBACK,
   apiErrorDetails,
   client,
+  clearPrimaryFailover,
   errorSummary,
   estimatePromptTokens,
   fallbackClient,
@@ -27,11 +29,15 @@ import {
   isContentFilterError,
   isImageParseError,
   isPromptTooLargeError,
+  isQuotaExhaustedError,
   loadAgentSummaryContext,
+  primaryFailoverStatus,
+  recordPrimaryQuotaFailover,
   retryDelayMs,
   sanitizeMessages,
   scrubImagesFromConversation,
   shouldFallback,
+  shouldRetryProvider,
   summaryClient,
   summarizeConversationViaLLM,
 } from "./util"
@@ -44,8 +50,10 @@ import type { CompletionRequest, CompletionTurnResult, ToolCallAssembly } from "
  *
  * @returns Active summary provider config.
  */
-export function configuredSummaryProvider(): { client: OpenAI | null; model: string } {
+export async function configuredSummaryProvider(): Promise<{ client: OpenAI | null; model: string }> {
   if (summaryClient && SUMMARY_MODEL) return { client: summaryClient, model: SUMMARY_MODEL }
+  const failover = USE_FALLBACK ? null : await primaryFailoverStatus()
+  if (failover?.active) return { client: fallbackClient, model: FALLBACK_MODEL }
   return {
     client: USE_FALLBACK ? fallbackClient : client,
     model: USE_FALLBACK ? FALLBACK_MODEL : MODEL,
@@ -56,6 +64,12 @@ function logApiError(err: unknown, context: string): void {
   if (!(err instanceof OpenAI.APIError)) return
   console.error(`[api] ${err.status} ${err.message} - ${context}`)
   for (const line of apiErrorDetails(err)) console.error(line)
+}
+
+function primaryApiContext(): string {
+  const model = USE_ANTHROPIC ? ANTHROPIC_MODEL : MODEL
+  const api = USE_ANTHROPIC ? ANTHROPIC_BASE_URL : API_BASE
+  return `model=${model} api=${api}`
 }
 
 /**
@@ -138,13 +152,26 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function formatRetryAt(retryAfterMs: number): string {
-  const retryAt = new Date(Date.now() + retryAfterMs)
+function formatAbsoluteTime(timeMs: number): string {
+  const retryAt = new Date(timeMs)
   const local = retryAt.toLocaleString(undefined, {
     hour12: false,
     timeZoneName: "short",
   })
   return `${local} (${retryAt.toISOString()})`
+}
+
+function formatRetryAt(retryAfterMs: number): string {
+  return formatAbsoluteTime(Date.now() + retryAfterMs)
+}
+
+const PRIMARY_FAILOVER_NOTICE_INTERVAL_MS = 60 * 60 * 1000
+let lastPrimaryFailoverNoticeAtMs = 0
+
+function shouldLogPrimaryFailoverNotice(nowMs = Date.now()): boolean {
+  if (nowMs - lastPrimaryFailoverNoticeAtMs < PRIMARY_FAILOVER_NOTICE_INTERVAL_MS) return false
+  lastPrimaryFailoverNoticeAtMs = nowMs
+  return true
 }
 
 function apiErrorSearchText(err: { message: string; error?: unknown }): string {
@@ -593,7 +620,7 @@ async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Pro
   const beforeCount = state.conversation.length
   const beforeEstimate = estimatePromptTokens(state.conversation)
 
-  const summaryProvider = configuredSummaryProvider()
+  const summaryProvider = await configuredSummaryProvider()
   if (!summaryProvider.client || !summaryProvider.model) {
     console.warn(`[context] recovery: no summary client available; cannot llm-summarize`)
     return false
@@ -691,6 +718,55 @@ export async function fetchCompletion(
       : { messages: baseConversation, recalledChunkIds: [] as number[] }
     const requestMessages = requestContext.messages
 
+    const primaryFailoverBefore = USE_FALLBACK ? null : await primaryFailoverStatus()
+    if (primaryFailoverBefore?.active) {
+      if (shouldLogPrimaryFailoverNotice()) {
+        console.warn(
+          `[api] primary quota cooldown active; using fallback until ${formatAbsoluteTime(primaryFailoverBefore.retryAtMs)} (${Math.ceil(primaryFailoverBefore.remainingMs / 1000)}s remaining)`,
+        )
+      }
+
+      const fallbackWindow = fallbackContextWindow(requestMessages)
+      if (fallbackWindow.nearLimit) {
+        console.warn(
+          `[fallback] prompt estimate ${fallbackWindow.estimate} nearing fallback limit ${fallbackWindow.softLimit} (${FALLBACK_MODEL})`,
+        )
+      }
+
+      try {
+        const completion = await createFallbackCompletion(requestMessages)
+        state.memoryRecallCooldowns = rememberRecalledMemoryChunks(
+          state.memoryRecallCooldowns,
+          requestContext.recalledChunkIds,
+          state.memoryRecallTurn,
+        )
+        return completion
+      } catch (fallbackErr) {
+        if (isPromptTooLargeError(fallbackErr) && promptTooLargeAttempts < 2) {
+          logPromptSizeDebug(state, fallbackErr, `fallback rejected prompt during primary quota cooldown (attempt ${promptTooLargeAttempts + 1}/2)`)
+          const recovered = await recoverFromPromptTooLarge(state, promptTooLargeAttempts)
+          promptTooLargeAttempts++
+          if (recovered) continue
+        }
+        if (recoverByScrubbingImages(fallbackErr, "fallback-primary-quota-cooldown")) continue
+        if (shouldRetryProvider(fallbackErr)) {
+          const retryAfter = retryDelayMs(fallbackErr)
+          console.warn(
+            `[fallback] transient failure (${errorSummary(fallbackErr)}); retrying after ${Math.ceil(retryAfter / 1000)}s`,
+          )
+          console.log(
+            `[runner] backing off ${Math.ceil(retryAfter / 1000)}s (until ${formatRetryAt(retryAfter)}) before retrying fallback...`,
+          )
+          await sleep(retryAfter)
+          continue
+        }
+        logApiError(fallbackErr, `model=${FALLBACK_MODEL} api=${FALLBACK_BASE}`)
+        throw fallbackErr
+      }
+    } else if (primaryFailoverBefore?.retryAtMs) {
+      console.warn(`[api] primary quota cooldown expired; probing primary before fallback`)
+    }
+
     if (USE_FALLBACK) {
       const fallbackWindow = fallbackContextWindow(requestMessages)
       if (fallbackWindow.nearLimit) {
@@ -715,7 +791,7 @@ export async function fetchCompletion(
           if (recovered) continue
         }
         if (recoverByScrubbingImages(fallbackErr, "fallback")) continue
-        if (shouldFallback(fallbackErr)) {
+        if (shouldRetryProvider(fallbackErr)) {
           const retryAfter = retryDelayMs(fallbackErr)
           console.warn(
             `[fallback] transient failure (${errorSummary(fallbackErr)}); retrying after ${Math.ceil(retryAfter / 1000)}s`,
@@ -733,6 +809,9 @@ export async function fetchCompletion(
 
     try {
       const completion = await createPrimaryCompletion(requestMessages)
+      if (primaryFailoverBefore?.retryAtMs && (await clearPrimaryFailover())) {
+        console.warn(`[api] primary probe succeeded; restored primary routing`)
+      }
       state.memoryRecallCooldowns = rememberRecalledMemoryChunks(
         state.memoryRecallCooldowns,
         requestContext.recalledChunkIds,
@@ -745,19 +824,29 @@ export async function fetchCompletion(
         const recovered = await recoverFromPromptTooLarge(state, promptTooLargeAttempts)
         promptTooLargeAttempts++
         if (recovered) continue
-        logApiError(primaryErr, `model=${MODEL} api=${API_BASE}`)
+        logApiError(primaryErr, primaryApiContext())
         throw primaryErr
       }
 
       if (recoverByScrubbingImages(primaryErr, "primary")) continue
 
-      if (!shouldFallback(primaryErr)) {
-        logApiError(primaryErr, `model=${MODEL} api=${API_BASE}`)
+      const primaryQuotaExhausted = isQuotaExhaustedError(primaryErr)
+
+      if (!primaryQuotaExhausted && !shouldFallback(primaryErr)) {
+        logApiError(primaryErr, primaryApiContext())
         throw primaryErr
       }
 
+      if (primaryQuotaExhausted) {
+        logApiError(primaryErr, `primary quota exhausted; ${primaryApiContext()}`)
+        const failover = await recordPrimaryQuotaFailover(primaryErr)
+        console.warn(
+          `[api] primary quota exhausted; using fallback until ${formatAbsoluteTime(failover.retryAtMs)}`,
+        )
+      }
+
       const fallbackWindow = fallbackContextWindow(requestMessages)
-      if (fallbackWindow.skip) {
+      if (!primaryQuotaExhausted && fallbackWindow.skip) {
         console.warn(
           `[api] primary down (${errorSummary(primaryErr)}) and fallback context estimate ${fallbackWindow.estimate} exceeds hard limit ${fallbackWindow.hardLimit}; retrying primary after backoff`,
         )
@@ -775,7 +864,11 @@ export async function fetchCompletion(
         )
       }
 
-      console.warn(`[api] primary down (${errorSummary(primaryErr)}) - switching to fallback`)
+      console.warn(
+        primaryQuotaExhausted
+          ? `[api] primary quota cooldown set - switching to fallback`
+          : `[api] primary down (${errorSummary(primaryErr)}) - switching to fallback`,
+      )
       try {
         const completion = await createFallbackCompletion(requestMessages)
         state.memoryRecallCooldowns = rememberRecalledMemoryChunks(
@@ -792,12 +885,13 @@ export async function fetchCompletion(
           if (recovered) continue
         }
         if (recoverByScrubbingImages(fallbackErr, "fallback-failover")) continue
+        const retryTarget = primaryQuotaExhausted ? "fallback" : "primary"
         console.warn(
-          `[api] fallback failed (${errorSummary(fallbackErr)}) after primary failure (${errorSummary(primaryErr)}); retrying primary after backoff`,
+          `[api] fallback failed (${errorSummary(fallbackErr)}) after primary failure (${errorSummary(primaryErr)}); retrying ${retryTarget} after backoff`,
         )
-        const retryAfter = retryDelayMs(primaryErr)
+        const retryAfter = primaryQuotaExhausted ? retryDelayMs(fallbackErr) : retryDelayMs(primaryErr)
         console.log(
-          `[runner] backing off ${Math.ceil(retryAfter / 1000)}s (until ${formatRetryAt(retryAfter)}) before retrying primary...`,
+          `[runner] backing off ${Math.ceil(retryAfter / 1000)}s (until ${formatRetryAt(retryAfter)}) before retrying ${retryTarget}...`,
         )
         await sleep(retryAfter)
       }

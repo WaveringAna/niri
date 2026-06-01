@@ -27,7 +27,7 @@ export const IMAGE_ROOT = (() => {
   return path.posix.normalize(root)
 })()
 
-const DEFAULT_IMAGE_MAX_BYTES = 150_000
+const DEFAULT_IMAGE_MAX_BYTES = 1_000_000
 /** Maximum image size (bytes) accepted by `image_tool`. */
 export const IMAGE_MAX_BYTES = (() => {
   const parsed = parseInt(process.env.IMAGE_TOOL_MAX_BYTES ?? `${DEFAULT_IMAGE_MAX_BYTES}`, 10)

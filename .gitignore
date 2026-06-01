@@ -9,6 +9,8 @@ apps/*/dist/
 
 # runtime state
 session.json
+primary-failover.json
+rest-snapshot.json
 
 # agent home — ignore everything except the example file
 home/*

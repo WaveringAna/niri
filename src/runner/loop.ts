@@ -176,7 +176,7 @@ async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-tu
   if (state.contextSize < CONTEXT_COMPACT_TRIGGER_TOKENS) return false
   const beforeEstimate = estimatePromptTokens(state.conversation)
 
-  const summaryProvider = configuredSummaryProvider()
+  const summaryProvider = await configuredSummaryProvider()
   if (!summaryProvider.client || !summaryProvider.model) {
     console.warn(`[context] ${phase}: no summary client available; skipping llm compaction`)
     return false

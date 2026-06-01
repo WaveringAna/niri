@@ -1,21 +1,49 @@
 import assert from "node:assert/strict"
+import fs from "node:fs/promises"
 import test from "node:test"
 import OpenAI from "openai"
 import type { Message } from "../types"
 import {
   AGENT_NAME,
+  PRIMARY_QUOTA_RETRY_MS,
+  clearPrimaryFailover,
   isContentFilterError,
   isImageParseError,
+  isQuotaExhaustedError,
   isTransientTransportError,
+  primaryFailoverStatus,
+  recordPrimaryQuotaFailover,
   restForestFromMessages,
   sanitizeMessages,
   scrubImagesFromConversation,
   shouldFallback,
+  shouldRetryProvider,
   summarizeConversationViaLLM,
 } from "./util"
 
+const PRIMARY_FAILOVER_FILE = new URL("../../primary-failover.json", import.meta.url)
+
 type AssistantMessageWithReasoning = OpenAI.Chat.ChatCompletionAssistantMessageParam & {
   reasoning_content?: string
+}
+
+async function withPreservedPrimaryFailoverFile(fn: () => Promise<void>): Promise<void> {
+  let original: string | null = null
+  try {
+    original = await fs.readFile(PRIMARY_FAILOVER_FILE, "utf-8")
+  } catch {
+    original = null
+  }
+
+  try {
+    await clearPrimaryFailover()
+    await fn()
+  } finally {
+    await clearPrimaryFailover()
+    if (original !== null) {
+      await fs.writeFile(PRIMARY_FAILOVER_FILE, original, "utf-8")
+    }
+  }
 }
 
 test("sanitizeMessages backfills empty reasoning_content for assistant history", () => {
@@ -52,6 +80,59 @@ test("nested undici errors are treated as retryable transport failures", () => {
 
   assert.equal(isTransientTransportError(nested), true)
   assert.equal(shouldFallback(nested), true)
+})
+
+test("quota-exhausted 403 errors trigger failover but not same-provider retry", () => {
+  const body = {
+    error: {
+      type: "permission_error",
+      message: "You've reached your usage limit for this billing cycle.",
+    },
+    type: "error",
+  }
+  const err = new OpenAI.APIError(403, body, `403 ${JSON.stringify(body)}`, undefined)
+
+  assert.equal(isQuotaExhaustedError(err), true)
+  assert.equal(shouldFallback(err), true)
+  assert.equal(shouldRetryProvider(err), false)
+})
+
+test("plain 403 permission errors do not trigger failover", () => {
+  const err = new OpenAI.APIError(
+    403,
+    { error: { type: "permission_error", message: "missing required workspace permission" } },
+    "403 missing required workspace permission",
+    undefined,
+  )
+
+  assert.equal(isQuotaExhaustedError(err), false)
+  assert.equal(shouldFallback(err), false)
+  assert.equal(shouldRetryProvider(err), false)
+})
+
+test("recordPrimaryQuotaFailover sets a daily primary retry cooldown", async () => {
+  await withPreservedPrimaryFailoverFile(async () => {
+    const nowMs = Date.parse("2026-06-01T00:00:00.000Z")
+    const err = new OpenAI.APIError(
+      403,
+      { error: { type: "permission_error", message: "You've reached your usage limit for this billing cycle." } },
+      "403 usage limit",
+      undefined,
+    )
+
+    const recorded = await recordPrimaryQuotaFailover(err, nowMs)
+    assert.equal(recorded.active, true)
+    assert.equal(recorded.remainingMs, PRIMARY_QUOTA_RETRY_MS)
+    assert.equal(recorded.retryAt, new Date(nowMs + PRIMARY_QUOTA_RETRY_MS).toISOString())
+    assert.match(recorded.reason ?? "", /usage limit/i)
+
+    const beforeRetry = await primaryFailoverStatus(nowMs + PRIMARY_QUOTA_RETRY_MS - 1)
+    assert.equal(beforeRetry.active, true)
+
+    const atRetry = await primaryFailoverStatus(nowMs + PRIMARY_QUOTA_RETRY_MS)
+    assert.equal(atRetry.active, false)
+    assert.equal(atRetry.remainingMs, 0)
+  })
 })
 
 test("z.ai/GLM image parse rejection (code 1210) is detected as an image parse error", () => {

@@ -12,10 +12,15 @@ import type { ToolArgs } from "./loop-shared"
 const PROJECT_ROOT = path.resolve(fileURLToPath(import.meta.url), "../../..")
 const SESSION_FILE = path.join(PROJECT_ROOT, "session.json")
 const REST_SNAPSHOT_FILE = path.join(PROJECT_ROOT, "rest-snapshot.json")
+const PRIMARY_FAILOVER_FILE = path.join(PROJECT_ROOT, "primary-failover.json")
 
 export const TOKEN_NUDGE_THRESHOLD = parseInt(process.env.TOKEN_NUDGE_THRESHOLD ?? "120000")
 export const FALLBACK_TOKEN_NUDGE_THRESHOLD = parseInt(process.env.FALLBACK_TOKEN_NUDGE_THRESHOLD ?? "50000")
 export const CONTEXT_COMPACT_TRIGGER_TOKENS = parseInt(process.env.CONTEXT_COMPACT_TRIGGER_TOKENS ?? "90000")
+export const PRIMARY_QUOTA_RETRY_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.PRIMARY_QUOTA_RETRY_MS ?? `${24 * 60 * 60 * 1000}`, 10) || 24 * 60 * 60 * 1000,
+)
 
 const NIRI_ENV = (process.env.NIRI_ENV ?? "default").trim().toLowerCase()
 export const USE_FALLBACK = NIRI_ENV === "local"
@@ -541,6 +546,81 @@ export async function clearSession(): Promise<void> {
   await fs.unlink(SESSION_FILE).catch(() => {})
 }
 
+type PrimaryFailoverSnapshot = {
+  failedAt: string
+  retryAt: string
+  reason: string
+}
+
+export type PrimaryFailoverStatus = {
+  active: boolean
+  retryAtMs: number
+  retryAt: string | null
+  remainingMs: number
+  reason: string | null
+}
+
+let primaryFailoverLoaded = false
+let primaryFailoverRetryAtMs = 0
+let primaryFailoverReason: string | null = null
+
+function primaryFailoverStatusFromMemory(nowMs: number): PrimaryFailoverStatus {
+  const retryAtMs = primaryFailoverRetryAtMs
+  const remainingMs = Math.max(0, retryAtMs - nowMs)
+  return {
+    active: remainingMs > 0,
+    retryAtMs,
+    retryAt: retryAtMs > 0 ? new Date(retryAtMs).toISOString() : null,
+    remainingMs,
+    reason: primaryFailoverReason,
+  }
+}
+
+async function loadPrimaryFailoverState(): Promise<void> {
+  if (primaryFailoverLoaded) return
+  primaryFailoverLoaded = true
+
+  try {
+    const raw = await fs.readFile(PRIMARY_FAILOVER_FILE, "utf-8")
+    const parsed = JSON.parse(raw) as Partial<PrimaryFailoverSnapshot>
+    const retryAtMs = typeof parsed.retryAt === "string" ? Date.parse(parsed.retryAt) : NaN
+    primaryFailoverRetryAtMs = Number.isFinite(retryAtMs) && retryAtMs > 0 ? retryAtMs : 0
+    primaryFailoverReason = typeof parsed.reason === "string" && parsed.reason.trim() ? parsed.reason : null
+  } catch {
+    primaryFailoverRetryAtMs = 0
+    primaryFailoverReason = null
+  }
+}
+
+export async function primaryFailoverStatus(nowMs = Date.now()): Promise<PrimaryFailoverStatus> {
+  await loadPrimaryFailoverState()
+  return primaryFailoverStatusFromMemory(nowMs)
+}
+
+export async function recordPrimaryQuotaFailover(err: unknown, nowMs = Date.now()): Promise<PrimaryFailoverStatus> {
+  await loadPrimaryFailoverState()
+
+  primaryFailoverRetryAtMs = nowMs + PRIMARY_QUOTA_RETRY_MS
+  primaryFailoverReason = errorSummary(err)
+
+  const snapshot: PrimaryFailoverSnapshot = {
+    failedAt: new Date(nowMs).toISOString(),
+    retryAt: new Date(primaryFailoverRetryAtMs).toISOString(),
+    reason: primaryFailoverReason,
+  }
+  await fs.writeFile(PRIMARY_FAILOVER_FILE, `${JSON.stringify(snapshot, null, 2)}\n`, { encoding: "utf-8", mode: 0o666 })
+  return primaryFailoverStatusFromMemory(nowMs)
+}
+
+export async function clearPrimaryFailover(): Promise<boolean> {
+  await loadPrimaryFailoverState()
+  const hadFailover = primaryFailoverRetryAtMs > 0 || primaryFailoverReason !== null
+  primaryFailoverRetryAtMs = 0
+  primaryFailoverReason = null
+  if (hadFailover) await fs.unlink(PRIMARY_FAILOVER_FILE).catch(() => {})
+  return hadFailover
+}
+
 type RestSnapshot = {
   restedAt: string
   note?: string
@@ -688,18 +768,73 @@ export async function loadSession(): Promise<Message[] | null> {
 }
 
 /**
- * Determines whether an error should trigger fallback model routing.
+ * Detects provider/account quota exhaustion errors that should fail over to
+ * the configured fallback provider instead of aborting the runner.
  *
- * @param err - Error thrown by the primary API call.
- * @returns `true` when fallback should be attempted.
+ * Some OpenAI-compatible providers return quota exhaustion as a 403
+ * `permission_error` rather than 429. Treat only quota/billing-shaped 4xx
+ * errors this way; a plain auth or permission failure should still surface.
  */
-export function shouldFallback(err: unknown): boolean {
+export function isQuotaExhaustedError(err: unknown): boolean {
+  if (!(err instanceof OpenAI.APIError)) return false
+  if (!err.status || err.status < 400 || err.status >= 500) return false
+
+  const text = apiErrorText(err)
+  return /usage limit|quota|insufficient[_\s-]*quota|billing cycle|billing hard limit|spending limit|monthly limit|out of credits|no credits|credit balance|insufficient balance|balance (?:is )?(?:not enough|too low)|account balance/i.test(
+    text,
+  )
+}
+
+/**
+ * Determines whether an error should be retried against the same provider.
+ *
+ * @param err - Error thrown by the active API call.
+ * @returns `true` when a same-provider retry/backoff should be attempted.
+ */
+export function shouldRetryProvider(err: unknown): boolean {
   if (err instanceof OpenAI.APIError) {
     // 429 + 5xx = overloaded or down; 0/undefined = network-level failure
     if (!err.status || err.status === 429 || err.status >= 500) return true
     return false
   }
   return isTransientTransportError(err)
+}
+
+/**
+ * Determines whether an error should trigger fallback model routing.
+ *
+ * @param err - Error thrown by the primary API call.
+ * @returns `true` when fallback should be attempted.
+ */
+export function shouldFallback(err: unknown): boolean {
+  return shouldRetryProvider(err) || isQuotaExhaustedError(err)
+}
+
+function apiErrorText(err: InstanceType<typeof OpenAI.APIError>): string {
+  const parts: string[] = [err.message]
+  if (typeof err.code === "string") parts.push(err.code)
+  if (typeof err.type === "string") parts.push(err.type)
+  if (typeof err.param === "string") parts.push(err.param)
+  collectApiErrorText(err.error, parts)
+  return parts.join("\n")
+}
+
+function collectApiErrorText(value: unknown, parts: string[], depth = 0): void {
+  if (depth > 4 || value == null) return
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    parts.push(String(value))
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 20)) collectApiErrorText(item, parts, depth + 1)
+    return
+  }
+  if (typeof value !== "object") return
+
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    parts.push(key)
+    collectApiErrorText(nested, parts, depth + 1)
+  }
 }
 
 function errorCauseChainText(err: unknown): string {
