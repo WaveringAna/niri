@@ -28,6 +28,17 @@ test("shell recovers when a command leaves terminal echo enabled", async () => {
   assert.equal(await runCommand("echo second", 0, 5_000), "second")
 })
 
+test("shell wrapper sentinels stay internal after terminal echo is re-enabled", async () => {
+  await runCommand("stty echo < /dev/tty 2>/dev/null; printf 'echo-armed\\n'", 0, 5_000)
+
+  const text = "thank you! it was really special to build something together with her ^.^"
+  const quotedText = `'${text.replace(/'/g, "'\\''")}'`
+  const output = await runCommand(`printf '%s\\n' ${quotedText}`, 0, 5_000)
+
+  assert.equal(output, text)
+  assert.doesNotMatch(output, /(?:echo\s+)?_*NIRI_(?:START|DONE)_[0-9a-f]+_*/i)
+})
+
 test("commands that read stdin do not consume completion sentinels", async () => {
   // Reproduces the interactive-prompt failure: a child that reads stdin until
   // EOF (like a clack prompt) would otherwise swallow the trailing sentinel

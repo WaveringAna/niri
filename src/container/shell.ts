@@ -61,7 +61,34 @@ function removeInternalPtyControlEchoes(str: string): string {
     .join("\n")
 }
 
+function findSentinelOutput(str: string, sentinel: string, fromIndex = 0): { sentinelStart: number; nextLineStart: number } | null {
+  let searchIndex = fromIndex
+
+  while (searchIndex < str.length) {
+    const idx = str.indexOf(sentinel, searchIndex)
+    if (idx < 0) return null
+
+    const lineStart = str.lastIndexOf("\n", idx - 1) + 1
+    const lineEnd = str.indexOf("\n", idx + sentinel.length)
+    const effectiveLineEnd = lineEnd < 0 ? str.length : lineEnd
+    const prefix = str.slice(lineStart, idx)
+    const suffix = str.slice(idx + sentinel.length, effectiveLineEnd)
+
+    if (!/\becho\s+$/.test(prefix) && suffix === "") {
+      return {
+        sentinelStart: idx,
+        nextLineStart: lineEnd < 0 ? effectiveLineEnd : lineEnd + 1,
+      }
+    }
+
+    searchIndex = idx + sentinel.length
+  }
+
+  return null
+}
+
 let bash: pty.IPty | null = null
+const ECHO_DISABLE_SETTLE_MS = 25
 
 function spawnBash(): { proc: pty.IPty; backend: string } {
   const env = {
@@ -226,19 +253,20 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
   let settled = false
 
   return new Promise((resolve, reject) => {
+    let startWriteTimer: ReturnType<typeof setTimeout> | null = null
+    let timer: ReturnType<typeof setTimeout> | null = null
     const dataDisposable = session.onData((chunk: string) => {
       raw += chunk
       const cleaned = cleanOutput(raw)
-      if (cleaned.includes(startSentinel) && cleaned.includes(endSentinel)) {
+      const startLine = findSentinelOutput(cleaned, startSentinel)
+      const endLine = startLine ? findSentinelOutput(cleaned, endSentinel, startLine.nextLineStart) : null
+      if (startLine && endLine) {
         if (settled) return
         settled = true
-        clearTimeout(timer)
+        if (timer) clearTimeout(timer)
+        if (startWriteTimer) clearTimeout(startWriteTimer)
         dataDisposable.dispose()
-        const start = cleaned.indexOf(startSentinel) + startSentinel.length
-        const end = cleaned.indexOf(endSentinel)
-        // Drop the single newline that echo adds after the start sentinel,
-        // then trim trailing whitespace from the command output.
-        resolve(removeInternalPtyControlEchoes(cleaned.slice(start, end).replace(/^\n/, "")).trimEnd())
+        resolve(removeInternalPtyControlEchoes(cleaned.slice(startLine.nextLineStart, endLine.sentinelStart)).trimEnd())
       }
     })
 
@@ -253,19 +281,9 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
     // completion detection fires on our own command text.
     const groupedCommand = redirectStdinToDevNull ? `{ ${command}\n} < /dev/null` : `{ ${command}\n}`
 
-    session.write(
-      [
-        "stty -echo 2>/dev/null",
-        `echo ${startSentinel}`,
-        groupedCommand,
-        "stty -echo 2>/dev/null",
-        `echo ${endSentinel}`,
-        "",
-      ].join("\n"),
-    )
-
-    let timer = setTimeout(() => {
+    timer = setTimeout(() => {
       if (settled) return
+      if (startWriteTimer) clearTimeout(startWriteTimer)
       // Phase 1: Interrupt the hanging command with Ctrl+C.
       // Some CLI tools (e.g. wispctl with TUI spinners) hang after completing
       // their work — they need a nudge to exit and let bash process the
@@ -279,6 +297,7 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
       timer = setTimeout(() => {
         if (settled) return
         settled = true
+        if (startWriteTimer) clearTimeout(startWriteTimer)
         dataDisposable.dispose()
         // After a timeout + grace period we no longer know whether bash
         // consumed Ctrl+C, returned to a prompt, or still has a foreground
@@ -289,6 +308,23 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
         reject(new Error(`Command timed out after ${timeoutMs}ms: ${command}`))
       }, 3_000)
     }, timeoutMs)
+
+    // Send the echo-reset line separately. If a prior command left terminal
+    // echo enabled, writing the whole wrapper at once can echo sentinel command
+    // text into the PTY before `stty -echo` has executed.
+    session.write("stty -echo 2>/dev/null\n")
+    startWriteTimer = setTimeout(() => {
+      if (settled) return
+      session.write(
+        [
+          `echo ${startSentinel}`,
+          groupedCommand,
+          "stty -echo 2>/dev/null",
+          `echo ${endSentinel}`,
+          "",
+        ].join("\n"),
+      )
+    }, ECHO_DISABLE_SETTLE_MS)
   })
 }
 
