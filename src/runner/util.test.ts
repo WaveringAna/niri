@@ -150,6 +150,23 @@ test("z.ai/GLM image parse rejection (code 1210) is detected as an image parse e
   assert.equal(shouldFallback(err), false)
 })
 
+test("z.ai sensitive-content rejection (code 1301) is detected as a content-filter error", () => {
+  const err = new OpenAI.APIError(
+    400,
+    {
+      code: "1301",
+      message:
+        "System detected potentially unsafe or sensitive content in input or generation. Please avoid using prompts that may generate sensitive content.",
+    },
+    "400 provider rejected request",
+    undefined,
+  )
+
+  assert.equal(isContentFilterError(err), true)
+  assert.equal(isImageParseError(err), false)
+  assert.equal(shouldFallback(err), false)
+})
+
 test("unrelated 400 errors are not treated as image parse errors", () => {
   const err = new OpenAI.APIError(
     400,

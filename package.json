@@ -22,7 +22,8 @@
     "chat:local": "NIRI_ENV=local dotenv -o -- tsx scripts/chat.ts",
     "dev:web": "npm run dev --workspace @niri/web",
     "build:web": "npm run build --workspace @niri/web",
-    "preview:web": "npm run preview --workspace @niri/web"
+    "preview:web": "npm run preview --workspace @niri/web",
+    "postinstall": "node scripts/fix-node-pty-spawn-helper.mjs"
   },
   "keywords": [],
   "author": "",

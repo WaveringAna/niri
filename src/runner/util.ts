@@ -907,6 +907,8 @@ const CONTENT_FILTER_PHRASES = [
   "may generate sensitive content",
 ]
 
+const CONTENT_FILTER_CODES = new Set(["1301", "content_filter"])
+
 /**
  * Detects provider content-safety rejections (typically 400-class).
  *
@@ -922,9 +924,9 @@ export function isContentFilterError(err: unknown): boolean {
   const rootCode = typeof errorRecord.code === "string" ? errorRecord.code.toLowerCase() : ""
   const innerCode = typeof errorRecord.error?.code === "string" ? (errorRecord.error.code as string).toLowerCase() : ""
   const innerType = typeof errorRecord.error?.type === "string" ? (errorRecord.error.type as string).toLowerCase() : ""
-  if (rootCode === "content_filter" || innerCode === "content_filter" || innerType === "content_filter") return true
+  if (CONTENT_FILTER_CODES.has(rootCode) || CONTENT_FILTER_CODES.has(innerCode) || innerType === "content_filter") return true
 
-  const message = (err.message || "").toLowerCase()
+  const message = apiErrorText(err).toLowerCase()
   return CONTENT_FILTER_PHRASES.some((phrase) => message.includes(phrase))
 }
 

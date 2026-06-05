@@ -168,10 +168,61 @@ function formatRetryAt(retryAfterMs: number): string {
 const PRIMARY_FAILOVER_NOTICE_INTERVAL_MS = 60 * 60 * 1000
 let lastPrimaryFailoverNoticeAtMs = 0
 
+const CONTENT_FILTER_REDACTED_BODY =
+  "[message hidden from this model turn after the provider rejected it for sensitive content]"
+const CONTENT_FILTER_NOTICE =
+  `[system] hey, whatever someone sent you got blocked by z.ai, possibly because it is asking something """sensitive""" to the government of yknow. let the person know if they need to. if its obvious that theyre doing this to mess with you, ignore them`
+
 function shouldLogPrimaryFailoverNotice(nowMs = Date.now()): boolean {
   if (nowMs - lastPrimaryFailoverNoticeAtMs < PRIMARY_FAILOVER_NOTICE_INTERVAL_MS) return false
   lastPrimaryFailoverNoticeAtMs = nowMs
   return true
+}
+
+function contentText(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content
+    .map((part) => {
+      if (!part || typeof part !== "object") return ""
+      const record = part as Record<string, unknown>
+      return typeof record.text === "string" ? record.text : ""
+    })
+    .filter(Boolean)
+    .join("\n")
+}
+
+function redactedIncomingText(content: string): string {
+  const blocks = content.split(/\n\s*\n/g)
+  if (blocks.length <= 1) return CONTENT_FILTER_REDACTED_BODY
+
+  const headBlocks = /^\[incoming\s+—\s+discord\]/i.test(blocks[0] ?? "") && blocks.length >= 2
+    ? blocks.slice(0, 2)
+    : blocks.slice(0, 1)
+
+  return [...headBlocks, CONTENT_FILTER_REDACTED_BODY].join("\n\n")
+}
+
+function quarantineLatestIncomingForContentFilter(state: LoopState): { redacted: boolean; index: number | null } {
+  for (let i = state.conversation.length - 1; i >= 0; i--) {
+    const message = state.conversation[i]
+    if (!message || message.role !== "user") continue
+
+    const raw = contentText(message.content)
+    if (!raw.trim()) continue
+    if (/^\[system\]/i.test(raw.trim())) continue
+    if (/^\[memory recall/i.test(raw.trim())) continue
+    if (raw.includes(CONTENT_FILTER_REDACTED_BODY) || raw.includes(CONTENT_FILTER_NOTICE)) continue
+
+    ;(message as { content: unknown }).content = redactedIncomingText(raw)
+    state.conversation.push({ role: "user", content: CONTENT_FILTER_NOTICE })
+    state.memoryRecallPending = false
+    return { redacted: true, index: i }
+  }
+
+  state.conversation.push({ role: "user", content: CONTENT_FILTER_NOTICE })
+  state.memoryRecallPending = false
+  return { redacted: false, index: null }
 }
 
 function apiErrorSearchText(err: { message: string; error?: unknown }): string {
@@ -676,6 +727,7 @@ export async function fetchCompletion(
 ): Promise<CompletionTurnResult> {
   let promptTooLargeAttempts = 0
   let imagesScrubbed = false
+  let textContentFilterRecovered = false
 
   // Both content-filter rejections and image parse/format rejections (e.g.
   // z.ai/GLM code 1210) stick across turns when the offending image lives in
@@ -696,6 +748,16 @@ export async function fetchCompletion(
     }
     console.warn(`[api] ${label} ${reason} but no images found to scrub`)
     return false
+  }
+
+  const recoverByQuarantiningText = (err: unknown, label: string): boolean => {
+    if (textContentFilterRecovered) return false
+    if (!isContentFilterError(err)) return false
+    textContentFilterRecovered = true
+    const result = quarantineLatestIncomingForContentFilter(state)
+    const detail = result.redacted ? `redacted user message at index ${result.index}` : "no user message found to redact"
+    console.warn(`[api] ${label} content-filter rejection; ${detail}; injected provider-block notice and retrying`)
+    return true
   }
 
   while (true) {
@@ -749,6 +811,7 @@ export async function fetchCompletion(
           if (recovered) continue
         }
         if (recoverByScrubbingImages(fallbackErr, "fallback-primary-quota-cooldown")) continue
+        if (recoverByQuarantiningText(fallbackErr, "fallback-primary-quota-cooldown")) continue
         if (shouldRetryProvider(fallbackErr)) {
           const retryAfter = retryDelayMs(fallbackErr)
           console.warn(
@@ -791,6 +854,7 @@ export async function fetchCompletion(
           if (recovered) continue
         }
         if (recoverByScrubbingImages(fallbackErr, "fallback")) continue
+        if (recoverByQuarantiningText(fallbackErr, "fallback")) continue
         if (shouldRetryProvider(fallbackErr)) {
           const retryAfter = retryDelayMs(fallbackErr)
           console.warn(
@@ -829,6 +893,7 @@ export async function fetchCompletion(
       }
 
       if (recoverByScrubbingImages(primaryErr, "primary")) continue
+      if (recoverByQuarantiningText(primaryErr, "primary")) continue
 
       const primaryQuotaExhausted = isQuotaExhaustedError(primaryErr)
 
@@ -885,6 +950,7 @@ export async function fetchCompletion(
           if (recovered) continue
         }
         if (recoverByScrubbingImages(fallbackErr, "fallback-failover")) continue
+        if (recoverByQuarantiningText(fallbackErr, "fallback-failover")) continue
         const retryTarget = primaryQuotaExhausted ? "fallback" : "primary"
         console.warn(
           `[api] fallback failed (${errorSummary(fallbackErr)}) after primary failure (${errorSummary(primaryErr)}); retrying ${retryTarget} after backoff`,
@@ -901,4 +967,5 @@ export async function fetchCompletion(
 
 export const __completionTest = {
   consumeCompletionStream,
+  quarantineLatestIncomingForContentFilter,
 }
