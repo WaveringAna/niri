@@ -26,7 +26,6 @@ import {
   normalizeText,
   PEOPLE_DIR,
   tokensFromText,
-  trimForPrompt,
   type MemoryHit,
   type MemoryKind,
   type MemorySearchProfile,
@@ -184,6 +183,7 @@ type RelevanceSignal = {
   strongOverlap: boolean
   bodyOverlap: number
   senderMatch: boolean
+  semanticStrong: boolean
 }
 
 function computeRelevance(hit: MemoryHit, profile: MemorySearchProfile): RelevanceSignal {
@@ -208,7 +208,13 @@ function computeRelevance(hit: MemoryHit, profile: MemorySearchProfile): Relevan
     handles.length > 0 &&
     handles.some((h) => titleLower.includes(h) || pathHaystack.includes(`/${h}.md`) || haystack.includes(h))
 
-  return { overlap, strongOverlap, bodyOverlap, senderMatch }
+  return {
+    overlap,
+    strongOverlap,
+    bodyOverlap,
+    senderMatch,
+    semanticStrong: (hit.semanticSimilarity ?? 0) >= MEMORY_SEMANTIC_STRONG_SIMILARITY,
+  }
 }
 
 /**
@@ -225,27 +231,41 @@ function isRelevant(hits: MemoryHit[], profile: MemorySearchProfile): boolean {
 
   // Person-oriented queries require informative body + some match
   if (profile.sender || profile.bodyPeople.length > 0) {
-    if (!profile.bodyInformative) return false
+    const semanticRecallMatch =
+      signal.semanticStrong && (profileHasExplicitRecallIntent(profile) || profile.bodyTokens.length >= 4)
+    if (!profile.bodyInformative && !semanticRecallMatch) return false
     if (signal.senderMatch) return true
     if (signal.bodyOverlap >= 2) return true
     if (signal.bodyOverlap >= 1 && signal.strongOverlap) return true
+    if (semanticRecallMatch) return true
     return false
   }
 
   // Event queries require at least one journal match
   if (profile.eventQuery && !profile.personQuery) {
-    return signal.overlap >= 1 && hits.some((hit) => hit.kind === "journal")
+    return (
+      (signal.overlap >= 1 && hits.some((hit) => hit.kind === "journal")) ||
+      hits.some((hit) => hit.kind === "journal" && (hit.semanticSimilarity ?? 0) >= MEMORY_SEMANTIC_STRONG_SIMILARITY)
+    )
   }
 
   // Person queries require at least one people/core match
   if (profile.personQuery && !profile.eventQuery) {
-    return signal.overlap >= 1 && hits.some((hit) => hit.kind === "people" || hit.kind === "core")
+    return (
+      (signal.overlap >= 1 && hits.some((hit) => hit.kind === "people" || hit.kind === "core")) ||
+      hits.some(
+        (hit) =>
+          (hit.kind === "people" || hit.kind === "core") &&
+          (hit.semanticSimilarity ?? 0) >= MEMORY_SEMANTIC_STRONG_SIMILARITY,
+      )
+    )
   }
 
   // General queries need decent overlap
   if (signal.bodyOverlap >= 2) return true
   if (signal.bodyOverlap >= 1 && signal.strongOverlap) return true
   if (signal.overlap >= 2 && signal.strongOverlap) return true
+  if (signal.semanticStrong) return true
   return false
 }
 
@@ -433,18 +453,55 @@ function buildSearchQuery(profile: MemorySearchProfile): string | null {
   return profile.tokens.map((token) => `"${token.replace(/"/g, '""')}"*`).join(" OR ")
 }
 
-function semanticDistancesForQuery(vector: number[], limit: number): Map<number, number> {
-  if (!isVecAvailable()) return new Map()
+function semanticHitsForQuery(vector: number[], limit: number): MemoryHit[] {
+  if (!isVecAvailable()) return []
   const rows = getDb()
     .prepare(`
-      select rowid as chunkId, distance
-      from memory_chunk_vec
-      where embedding match ?
+      select
+        c.id as chunkId,
+        d.path as path,
+        d.kind as kind,
+        d.title as documentTitle,
+        c.title as title,
+        c.heading_path as headingPath,
+        c.chunk_text as text,
+        v.distance as rank,
+        v.distance as semanticDistance
+      from memory_chunk_vec v
+      join memory_chunks c on c.id = v.rowid
+      join memory_documents d on d.id = c.document_id
+      where v.embedding match ?
         and k = ?
-      order by distance
+      order by v.distance
     `)
-    .all(new Float32Array(vector), limit) as Array<{ chunkId: number; distance: number }>
-  return new Map(rows.map((row) => [row.chunkId, row.distance]))
+    .all(new Float32Array(vector), limit) as Array<MemoryHit & { semanticDistance: number }>
+
+  return rows.map((row) => ({
+    ...row,
+    semanticSimilarity: 1 - row.semanticDistance,
+  }))
+}
+
+function mergeSemanticHits(rows: MemoryHit[], vector: number[], limit: number): MemoryHit[] {
+  const semanticRows = semanticHitsForQuery(vector, Math.max(limit * 16, 64))
+  if (semanticRows.length === 0) return rows
+
+  const byChunkId = new Map<number, MemoryHit>(rows.map((row) => [row.chunkId, { ...row }]))
+  for (const semanticRow of semanticRows) {
+    const existing = byChunkId.get(semanticRow.chunkId)
+    byChunkId.set(
+      semanticRow.chunkId,
+      existing
+        ? {
+            ...existing,
+            semanticDistance: semanticRow.semanticDistance,
+            semanticSimilarity: semanticRow.semanticSimilarity,
+          }
+        : semanticRow,
+    )
+  }
+
+  return Array.from(byChunkId.values())
 }
 
 // ── exact person hits ──────────────────────────────────────────────────
@@ -538,19 +595,10 @@ export async function searchMemory(
     rows.push(hit)
   }
 
-  // Attach semantic distances
-  if (semanticSignal) {
-    const distances = semanticDistancesForQuery(semanticSignal.vector, Math.max(limit * 16, 64))
-    for (const row of rows) {
-      const distance = distances.get(row.chunkId)
-      if (distance === undefined) continue
-      row.semanticDistance = distance
-      row.semanticSimilarity = 1 - distance
-    }
-  }
+  const candidateRows = semanticSignal ? mergeSemanticHits(rows, semanticSignal.vector, limit) : rows
 
   // Score all hits
-  const scored = rows.map((hit) => ({
+  const scored = candidateRows.map((hit) => ({
     hit,
     score: scoreHit(hit, profile, hit.semanticSimilarity),
   }))
@@ -611,6 +659,15 @@ export async function searchMemory(
     // Require at least one person mention for person-oriented queries
     if (profile.bodyPeople.length > 0 && !profile.bodyPeople.some((handle) => hitHaystack(hit).includes(handle))) continue
 
+    const relevance = computeRelevance(hit, profile)
+    if (
+      hit.semanticSimilarity !== undefined &&
+      hit.semanticSimilarity < MEMORY_SEMANTIC_MIN_SIMILARITY &&
+      relevance.overlap === 0 &&
+      relevance.bodyOverlap === 0 &&
+      !relevance.senderMatch
+    ) continue
+
     // Skip weak core hits without core intent
     if (
       semanticSignal &&
@@ -646,9 +703,10 @@ export function formatMemorySource(hit: MemoryHit): string {
  * Converts a raw hit into a public search result.
  *
  * @param hit - Memory hit.
- * @returns Search result with preview text.
+ * @returns Search result with full chunk text.
  */
 export function toMemorySearchResult(hit: MemoryHit): import("./shared").MemorySearchResult {
+  const content = normalizeText(hit.text)
   return {
     chunkId: hit.chunkId,
     kind: hit.kind,
@@ -656,7 +714,8 @@ export function toMemorySearchResult(hit: MemoryHit): import("./shared").MemoryS
     source: formatMemorySource(hit),
     title: hit.title,
     headingPath: hit.headingPath,
-    preview: trimForPrompt(normalizeText(hit.text), 280),
+    content,
+    preview: content,
   }
 }
 
@@ -664,26 +723,20 @@ export function toMemorySearchResult(hit: MemoryHit): import("./shared").MemoryS
  * Builds a formatted memory recall message from scored hits.
  *
  * @param hits - Hits to include.
- * @param maxChars - Maximum character budget.
  * @returns Formatted recall message.
  */
-export function buildMemoryRecallMessage(hits: MemoryHit[], maxChars: number): string {
+export function buildMemoryRecallMessage(hits: MemoryHit[]): string {
   const MEMORY_RECALL_HEADER = "[injected recalled memories]"
   const MEMORY_RECALL_NOTE =
     "Potentially relevant long-term notes. Use only if helpful; trust newer conversation details if anything conflicts."
 
   const lines = [MEMORY_RECALL_HEADER, MEMORY_RECALL_NOTE, ""]
-  let usedChars = lines.join("\n").length
 
   for (const hit of hits) {
     const source = formatMemorySource(hit)
-    const remaining = Math.max(120, maxChars - usedChars - source.length - 10)
-    const body = trimForPrompt(normalizeText(hit.text), Math.min(280, remaining))
+    const body = normalizeText(hit.text)
     const block = `- ${source}\n  ${body}`
-
-    if (usedChars + block.length > maxChars && lines.length > 3) break
     lines.push(block)
-    usedChars += block.length + 1
   }
 
   return lines.join("\n").trim()

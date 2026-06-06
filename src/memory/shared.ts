@@ -23,8 +23,6 @@ export const MEMORY_RECALL_NOTE =
   "Potentially relevant long-term notes. Use only if helpful; trust newer conversation details if anything conflicts."
 export const MEMORY_RECALL_MAX_CHUNKS = 4
 export const MEMORY_RECALL_MAX_CHUNKS_HARD_CAP = 8
-export const MEMORY_RECALL_MAX_CHARS = 1_500
-export const MEMORY_RECALL_PER_EXTRA_PERSON_CHARS = 400
 export const MEMORY_QUERY_TOKEN_LIMIT = 12
 export const MEMORY_RECALL_COOLDOWN_TURNS = 7
 export const MEMORY_EMBEDDING_BATCH_SIZE = 24
@@ -95,6 +93,7 @@ export type MemorySearchResult = {
   source: string
   title: string
   headingPath: string | null
+  content: string
   preview: string
 }
 

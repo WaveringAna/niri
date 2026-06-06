@@ -255,7 +255,7 @@ export const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: "memory_search",
       description:
-        "Search indexed long-term memories from core notes, journal entries, and people files. Useful when you want deliberate recall instead of relying only on passive memory injection.",
+        "Keyword and semantic search over indexed long-term memories from core notes, journal entries, and people files. Returns full matching chunk content, and is useful when you want deliberate recall instead of relying only on passive memory injection.",
       parameters: {
         type: "object",
         properties: {
