@@ -5,6 +5,7 @@ import { existsSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { CORS_HEADERS, applyCorsHeaders } from "../cors"
+import { setWebUiCacheHeaders } from "../static-ui"
 import {
   getAgent,
   listAgents,
@@ -239,9 +240,14 @@ export function registerControlRoutes(app: FastifyInstance, options: { staticUi?
       root: WEB_DIST_DIR,
       prefix: "/ui/",
       index: "index.html",
+      cacheControl: false,
+      setHeaders: setWebUiCacheHeaders,
     })
 
-    app.get("/ui", async (_req, reply) => reply.sendFile("index.html"))
+    app.get("/ui", async (_req, reply) => {
+      setWebUiCacheHeaders(reply.raw)
+      return reply.sendFile("index.html", { cacheControl: false })
+    })
   } else if (options.staticUi !== false) {
     app.get("/ui", async (_req, reply) => {
       reply.code(503)

@@ -221,8 +221,16 @@ function jsonToolLabel(value: unknown): string | null {
 }
 
 function toolLabel(text: string): string {
-  const first = text.split("\n").find(Boolean)
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean)
+  const first = lines[0]
   if (!first) return "tool"
+  if (first.startsWith("discord_send ok")) {
+    const sent = lines.find((line) => line.startsWith("sent: "))?.slice(6).trim()
+    if (sent) {
+      const label = `discord_send ok: ${sent}`
+      return label.length <= 120 ? label : `${label.slice(0, 117)}...`
+    }
+  }
   if (first.trim().startsWith("{") || first.trim().startsWith("[")) {
     try {
       return jsonToolLabel(JSON.parse(text)) ?? "tool result"
@@ -889,23 +897,25 @@ export function App() {
 
         {error ? <p className="error-line">{error}</p> : null}
 
-        <div className="messages">
-          {chatLines.length === 0 ? (
-            <p className="empty">No mirrored history yet. Send a message or open the stream to start collecting it.</p>
-          ) : (
-            chatLines.map((line) => {
-              const expanded = expandedTools.has(line.key)
-              return (
-                <TerminalMessage
-                  key={line.key}
-                  line={line}
-                  agentName={selected?.agent.name ?? "agent"}
-                  expanded={expanded}
-                  onToggle={toggleTool}
-                />
-              )
-            })
-          )}
+        <div className="chat-pane">
+          <div className="messages">
+            {chatLines.length === 0 ? (
+              <p className="empty">No mirrored history yet. Send a message or open the stream to start collecting it.</p>
+            ) : (
+              chatLines.map((line) => {
+                const expanded = expandedTools.has(line.key)
+                return (
+                  <TerminalMessage
+                    key={line.key}
+                    line={line}
+                    agentName={selected?.agent.name ?? "agent"}
+                    expanded={expanded}
+                    onToggle={toggleTool}
+                  />
+                )
+              })
+            )}
+          </div>
         </div>
 
         <form className="composer" onSubmit={sendMessage}>

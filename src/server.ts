@@ -17,6 +17,7 @@ import { subscribe } from "./stream"
 import { getMetrics, getMetricDetail, getDiscordMetricDetail } from "./metrics"
 import { registerControlRoutes } from "./control/server"
 import { CORS_HEADERS, applyCorsHeaders } from "./cors"
+import { setWebUiCacheHeaders } from "./static-ui"
 import type { MetricListType } from "./metrics"
 import type { UserMessage } from "./types"
 
@@ -277,9 +278,14 @@ export function createServer() {
       root: WEB_DIST_DIR,
       prefix: "/ui/",
       index: false,
+      cacheControl: false,
+      setHeaders: setWebUiCacheHeaders,
     })
 
-    app.get("/ui", async (_req, reply) => reply.sendFile("index.html"))
+    app.get("/ui", async (_req, reply) => {
+      setWebUiCacheHeaders(reply.raw)
+      return reply.sendFile("index.html", { cacheControl: false })
+    })
   } else {
     app.get("/ui", async (_req, reply) => {
       reply.code(503)

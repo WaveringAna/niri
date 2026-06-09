@@ -134,7 +134,13 @@ function resultValue(result: Record<string, unknown>, key: string): string | nul
   return typeof value === "string" && value.trim() ? value.trim() : null
 }
 
-function formatDiscordSendResult(result: Record<string, unknown>): string {
+function formatSentDiscordContent(content: unknown): string | null {
+  if (typeof content !== "string") return null
+  const normalized = content.replace(/\s+/g, " ").trim()
+  return normalized || null
+}
+
+function formatDiscordSendResult(result: Record<string, unknown>, content?: unknown): string {
   if (result.ok !== true) return JSON.stringify(result, null, 2)
 
   const parts = [
@@ -145,7 +151,8 @@ function formatDiscordSendResult(result: Record<string, unknown>): string {
     resultValue(result, "resolved_source_item_id") ? `source_item_id=${resultValue(result, "resolved_source_item_id")}` : null,
   ].filter((part): part is string => Boolean(part))
 
-  return parts.join(" ")
+  const sentContent = formatSentDiscordContent(content)
+  return sentContent ? `${parts.join(" ")}\nsent: ${sentContent}` : parts.join(" ")
 }
 
 /**
@@ -397,7 +404,7 @@ export function buildToolHandlers(): Record<string, ToolHandler> {
             replyMode: reply_mode as string | undefined,
             referenceMessage: reference_message as string | undefined,
           })
-          return formatDiscordSendResult(result)
+          return formatDiscordSendResult(result, content)
         },
       })
     },

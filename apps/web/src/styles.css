@@ -32,8 +32,10 @@
 html,
 body,
 #root {
+  height: 100%;
   min-height: 100vh;
   background: #000;
+  overflow: hidden;
 }
 
 body {
@@ -85,22 +87,28 @@ h2 {
 }
 
 .place {
-  height: 100vh;
+  position: fixed;
+  inset: 0;
+  height: auto;
+  min-height: 0;
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr) 286px;
   background: #000;
   color: var(--ink);
+  overflow: hidden;
 }
 
 .connections,
 .notes,
 .thread {
   min-width: 0;
+  min-height: 0;
   background: #000;
 }
 
 .connections {
   border-right: 1px solid var(--line);
+  overflow: auto;
 }
 
 .notes {
@@ -221,12 +229,15 @@ dt,
 }
 
 .thread {
-  height: 100vh;
+  height: 100%;
+  min-height: 0;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
+  overflow: hidden;
 }
 
 .thread-head {
+  grid-row: 1;
   padding: 0 28px;
 }
 
@@ -248,6 +259,7 @@ dt,
 }
 
 .error-line {
+  grid-row: 2;
   padding: 10px 28px;
   border-bottom: 1px solid #351014;
   background: var(--danger-bg);
@@ -255,9 +267,17 @@ dt,
   font-size: 13px;
 }
 
+.chat-pane {
+  grid-row: 3;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .messages {
+  height: 100%;
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 18px 28px 34px;
   scroll-padding-bottom: 26px;
 }
@@ -583,6 +603,7 @@ dt,
 }
 
 .composer {
+  grid-row: 4;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
@@ -695,10 +716,19 @@ dd {
     overflow: auto;
   }
 
+  html,
+  body,
+  #root {
+    height: auto;
+    overflow: auto;
+  }
+
   .place {
+    position: static;
     min-height: 100vh;
     height: auto;
     grid-template-columns: 1fr;
+    overflow: visible;
     overflow-x: hidden;
   }
 
@@ -715,6 +745,7 @@ dd {
   .thread {
     min-height: 64vh;
     height: auto;
+    overflow: visible;
   }
 
   .connections header {
