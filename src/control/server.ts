@@ -4,6 +4,7 @@ import fastifyStatic from "@fastify/static"
 import { existsSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { CORS_HEADERS, applyCorsHeaders } from "../cors"
 import {
   getAgent,
   listAgents,
@@ -168,6 +169,7 @@ async function proxyWorkerStream(agentId: string, reply: FastifyReply, afterSeq:
     "cache-control": "no-cache",
     connection: "keep-alive",
     "x-accel-buffering": "no",
+    ...CORS_HEADERS,
   })
   downstream.write(":ok\n\n")
 
@@ -421,9 +423,7 @@ export function createControlServer() {
   const app = Fastify({ logger: false })
 
   app.addHook("onRequest", async (_req, reply) => {
-    reply.header("access-control-allow-origin", "*")
-    reply.header("access-control-allow-methods", "GET,POST,OPTIONS")
-    reply.header("access-control-allow-headers", "content-type,authorization")
+    applyCorsHeaders(reply)
   })
 
   app.options("/*", async (_req, reply) => reply.code(204).send())

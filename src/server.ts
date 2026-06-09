@@ -16,6 +16,7 @@ import { fromChat } from "./triggers/chat"
 import { subscribe } from "./stream"
 import { getMetrics, getMetricDetail, getDiscordMetricDetail } from "./metrics"
 import { registerControlRoutes } from "./control/server"
+import { CORS_HEADERS, applyCorsHeaders } from "./cors"
 import type { MetricListType } from "./metrics"
 import type { UserMessage } from "./types"
 
@@ -63,9 +64,7 @@ export function createServer() {
   let discordBatchTimer: ReturnType<typeof setInterval> | null = null
 
   app.addHook("onRequest", async (_req, reply) => {
-    reply.header("access-control-allow-origin", "*")
-    reply.header("access-control-allow-methods", "GET,POST,OPTIONS")
-    reply.header("access-control-allow-headers", "content-type,authorization")
+    applyCorsHeaders(reply)
   })
 
   app.options("/*", async (_req, reply) => reply.code(204).send())
@@ -207,6 +206,7 @@ export function createServer() {
       "cache-control": "no-cache",
       connection: "keep-alive",
       "x-accel-buffering": "no",
+      ...CORS_HEADERS,
     })
 
     res.write(":ok\n\n")
@@ -333,6 +333,7 @@ export function createServer() {
       "cache-control": "no-cache",
       connection: "keep-alive",
       "x-accel-buffering": "no",
+      ...CORS_HEADERS,
     })
 
     // Send initial keepalive so the connection is established
