@@ -115,7 +115,11 @@ function createId(prefix: string): string {
 }
 
 function cleanBaseUrl(raw: string): string {
-  return raw.trim().replace(/\/+$/, "")
+  const trimmed = raw.trim().replace(/\/+$/, "")
+  if (!trimmed) return ""
+  if (/^[a-z][a-z\d+.-]*:\/\//i.test(trimmed)) return trimmed
+  if (trimmed.startsWith("//")) return `${window.location.protocol}${trimmed}`
+  return `http://${trimmed}`
 }
 
 function urlFor(panel: Panel, path: string): string {

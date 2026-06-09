@@ -62,6 +62,14 @@ export function createServer() {
   let discordBatchInFlight = false
   let discordBatchTimer: ReturnType<typeof setInterval> | null = null
 
+  app.addHook("onRequest", async (_req, reply) => {
+    reply.header("access-control-allow-origin", "*")
+    reply.header("access-control-allow-methods", "GET,POST,OPTIONS")
+    reply.header("access-control-allow-headers", "content-type,authorization")
+  })
+
+  app.options("/*", async (_req, reply) => reply.code(204).send())
+
   const runDiscordBatch = async (): Promise<void> => {
     if (discordBatchInFlight) return
     discordBatchInFlight = true
