@@ -23,6 +23,12 @@ export function emit(event: StreamEvent): void {
       activeConsoleText = true
     }
     process.stdout.write(event.text)
+  } else if (event.type === "thinking") {
+    if (!activeConsoleText) {
+      process.stdout.write("[thinking] ")
+      activeConsoleText = true
+    }
+    process.stdout.write(event.text)
   } else {
     endConsoleText()
     if (event.type === "user") console.log(`[user/${event.source}] ${event.text}`)

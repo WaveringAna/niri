@@ -305,7 +305,8 @@ dt,
 }
 
 .terminal-prefix-context,
-.terminal-prefix-note {
+.terminal-prefix-note,
+.terminal-prefix-thinking {
   color: var(--context);
   font-weight: 600;
 }
@@ -324,7 +325,8 @@ dt,
 }
 
 .terminal-message-context .terminal-body,
-.terminal-message-note .terminal-body {
+.terminal-message-note .terminal-body,
+.terminal-message-thinking .terminal-body {
   color: #8b8b8b;
 }
 
@@ -402,6 +404,19 @@ dt,
 
 .terminal-block-tool {
   border-left-color: #655b36;
+}
+
+.terminal-block-thinking {
+  border-left-color: #3d3d5c;
+}
+
+.terminal-message-thinking .terminal-command {
+  color: #6b6b8d;
+}
+
+.terminal-message-thinking .terminal-command:hover:not(:disabled) {
+  background: transparent;
+  color: #8b8baa;
 }
 
 .markdown-body {

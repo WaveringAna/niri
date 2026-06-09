@@ -70,6 +70,8 @@ async function processAssistantTurn(convId: number, state: LoopState, hooks: Loo
   addAssistantMessage(convId, state, msg)
 
   if (ENABLE_THINKING) {
+    // Thinking is now streamed live during completion, but handle edge cases
+    // where reasoning exists without live emission (e.g. tag-parsed thinking).
     if (!response.emittedThinking && response.bufferedThinking) {
       emit({ type: "thinking", text: response.bufferedThinking })
     } else if (!response.emittedThinking) {

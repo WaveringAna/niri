@@ -434,7 +434,11 @@ async function consumeCompletionStream(
     }
 
     if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
-      if (ENABLE_THINKING) reasoningParts.push(delta.reasoning_content)
+      if (ENABLE_THINKING) {
+        reasoningParts.push(delta.reasoning_content)
+        emit({ type: "thinking", text: delta.reasoning_content })
+        emittedThinking = true
+      }
 
       reasoningToolBuffer += delta.reasoning_content
       const { blocks, remainder } = drainReasoningToolCallBlocks(reasoningToolBuffer)
@@ -449,10 +453,6 @@ async function consumeCompletionStream(
     }
 
     if (typeof delta.content === "string" && delta.content.length > 0) {
-      if (ENABLE_THINKING && !emittedThinking && reasoningParts.length > 0) {
-        emit({ type: "thinking", text: reasoningParts.join("") })
-        emittedThinking = true
-      }
       contentParts.push(delta.content)
       emit({ type: "text", text: delta.content })
       emittedText = true

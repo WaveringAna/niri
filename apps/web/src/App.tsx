@@ -80,7 +80,7 @@ type ChatLine = {
   key: string
   seq: number
   at: string
-  kind: "agent" | "user" | "tool" | "note" | "context" | "error"
+  kind: "agent" | "user" | "tool" | "note" | "context" | "error" | "thinking"
   label: string
   text: string
   detail?: string
@@ -304,8 +304,40 @@ function linesFromEvents(events: WorkerEvent[]): ChatLine[] {
     }
   }
 
+  // Coalesce adjacent thinking stream events into single lines.
+  let thinkingBuffer = ""
+  let thinkingStartEvent: WorkerEvent | null = null
+
+  const flushThinking = () => {
+    if (!thinkingStartEvent || !thinkingBuffer.trim()) {
+      thinkingBuffer = ""
+      thinkingStartEvent = null
+      return
+    }
+    lines.push({
+      key: thinkingStartEvent.id,
+      seq: thinkingStartEvent.seq,
+      at: thinkingStartEvent.createdAt,
+      kind: "thinking",
+      label: "thinking",
+      text: thinkingBuffer,
+    })
+    thinkingBuffer = ""
+    thinkingStartEvent = null
+  }
+
   for (const event of sorted) {
     const payload = eventPayloadObject(event)
+
+    // Handle thinking stream events — coalesce adjacent chunks.
+    if (event.type === "stream.event" && payload.type === "thinking" && typeof payload.text === "string") {
+      if (!thinkingStartEvent) thinkingStartEvent = event
+      thinkingBuffer += payload.text
+      continue
+    }
+
+    // Non-thinking event flushes any pending thinking buffer.
+    flushThinking()
 
     if (event.type === "stream.event" && payload.type === "user" && typeof payload.text === "string") {
       const text = payload.text.trim()
@@ -393,6 +425,9 @@ function linesFromEvents(events: WorkerEvent[]): ChatLine[] {
     }
   }
 
+  // Flush any trailing thinking buffer.
+  flushThinking()
+
   return lines
 }
 
@@ -470,6 +505,7 @@ function prefixForLine(line: ChatLine, agentName: string): string {
   if (line.kind === "agent") return agentName
   if (line.kind === "user") return "you"
   if (line.kind === "tool") return "tool"
+  if (line.kind === "thinking") return "thinking"
   if (line.kind === "context" && line.label.includes("discord")) return "discord"
   return line.label
 }
@@ -500,6 +536,28 @@ function TerminalMessage({
             {expanded ? (
               <div className="terminal-block terminal-block-tool">
                 <HighlightedCode text={line.text} />
+              </div>
+            ) : null}
+          </div>
+          <time className="terminal-time">{formatTime(line.at)}</time>
+        </div>
+      </article>
+    )
+  }
+
+  if (line.kind === "thinking") {
+    return (
+      <article className="terminal-message terminal-message-thinking">
+        <div className="terminal-row">
+          <span className="terminal-prefix terminal-prefix-thinking">thinking:</span>
+          <div className="terminal-body">
+            <button type="button" className="terminal-command" onClick={() => onToggle(line.key)}>
+              <span>reasoning trace</span>
+              <small>{expanded ? "hide" : "show"}</small>
+            </button>
+            {expanded ? (
+              <div className="terminal-block terminal-block-thinking">
+                <MarkdownBody text={line.text} />
               </div>
             ) : null}
           </div>
