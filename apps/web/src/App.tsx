@@ -905,13 +905,12 @@ export function App() {
         </div>
 
         <form className="composer" onSubmit={sendMessage}>
-          <textarea
+          <input
             value={input}
             onChange={(event) => setInput(event.target.value)}
             disabled={!selected || busy}
             placeholder={selected ? `message ${selected.agent.name}` : "choose an agent first"}
             aria-label="message"
-            rows={3}
           />
           <button type="submit" disabled={!selected || busy || !input.trim()}>
             {busy ? "sending" : "send"}

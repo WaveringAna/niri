@@ -591,15 +591,13 @@ dt,
   background: #000;
 }
 
-.composer textarea {
-  min-height: 76px;
-  max-height: 190px;
-  resize: vertical;
+.composer input {
+  height: 40px;
   background: #020202;
 }
 
 .composer button {
-  align-self: end;
+  align-self: stretch;
   min-width: 88px;
   height: 40px;
   background: #ededed;
@@ -701,6 +699,7 @@ dd {
     min-height: 100vh;
     height: auto;
     grid-template-columns: 1fr;
+    overflow-x: hidden;
   }
 
   .connections {
@@ -709,23 +708,32 @@ dd {
   }
 
   .agent-list {
-    max-height: 220px;
+    max-height: 34vh;
     overflow: auto;
   }
 
   .thread {
-    min-height: 72vh;
+    min-height: 64vh;
     height: auto;
+  }
+
+  .connections header {
+    min-height: 52px;
+    padding: 0 14px;
+  }
+
+  .connect-form {
+    padding: 12px 14px;
   }
 
   .thread-head,
   .composer {
-    padding-left: 16px;
-    padding-right: 16px;
+    padding-left: 14px;
+    padding-right: 14px;
   }
 
   .messages {
-    padding: 16px 16px 24px;
+    padding: 14px 14px 22px;
   }
 
   .readout,
@@ -738,6 +746,13 @@ dd {
   }
 
   .composer {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    padding-top: 10px;
+    padding-bottom: 12px;
+  }
+
+  .composer button {
+    min-width: 70px;
   }
 }

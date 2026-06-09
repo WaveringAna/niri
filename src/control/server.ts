@@ -1,5 +1,5 @@
 import Fastify from "fastify"
-import type { FastifyReply } from "fastify"
+import type { FastifyInstance, FastifyReply } from "fastify"
 import fastifyStatic from "@fastify/static"
 import { existsSync } from "node:fs"
 import { dirname, join } from "node:path"
@@ -231,18 +231,8 @@ function chatEventFromBody(agentId: string, body: unknown): UserMessage | null {
   }
 }
 
-export function createControlServer() {
-  const app = Fastify({ logger: false })
-
-  app.addHook("onRequest", async (_req, reply) => {
-    reply.header("access-control-allow-origin", "*")
-    reply.header("access-control-allow-methods", "GET,POST,OPTIONS")
-    reply.header("access-control-allow-headers", "content-type,authorization")
-  })
-
-  app.options("/*", async (_req, reply) => reply.code(204).send())
-
-  if (existsSync(WEB_DIST_DIR)) {
+export function registerControlRoutes(app: FastifyInstance, options: { staticUi?: boolean } = {}) {
+  if (options.staticUi !== false && existsSync(WEB_DIST_DIR)) {
     app.register(fastifyStatic, {
       root: WEB_DIST_DIR,
       prefix: "/ui/",
@@ -250,7 +240,7 @@ export function createControlServer() {
     })
 
     app.get("/ui", async (_req, reply) => reply.sendFile("index.html"))
-  } else {
+  } else if (options.staticUi !== false) {
     app.get("/ui", async (_req, reply) => {
       reply.code(503)
       return { error: "web ui is not built yet. run `npm run build:web` first." }
@@ -425,6 +415,20 @@ export function createControlServer() {
   })
 
   app.get("/health", async () => ({ ok: true }))
+}
+
+export function createControlServer() {
+  const app = Fastify({ logger: false })
+
+  app.addHook("onRequest", async (_req, reply) => {
+    reply.header("access-control-allow-origin", "*")
+    reply.header("access-control-allow-methods", "GET,POST,OPTIONS")
+    reply.header("access-control-allow-headers", "content-type,authorization")
+  })
+
+  app.options("/*", async (_req, reply) => reply.code(204).send())
+
+  registerControlRoutes(app)
 
   return app
 }

@@ -2,6 +2,8 @@ import { openBash, closeBash } from "./container/index"
 import { createServer } from "./server"
 import { initDb } from "./db"
 import { initMetricsDb } from "./metrics"
+import { initControlDb } from "./control/db"
+import { registerConfiguredAgents } from "./control/config"
 import { shutdown } from "./runner/index"
 import { startDiscordGateway } from "./discord/gateway"
 import { ensureSoulFilePlacement } from "./bootstrap"
@@ -14,6 +16,8 @@ async function main() {
   await ensureSoulFilePlacement()
   initDb()
   initMetricsDb()
+  initControlDb()
+  registerConfiguredAgents()
   await openBash()
 
   let discordGateway: Awaited<ReturnType<typeof startDiscordGateway>> = null

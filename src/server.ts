@@ -15,6 +15,7 @@ import { fromCron } from "./triggers/cron"
 import { fromChat } from "./triggers/chat"
 import { subscribe } from "./stream"
 import { getMetrics, getMetricDetail, getDiscordMetricDetail } from "./metrics"
+import { registerControlRoutes } from "./control/server"
 import type { MetricListType } from "./metrics"
 import type { UserMessage } from "./types"
 
@@ -277,6 +278,8 @@ export function createServer() {
       return { error: "web ui is not built yet. run `npm run build:web` first." }
     })
   }
+
+  registerControlRoutes(app, { staticUi: false })
 
   app.post("/trigger/discord", async (req, reply) => {
     const result = handleDiscordIngress(req.body)
