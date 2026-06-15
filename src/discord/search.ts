@@ -10,7 +10,7 @@ import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, embeddingsConfigured, embedTexts
 
 const DISCORD_EMBEDDING_BATCH_SIZE = Math.max(
   1,
-  Math.min(512, Number.parseInt(process.env.DISCORD_EMBEDDING_BATCH_SIZE ?? "128", 10) || 128),
+  Math.min(512, Number.parseInt(process.env.DISCORD_EMBEDDING_BATCH_SIZE ?? "64", 10) || 64),
 )
 const DISCORD_SEARCH_CATCHUP_BATCH_SIZE = Math.max(
   0,
@@ -44,6 +44,11 @@ type DiscordEmbeddingRow = DiscordSearchRow & {
   model: string | null
   dimensions: number | null
   content_hash: string | null
+}
+
+type PendingDiscordEmbeddingRow = DiscordEmbeddingRow & {
+  embedding_text: string
+  next_hash: string
 }
 
 export type DiscordEmbeddingSyncResult = {
@@ -212,19 +217,33 @@ export async function syncDiscordMessageEmbeddingsBatch(params?: {
   const upsertVector = db.prepare("insert or replace into discord_message_vec(rowid, embedding) values (?, ?)")
 
   let embedded = 0
-  const vectors = await embedTexts(pending.map((row) => row.embedding_text))
-  db.transaction(() => {
-    pending.forEach((row, index) => {
-      const vector = vectors[index]
-      if (!vector) return
-      if (vector.length !== MEMORY_EMBEDDING_DIMENSIONS) {
-        throw new Error(`embedding dimension mismatch: got ${vector.length}, expected ${MEMORY_EMBEDDING_DIMENSIONS}`)
-      }
-      upsertVector.run(BigInt(row.message_id), vectorParam(vector))
-      upsertMeta.run(row.message_id, EMBEDDING_MODEL, MEMORY_EMBEDDING_DIMENSIONS, row.next_hash)
-      embedded += 1
-    })
-  })()
+  const embedPendingRows = async (batch: PendingDiscordEmbeddingRow[]): Promise<void> => {
+    try {
+      const vectors = await embedTexts(batch.map((row) => row.embedding_text))
+      db.transaction(() => {
+        batch.forEach((row, index) => {
+          const vector = vectors[index]
+          if (!vector) return
+          if (vector.length !== MEMORY_EMBEDDING_DIMENSIONS) {
+            throw new Error(`embedding dimension mismatch: got ${vector.length}, expected ${MEMORY_EMBEDDING_DIMENSIONS}`)
+          }
+          upsertVector.run(BigInt(row.message_id), vectorParam(vector))
+          upsertMeta.run(row.message_id, EMBEDDING_MODEL, MEMORY_EMBEDDING_DIMENSIONS, row.next_hash)
+          embedded += 1
+        })
+      })()
+    } catch (err) {
+      if (batch.length <= 1) throw err
+      const midpoint = Math.ceil(batch.length / 2)
+      console.warn(
+        `[discord embeddings] batch of ${batch.length} failed; retrying as ${midpoint}+${batch.length - midpoint}: ${err instanceof Error ? err.message : String(err)}`,
+      )
+      await embedPendingRows(batch.slice(0, midpoint))
+      await embedPendingRows(batch.slice(midpoint))
+    }
+  }
+
+  await embedPendingRows(pending)
 
   return { embedded, selected: rows.length }
 }

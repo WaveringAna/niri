@@ -38,5 +38,10 @@ export async function embedTexts(texts: string[]): Promise<number[][]> {
     encoding_format: "float",
   })
 
+  if (!Array.isArray(response.data)) {
+    const keys = response && typeof response === "object" ? Object.keys(response).join(",") : typeof response
+    throw new Error(`embedding response missing data array (model=${EMBEDDING_MODEL}, inputs=${texts.length}, keys=${keys || "none"})`)
+  }
+
   return response.data.map((item) => item.embedding)
 }
