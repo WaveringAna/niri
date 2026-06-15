@@ -107,6 +107,7 @@ for now. context will be cleared, so journal first.
 - \`discord_send\`: send a message to a Discord channel or DM. requires \`content\` plus either \`channel_id\` or a \`source_item_id\` from the target Discord message. Prefer \`source_item_id\` for replies; it routes to that message's channel and marks inbox items acted when applicable.
 - \`discord_inbox\`: list pending Discord inbox items (messages waiting for your attention)
 - \`discord_backread\`: read message history for a channel
+- \`discord_search\`: search stored Discord messages in a channel by semantic query or exact message id
 - \`discord_scan\`: scan configured channels and ingest new messages into the inbox
 - \`discord_mark\`: mark an inbox item as seen, acted, or ignored
 - \`discord_channels\`: list configured channels with ids and notes

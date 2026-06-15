@@ -1,6 +1,6 @@
 import type { UserMessage } from "../types"
 import { getDb } from "../db"
-import { asObject, asString, extractImageAttachments } from "../discord/parse"
+import { asObject, asString, extractImageAttachments, renderDiscordUserMentions } from "../discord/parse"
 
 function asIsoTimestamp(value: unknown, fallback: string): string {
   if (typeof value !== "string" && typeof value !== "number") return fallback
@@ -106,7 +106,7 @@ export function fromDiscord(body: unknown): UserMessage {
     (!guildId && Number.isNaN(channelType))
 
   const content =
-    String(message.content ?? b.content ?? "").trim() ||
+    renderDiscordUserMentions(body, String(message.content ?? b.content ?? "")).trim() ||
     "(no text content)"
   const triggeredAt = new Date().toISOString()
   const timestamp = formatDiscordTimestamp(asIsoTimestamp(message.timestamp ?? b.timestamp, triggeredAt))

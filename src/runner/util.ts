@@ -403,6 +403,33 @@ export const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "discord_search",
+      description:
+        "Search stored Discord messages in a channel. Provide channel_id plus either a semantic query or an exact message_id. Semantic search lazily embeds the channel's stored Discord messages and falls back to keyword search if embeddings are unavailable.",
+      parameters: {
+        type: "object",
+        properties: {
+          channel_id: { type: "string", description: "Discord channel id to search within." },
+          query: {
+            type: "string",
+            description: "Semantic query for messages in the channel. Omit when looking up a specific message_id.",
+          },
+          message_id: {
+            type: "string",
+            description: "Exact Discord message id to fetch from this channel. Omit when using query.",
+          },
+          limit: {
+            type: "integer",
+            description: "Maximum results to return for query searches (default 10, max 50).",
+          },
+        },
+        required: ["channel_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "discord_mark",
       description:
         "Set decision state for a Discord inbox item so future scans remember handled/ignored choices.",

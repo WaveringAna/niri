@@ -11,6 +11,7 @@ import {
   sendDiscordMessage,
   setDiscordChannelNote,
 } from "../discord/state"
+import { searchDiscordMessages } from "../discord/search"
 import { listAliases, removeAlias, searchMemories, setAlias } from "../memory"
 import { emit } from "../stream"
 import type { Message } from "../types"
@@ -354,6 +355,24 @@ export function buildToolHandlers(): Record<string, ToolHandler> {
               limit as number | undefined,
               before_message_id as string | undefined,
             ),
+            null,
+            2,
+          ),
+      }),
+
+    discord_search: (ctx) =>
+      runStandardTool(ctx, {
+        name: "discord_search",
+        logArgKeys: ["channel_id", "query", "message_id", "limit"] as const,
+        runArgKeys: ["channel_id", "query", "message_id", "limit"] as const,
+        run: async (channel_id, query, message_id, limit) =>
+          JSON.stringify(
+            await searchDiscordMessages({
+              channelId: channel_id as string,
+              query: query as string | undefined,
+              messageId: message_id as string | undefined,
+              limit: limit as number | undefined,
+            }),
             null,
             2,
           ),

@@ -6,6 +6,7 @@ import { initControlDb } from "./control/db"
 import { registerConfiguredAgents } from "./control/config"
 import { shutdown } from "./runner/index"
 import { startDiscordGateway } from "./discord/gateway"
+import { startDiscordEmbeddingBackfill } from "./discord/search"
 import { ensureSoulFilePlacement } from "./bootstrap"
 
 const PORT = parseInt(process.env.PORT ?? "3000")
@@ -19,6 +20,8 @@ async function main() {
   initControlDb()
   registerConfiguredAgents()
   await openBash()
+
+  const discordEmbeddingBackfill = startDiscordEmbeddingBackfill()
 
   let discordGateway: Awaited<ReturnType<typeof startDiscordGateway>> = null
   try {
@@ -45,6 +48,7 @@ async function main() {
 
     await Promise.race([shutdown(), timeout])
 
+    discordEmbeddingBackfill.stop()
     if (discordGateway) await discordGateway.stop()
     await server.close()
     closeBash()

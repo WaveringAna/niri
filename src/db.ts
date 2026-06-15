@@ -98,6 +98,14 @@ export function initDb(): void {
     create index if not exists idx_discord_messages_created
       on discord_messages(created_at desc);
 
+    create table if not exists discord_message_embedding_meta (
+      message_id    text primary key references discord_messages(message_id) on delete cascade,
+      model         text not null,
+      dimensions    integer not null,
+      content_hash  text not null,
+      updated_at    text not null default (datetime('now'))
+    );
+
     create table if not exists discord_items (
       item_id         text primary key,
       message_id      text not null references discord_messages(message_id) on delete cascade,
@@ -226,6 +234,10 @@ export function initDb(): void {
       );
 
       create virtual table if not exists memory_prototype_vec using vec0(
+        embedding float[${MEMORY_EMBEDDING_DIMENSIONS}] distance_metric=cosine
+      );
+
+      create virtual table if not exists discord_message_vec using vec0(
         embedding float[${MEMORY_EMBEDDING_DIMENSIONS}] distance_metric=cosine
       );
     `)
