@@ -6,8 +6,50 @@ import type { WorkerEvent, WorkerEventType } from "./types"
 type WorkerEventListener = (event: WorkerEvent) => void
 
 const listeners = new Set<WorkerEventListener>()
+const DEFAULT_REPLAY_TAIL_ROWS = 5000
+const PRUNE_EVERY_PERSISTED_EVENTS = 100
 let tableReady = false
 let warnedUnavailable = false
+let persistedSincePrune = 0
+
+function replayTailRows(): number {
+  const parsed = Number(process.env.AWP_REPLAY_TAIL_ROWS ?? DEFAULT_REPLAY_TAIL_ROWS)
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_REPLAY_TAIL_ROWS
+  return Math.trunc(parsed)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value))
+}
+
+function shouldPersistWorkerEvent(type: WorkerEventType, payload: unknown): boolean {
+  if (type === "worker.heartbeat") return false
+
+  if (type === "metric.recorded") {
+    return isRecord(payload) && payload.type === "compaction"
+  }
+
+  if (type === "stream.event") {
+    if (!isRecord(payload)) return false
+    return payload.type === "user" || payload.type === "usage"
+  }
+
+  return true
+}
+
+function pruneWorkerEvents(): void {
+  const tailRows = replayTailRows()
+  if (tailRows <= 0) {
+    getDb().prepare("delete from worker_events").run()
+    return
+  }
+
+  const row = getDb().prepare("select coalesce(max(seq), 0) as seq from worker_events").get() as { seq?: number }
+  const cutoff = Math.max(0, Math.trunc(row.seq ?? 0) - tailRows)
+  if (cutoff <= 0) return
+
+  getDb().prepare("delete from worker_events where seq <= ?").run(cutoff)
+}
 
 function ensureTable(): void {
   if (tableReady) return
@@ -67,13 +109,20 @@ export function publishWorkerEvent(type: WorkerEventType, payload: unknown): Wor
   }
 
   try {
-    ensureTable()
-    const result = getDb()
-      .prepare("insert into worker_events (id, agent_id, type, payload, created_at) values (?, ?, ?, ?, ?)")
-      .run(id, AGENT_ID, type, JSON.stringify(payload), createdAt)
-    event = {
-      ...event,
-      seq: Number(result.lastInsertRowid),
+    if (shouldPersistWorkerEvent(type, payload)) {
+      ensureTable()
+      const result = getDb()
+        .prepare("insert into worker_events (id, agent_id, type, payload, created_at) values (?, ?, ?, ?, ?)")
+        .run(id, AGENT_ID, type, JSON.stringify(payload), createdAt)
+      event = {
+        ...event,
+        seq: Number(result.lastInsertRowid),
+      }
+      persistedSincePrune += 1
+      if (persistedSincePrune >= PRUNE_EVERY_PERSISTED_EVENTS) {
+        persistedSincePrune = 0
+        pruneWorkerEvents()
+      }
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)

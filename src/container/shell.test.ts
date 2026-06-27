@@ -39,6 +39,13 @@ test("shell wrapper sentinels stay internal after terminal echo is re-enabled", 
   assert.doesNotMatch(output, /(?:echo\s+)?_*NIRI_(?:START|DONE)_[0-9a-f]+_*/i)
 })
 
+test("shell wrapper sentinels stay internal when shell tracing is enabled", async () => {
+  const output = await runCommand("set -x; echo traced", 0, 5_000)
+
+  assert.match(output, /\btraced\b/)
+  assert.doesNotMatch(output, /_*NIRI_(?:START|DONE)_[0-9a-f]+_*/i)
+})
+
 test("commands that read stdin do not consume completion sentinels", async () => {
   // Reproduces the interactive-prompt failure: a child that reads stdin until
   // EOF (like a clack prompt) would otherwise swallow the trailing sentinel

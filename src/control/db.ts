@@ -6,6 +6,9 @@ import { NIRI_HOME } from "../agent-config"
 const CONTROL_DB_PATH = path.resolve(process.env.NIRI_CONTROL_DB ?? path.join(NIRI_HOME, "control.db"))
 
 let db: Database.Database
+const DEFAULT_REPLAY_TAIL_ROWS = 5000
+const PRUNE_EVERY_RECORDED_EVENTS = 100
+const recordedSincePruneByAgent = new Map<string, number>()
 
 export type AgentRecord = {
   id: string
@@ -37,6 +40,28 @@ function agentFromRow(row: AgentRow): AgentRecord {
     ...(row.last_seen_at ? { lastSeenAt: row.last_seen_at } : {}),
     lastSeq: row.last_seq,
   }
+}
+
+function replayTailRows(): number {
+  const parsed = Number(process.env.AWP_REPLAY_TAIL_ROWS ?? DEFAULT_REPLAY_TAIL_ROWS)
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_REPLAY_TAIL_ROWS
+  return Math.trunc(parsed)
+}
+
+function pruneMirroredEvents(agentId: string): void {
+  const tailRows = replayTailRows()
+  if (tailRows <= 0) {
+    db.prepare("delete from worker_events where agent_id = ?").run(agentId)
+    return
+  }
+
+  const row = db.prepare("select coalesce(max(seq), 0) as seq from worker_events where agent_id = ?").get(agentId) as {
+    seq?: number
+  }
+  const cutoff = Math.max(0, Math.trunc(row.seq ?? 0) - tailRows)
+  if (cutoff <= 0) return
+
+  db.prepare("delete from worker_events where agent_id = ? and seq <= ?").run(agentId, cutoff)
 }
 
 export function initControlDb(): void {
@@ -140,6 +165,14 @@ export function recordWorkerEvent(event: {
      values (?, ?, ?, ?, ?, ?, ?)`,
   ).run(event.agentId, event.seq, event.id, event.type, JSON.stringify(event.payload), event.createdAt, receivedAt)
   updateAgentStatus(event.agentId, "online", event.seq)
+
+  const recordedSincePrune = (recordedSincePruneByAgent.get(event.agentId) ?? 0) + 1
+  if (recordedSincePrune >= PRUNE_EVERY_RECORDED_EVENTS) {
+    recordedSincePruneByAgent.set(event.agentId, 0)
+    pruneMirroredEvents(event.agentId)
+  } else {
+    recordedSincePruneByAgent.set(event.agentId, recordedSincePrune)
+  }
 }
 
 export function listMirroredEvents(agentId: string, afterSeq = 0, limit = 500, mode: "after" | "tail" = "after"): unknown[] {

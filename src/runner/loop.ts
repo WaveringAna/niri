@@ -4,8 +4,6 @@ import type { Message } from "../types"
 import {
   CONTEXT_COMPACT_TRIGGER_TOKENS,
   ENABLE_THINKING,
-  FALLBACK_TOKEN_NUDGE_THRESHOLD,
-  TOKEN_NUDGE_THRESHOLD,
   USE_FALLBACK,
   estimatePromptTokens,
   findSummaryMessageIndex,
@@ -159,18 +157,6 @@ function applyDiscordSendNudge(
   return true
 }
 
-function applyContextNudge(state: LoopState): void {
-  const tokenNudgeThreshold = USE_FALLBACK ? FALLBACK_TOKEN_NUDGE_THRESHOLD : TOKEN_NUDGE_THRESHOLD
-  const contextProvider = USE_FALLBACK ? "fallback" : "primary"
-
-  if (state.contextSize >= tokenNudgeThreshold) {
-    state.conversation.push({
-      role: "user",
-      content: `[system] context at ~${Math.round(state.contextSize / 1000)}k tokens (${contextProvider}). Consider wrapping up soon to stay within the context limit.`,
-    })
-  }
-}
-
 async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-turn"): Promise<boolean> {
   // Gate strictly on the model-reported prompt_tokens (state.contextSize).
   // The char-based estimatePromptTokens inflates the tools schema ~3×, which
@@ -292,7 +278,6 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
     }
 
     await applyLLMCompaction(state, "post-turn")
-    applyContextNudge(state)
     await hooks.saveSession()
   }
 }

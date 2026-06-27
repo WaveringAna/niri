@@ -57,7 +57,7 @@ export function cleanOutput(str: string): string {
 function removeInternalPtyControlEchoes(str: string): string {
   return str
     .split("\n")
-    .filter((line) => line !== "stty -echo 2>/dev/null")
+    .filter((line) => !/^(\+\s*)?stty -echo(?: 2> ?\/dev\/null)?$/.test(line))
     .join("\n")
 }
 
@@ -74,7 +74,7 @@ function findSentinelOutput(str: string, sentinel: string, fromIndex = 0): { sen
     const prefix = str.slice(lineStart, idx)
     const suffix = str.slice(idx + sentinel.length, effectiveLineEnd)
 
-    if (!/\becho\s+$/.test(prefix) && suffix === "") {
+    if (!/\b(?:echo|printf)\s+/.test(prefix) && suffix === "") {
       return {
         sentinelStart: idx,
         nextLineStart: lineEnd < 0 ? effectiveLineEnd : lineEnd + 1,
@@ -85,6 +85,17 @@ function findSentinelOutput(str: string, sentinel: string, fromIndex = 0): { sen
   }
 
   return null
+}
+
+function shellQuote(str: string): string {
+  return `'${str.replace(/'/g, "'\\''")}'`
+}
+
+function removeInternalSentinelEchoes(str: string, sentinels: readonly string[]): string {
+  return str
+    .split("\n")
+    .filter((line) => !sentinels.some((sentinel) => line.includes(sentinel)))
+    .join("\n")
 }
 
 let bash: pty.IPty | null = null
@@ -266,7 +277,8 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
         if (timer) clearTimeout(timer)
         if (startWriteTimer) clearTimeout(startWriteTimer)
         dataDisposable.dispose()
-        resolve(removeInternalPtyControlEchoes(cleaned.slice(startLine.nextLineStart, endLine.sentinelStart)).trimEnd())
+        const body = cleaned.slice(startLine.nextLineStart, endLine.sentinelStart)
+        resolve(removeInternalPtyControlEchoes(removeInternalSentinelEchoes(body, [startSentinel, endSentinel])).trimEnd())
       }
     })
 
@@ -317,10 +329,12 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
       if (settled) return
       session.write(
         [
-          `echo ${startSentinel}`,
+          `__niri_start=${shellQuote(startSentinel)}`,
+          `__niri_done=${shellQuote(endSentinel)}`,
+          `printf '%s\\n' "$__niri_start"`,
           groupedCommand,
           "stty -echo 2>/dev/null",
-          `echo ${endSentinel}`,
+          `printf '%s\\n' "$__niri_done"`,
           "",
         ].join("\n"),
       )

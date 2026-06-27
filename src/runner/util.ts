@@ -14,8 +14,6 @@ const SESSION_FILE = path.join(PROJECT_ROOT, "session.json")
 const REST_SNAPSHOT_FILE = path.join(PROJECT_ROOT, "rest-snapshot.json")
 const PRIMARY_FAILOVER_FILE = path.join(PROJECT_ROOT, "primary-failover.json")
 
-export const TOKEN_NUDGE_THRESHOLD = parseInt(process.env.TOKEN_NUDGE_THRESHOLD ?? "120000")
-export const FALLBACK_TOKEN_NUDGE_THRESHOLD = parseInt(process.env.FALLBACK_TOKEN_NUDGE_THRESHOLD ?? "50000")
 export const CONTEXT_COMPACT_TRIGGER_TOKENS = parseInt(process.env.CONTEXT_COMPACT_TRIGGER_TOKENS ?? "90000")
 export const PRIMARY_QUOTA_RETRY_MS = Math.max(
   60_000,
