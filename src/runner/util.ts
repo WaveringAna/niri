@@ -476,6 +476,28 @@ export const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
             enum: ["auto", "plain", "explicit"],
             description: "Reply behavior policy (default auto).",
           },
+          attachments: {
+            type: "array",
+            description: "Optional list of local files to upload. Specify absolute paths.",
+            items: {
+              type: "object",
+              properties: {
+                path: {
+                  type: "string",
+                  description: "Absolute local file path to upload.",
+                },
+                name: {
+                  type: "string",
+                  description: "Optional custom filename to show in Discord.",
+                },
+                description: {
+                  type: "string",
+                  description: "Optional alt text/accessibility description.",
+                },
+              },
+              required: ["path"],
+            },
+          },
         },
         required: ["content"],
       },

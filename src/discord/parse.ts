@@ -202,7 +202,16 @@ export function extractImageAttachmentsFromRawJson(rawJson: string): DiscordImag
 function userDisplayName(value: unknown): string | null {
   const user = asObject(value)
   if (!user) return null
-  return asString(user.global_name) ?? asString(user.username) ?? asString(user.name)
+  return (
+    asString(user.display_name) ??
+    asString(user.displayName) ??
+    asString(user.nickname) ??
+    asString(user.nick) ??
+    asString(user.global_name) ??
+    asString(user.globalName) ??
+    asString(user.username) ??
+    asString(user.name)
+  )
 }
 
 /**
@@ -250,6 +259,7 @@ export function parseMessageRecord(payload: unknown, botUserId?: string): Discor
   const message = asObject(root.message) ?? root
   const channel = asObject(root.channel)
   const author = asObject(message.author) ?? asObject(root.author)
+  const member = asObject(message.member) ?? asObject(root.member)
 
   const messageId = asString(message.id ?? root.message_id)
   const channelId = asString(message.channel_id ?? root.channel_id ?? channel?.id)
@@ -261,7 +271,15 @@ export function parseMessageRecord(payload: unknown, botUserId?: string): Discor
 
   const authorId = asString(author?.id ?? root.author_id)
   const authorUsername =
-    asString(author?.global_name) ?? asString(author?.username) ?? asString(root.author_username) ?? asString(root.author)
+    asString(member?.display_name) ??
+    asString(member?.displayName) ??
+    asString(member?.nickname) ??
+    asString(member?.nick) ??
+    asString(author?.global_name) ??
+    asString(author?.globalName) ??
+    asString(author?.username) ??
+    asString(root.author_username) ??
+    asString(root.author)
 
   const content = renderDiscordUserMentions(payload, String(message.content ?? root.content ?? ""))
   const createdAt = toIsoString(message.timestamp ?? root.timestamp)

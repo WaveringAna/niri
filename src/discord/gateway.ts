@@ -63,10 +63,23 @@ function buildIngressPayload(message: Message): Record<string, unknown> {
         global_name: message.author.globalName ?? null,
         bot: message.author.bot,
       },
-      mentions: message.mentions.users.map((u) => ({
-        id: u.id,
-        bot: u.bot,
-      })),
+      member: message.member
+        ? {
+            nickname: message.member.nickname ?? null,
+            display_name: message.member.displayName ?? null,
+          }
+        : null,
+      mentions: message.mentions.users.map((u) => {
+        const member = message.mentions.members?.get(u.id) ?? message.guild?.members.cache.get(u.id)
+        return {
+          id: u.id,
+          username: u.username,
+          global_name: u.globalName ?? null,
+          nickname: member?.nickname ?? null,
+          display_name: member?.displayName ?? null,
+          bot: u.bot,
+        }
+      }),
       attachments: message.attachments.map((a) => ({
         id: a.id,
         url: a.url,

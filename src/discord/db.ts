@@ -377,10 +377,20 @@ export function extractEmbeddedReferencedMessage(rawJson: string): DiscordReplyC
     if (!messageId) return null
 
     const author = asObject(referenced.author)
+    const member = asObject(referenced.member)
     return {
       message_id: messageId,
       author_id: asString(author?.id),
-      author_username: asString(author?.username ?? author?.global_name),
+      author_username: asString(
+        member?.display_name ??
+          member?.displayName ??
+          member?.nickname ??
+          member?.nick ??
+          author?.global_name ??
+          author?.globalName ??
+          author?.username ??
+          author?.name,
+      ),
       content: String(referenced.content ?? ""),
     }
   } catch {

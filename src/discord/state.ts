@@ -8,6 +8,8 @@
  */
 
 import { Routes } from "discord.js"
+import * as fs from "node:fs"
+import * as path from "node:path"
 import {
   asNumber,
   asString,
@@ -507,6 +509,7 @@ export async function sendDiscordMessage(params: {
   sourceItemId?: string
   replyMode?: string
   referenceMessage?: string
+  attachments?: Array<{ path: string; name?: string; description?: string }>
 }): Promise<Record<string, unknown>> {
   let channelId = String(params.channelId ?? "").trim()
   if (!channelId && params.sourceItemId?.trim()) {
@@ -532,6 +535,17 @@ export async function sendDiscordMessage(params: {
   const rest = makeRestClient()
   const botUserId = await getBotUserId(rest)
 
+  const filesArray = params.attachments?.map((att) => {
+    const resolvedPath = path.resolve(att.path)
+    if (!fs.existsSync(resolvedPath)) {
+      throw new Error(`Attachment file not found at path: ${att.path}`)
+    }
+    return {
+      name: att.name || path.basename(resolvedPath),
+      data: fs.readFileSync(resolvedPath),
+    }
+  })
+
   const message = (await withDiscordRestRetry(`send message ${channelId}`, () =>
     rest.post(Routes.channelMessages(channelId), {
       body: {
@@ -546,7 +560,17 @@ export async function sendDiscordMessage(params: {
               allowed_mentions: { replied_user: false },
             }
           : {}),
+        ...(params.attachments
+          ? {
+              attachments: params.attachments.map((att, index) => ({
+                id: index,
+                description: att.description,
+                filename: att.name || path.basename(att.path),
+              })),
+            }
+          : {}),
       },
+      files: filesArray,
     }),
   )) as DiscordObject
 

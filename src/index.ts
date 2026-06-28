@@ -8,6 +8,7 @@ import { shutdown } from "./runner/index"
 import { startDiscordGateway } from "./discord/gateway"
 import { startDiscordEmbeddingBackfill } from "./discord/search"
 import { ensureSoulFilePlacement } from "./bootstrap"
+import { startAntigravityBridge, stopAntigravityBridge } from "./antigravity-bridge"
 
 const PORT = parseInt(process.env.PORT ?? "3000")
 
@@ -20,6 +21,13 @@ async function main() {
   initControlDb()
   registerConfiguredAgents()
   await openBash()
+
+  // Start the Antigravity Bridge if enabled in .env
+  try {
+    await startAntigravityBridge()
+  } catch (err) {
+    console.error("[bridge] failed to start:", err)
+  }
 
   const discordEmbeddingBackfill = startDiscordEmbeddingBackfill()
 
@@ -51,6 +59,7 @@ async function main() {
     discordEmbeddingBackfill.stop()
     if (discordGateway) await discordGateway.stop()
     await server.close()
+    await stopAntigravityBridge()
     closeBash()
     process.exit(0)
   }

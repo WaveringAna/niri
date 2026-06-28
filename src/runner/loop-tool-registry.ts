@@ -414,14 +414,15 @@ export function buildToolHandlers(): Record<string, ToolHandler> {
       return runStandardTool(ctx, {
         name: "discord_send",
         logArgKeys: ["channel_id", "source_item_id", "reply_mode"] as const,
-        runArgKeys: ["channel_id", "content", "source_item_id", "reply_mode", "reference_message"] as const,
-        run: async (channel_id, content, source_item_id, reply_mode, reference_message) => {
+        runArgKeys: ["channel_id", "content", "source_item_id", "reply_mode", "reference_message", "attachments"] as const,
+        run: async (channel_id, content, source_item_id, reply_mode, reference_message, attachments) => {
           const result = await sendDiscordMessage({
             channelId: channel_id as string,
             content: content as string,
             sourceItemId: source_item_id as string | undefined,
             replyMode: reply_mode as string | undefined,
             referenceMessage: reference_message as string | undefined,
+            attachments: attachments as Array<{ path: string; name?: string; description?: string }> | undefined,
           })
           return formatDiscordSendResult(result, content)
         },

@@ -35,3 +35,36 @@ test("discord user mentions render names instead of ids", () => {
   assert.match(event.content, /hey @dawn and @nova/)
   assert.doesNotMatch(event.content, /<@!?/)
 })
+
+test("discord server nicknames are preferred and rendered correctly", () => {
+  const nicknamePayload = {
+    message: {
+      id: "1513348392011694264",
+      channel_id: "1497733589545123981",
+      guild_id: "1497733589545123980",
+      content: "hey <@123> and <@!456>",
+      timestamp: "2026-06-15T12:00:00.000Z",
+      author: { id: "789", username: "ana", global_name: "Ana Global" },
+      member: { nickname: "Ana Server Nick", display_name: "Ana Server Nick" },
+      mentions: [
+        { id: "123", username: "dawn", global_name: "Dawn Global", nickname: "Dawn Server Nick", display_name: "Dawn Server Nick" },
+        { id: "456", username: "novabot", global_name: "Nova Global", nickname: "Nova Server Nick", display_name: "Nova Server Nick" },
+      ],
+    },
+    channel: {
+      id: "1497733589545123981",
+      type: 0,
+      name: "mira",
+      guild_id: "1497733589545123980",
+    },
+    guild_name: "home",
+  }
+
+  const record = parseMessageRecord(nicknamePayload)
+  assert.equal(record?.authorUsername, "Ana Server Nick")
+  assert.equal(record?.content, "hey @Dawn Server Nick and @Nova Server Nick")
+
+  const event = fromDiscord(nicknamePayload)
+  assert.match(event.content, /@Ana Server Nick/)
+  assert.match(event.content, /hey @Dawn Server Nick and @Nova Server Nick/)
+})

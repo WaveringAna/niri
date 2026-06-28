@@ -44,9 +44,17 @@ function embeddedReferencedMessage(
   if (!messageId) return null
 
   const author = asRecord(referenced.author)
+  const member = asRecord(referenced.member)
   return {
     message_id: messageId,
-    author_username: asString(author?.global_name) ?? asString(author?.username),
+    author_username:
+      asString(member?.display_name) ??
+      asString(member?.displayName) ??
+      asString(member?.nickname) ??
+      asString(member?.nick) ??
+      asString(author?.global_name) ??
+      asString(author?.globalName) ??
+      asString(author?.username),
     content: String(referenced.content ?? ""),
   }
 }
@@ -110,7 +118,24 @@ export function fromDiscord(body: unknown): UserMessage {
     "(no text content)"
   const triggeredAt = new Date().toISOString()
   const timestamp = formatDiscordTimestamp(asIsoTimestamp(message.timestamp ?? b.timestamp, triggeredAt))
-  const authorName = String(author?.global_name ?? author?.username ?? b.author_username ?? b.author ?? "unknown")
+  const member =
+    typeof message.member === "object" && message.member
+      ? (message.member as Record<string, unknown>)
+      : typeof b.member === "object" && b.member
+      ? (b.member as Record<string, unknown>)
+      : null
+  const authorName = String(
+    member?.display_name ??
+      member?.displayName ??
+      member?.nickname ??
+      member?.nick ??
+      author?.global_name ??
+      author?.globalName ??
+      author?.username ??
+      b.author_username ??
+      b.author ??
+      "unknown",
+  )
   const channelId = String(message.channel_id ?? b.channel_id ?? channel?.id ?? "unknown")
   const messageId = String(message.id ?? b.message_id ?? "unknown")
   const location = isDm
