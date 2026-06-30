@@ -5,11 +5,14 @@ import path from "node:path"
 import { IMAGE_MAX_BYTES, IMAGE_ROOT, USE_DOCKER_SHELL } from "./config"
 import { readImageForModel } from "./tools"
 
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+const ONE_BY_ONE_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+  "base64",
+)
 
 function pngLikeBytes(size: number): Buffer {
   const data = Buffer.alloc(size)
-  PNG_SIGNATURE.copy(data)
+  ONE_BY_ONE_PNG.copy(data)
   return data
 }
 
@@ -50,6 +53,25 @@ test("readImageForModel accepts files up to IMAGE_MAX_BYTES and rejects larger f
       readImageForModel(oversizedPath, 5_000),
       new RegExp(`file too large: ${IMAGE_MAX_BYTES + 1} bytes \\(max ${IMAGE_MAX_BYTES}\\)`),
     )
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("readImageForModel rejects non-image bytes even with an image extension", async (t) => {
+  if (USE_DOCKER_SHELL) {
+    t.skip("local filesystem image validation test does not run through Docker shell")
+    return
+  }
+
+  await fs.mkdir(IMAGE_ROOT, { recursive: true })
+  const dir = await fs.mkdtemp(path.join(IMAGE_ROOT, "image-validation-"))
+
+  try {
+    const errorPagePath = path.join(dir, "downloaded.png")
+    await fs.writeFile(errorPagePath, "<html><body>Source image is unreachable</body></html>")
+
+    await assert.rejects(readImageForModel(errorPagePath, 5_000), /unsupported image type/)
   } finally {
     await fs.rm(dir, { recursive: true, force: true })
   }

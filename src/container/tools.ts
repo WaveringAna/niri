@@ -80,38 +80,101 @@ async function resolveLocalPath(filePath: string, timeoutMs: number): Promise<st
   return path.resolve(await currentWorkingDirectory(timeoutMs), raw)
 }
 
-function imageMimeFromBytes(filePath: string, data: Buffer): string | null {
-  if (data.length >= 8 && data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
-    return "image/png"
-  }
-  if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return "image/jpeg"
-  if (data.length >= 6 && (data.subarray(0, 6).toString("ascii") === "GIF87a" || data.subarray(0, 6).toString("ascii") === "GIF89a")) {
-    return "image/gif"
-  }
-  if (data.length >= 12 && data.subarray(0, 4).toString("ascii") === "RIFF" && data.subarray(8, 12).toString("ascii") === "WEBP") {
-    return "image/webp"
-  }
-  if (data.length >= 2 && data.subarray(0, 2).toString("ascii") === "BM") return "image/bmp"
-  if (
-    data.length >= 4 &&
-    (data.subarray(0, 4).equals(Buffer.from([0x49, 0x49, 0x2a, 0x00])) ||
-      data.subarray(0, 4).equals(Buffer.from([0x4d, 0x4d, 0x00, 0x2a])))
-  ) {
-    return "image/tiff"
+function isValidPng(data: Buffer): boolean {
+  return (
+    data.length >= 33 &&
+    data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) &&
+    data.readUInt32BE(8) === 13 &&
+    data.subarray(12, 16).toString("ascii") === "IHDR" &&
+    data.readUInt32BE(16) > 0 &&
+    data.readUInt32BE(20) > 0
+  )
+}
+
+function isValidGif(data: Buffer): boolean {
+  const header = data.length >= 6 ? data.subarray(0, 6).toString("ascii") : ""
+  return (
+    data.length >= 10 &&
+    (header === "GIF87a" || header === "GIF89a") &&
+    data.readUInt16LE(6) > 0 &&
+    data.readUInt16LE(8) > 0
+  )
+}
+
+function isValidJpeg(data: Buffer): boolean {
+  if (data.length < 4 || data[0] !== 0xff || data[1] !== 0xd8 || data[data.length - 2] !== 0xff || data[data.length - 1] !== 0xd9) {
+    return false
   }
 
-  const ext = path.extname(filePath).toLowerCase()
-  const byExt: Record<string, string> = {
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".png": "image/png",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".bmp": "image/bmp",
-    ".tif": "image/tiff",
-    ".tiff": "image/tiff",
+  let offset = 2
+  while (offset + 3 < data.length) {
+    while (offset < data.length && data[offset] === 0xff) offset++
+    if (offset >= data.length) return false
+
+    const marker = data[offset++]
+    if (marker === 0xd9) break
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue
+    if (offset + 2 > data.length) return false
+
+    const segmentLength = data.readUInt16BE(offset)
+    if (segmentLength < 2 || offset + segmentLength > data.length) return false
+
+    const isSofMarker =
+      (marker >= 0xc0 && marker <= 0xc3) ||
+      (marker >= 0xc5 && marker <= 0xc7) ||
+      (marker >= 0xc9 && marker <= 0xcb) ||
+      (marker >= 0xcd && marker <= 0xcf)
+    if (isSofMarker) {
+      if (segmentLength < 7) return false
+      const height = data.readUInt16BE(offset + 3)
+      const width = data.readUInt16BE(offset + 5)
+      return width > 0 && height > 0
+    }
+
+    offset += segmentLength
   }
-  return byExt[ext] ?? null
+
+  return false
+}
+
+function isValidWebp(data: Buffer): boolean {
+  if (data.length < 16) return false
+  if (data.subarray(0, 4).toString("ascii") !== "RIFF" || data.subarray(8, 12).toString("ascii") !== "WEBP") return false
+  const riffSize = data.readUInt32LE(4) + 8
+  if (riffSize > data.length) return false
+  const chunk = data.subarray(12, 16).toString("ascii")
+  return chunk === "VP8 " || chunk === "VP8L" || chunk === "VP8X"
+}
+
+function isValidBmp(data: Buffer): boolean {
+  if (data.length < 54 || data.subarray(0, 2).toString("ascii") !== "BM") return false
+  const declaredSize = data.readUInt32LE(2)
+  const pixelOffset = data.readUInt32LE(10)
+  const dibSize = data.readUInt32LE(14)
+  const width = data.readInt32LE(18)
+  const height = data.readInt32LE(22)
+  return declaredSize <= data.length && pixelOffset < data.length && dibSize >= 40 && width !== 0 && height !== 0
+}
+
+function isValidTiff(data: Buffer): boolean {
+  if (data.length < 8) return false
+  const little = data.subarray(0, 4).equals(Buffer.from([0x49, 0x49, 0x2a, 0x00]))
+  const big = data.subarray(0, 4).equals(Buffer.from([0x4d, 0x4d, 0x00, 0x2a]))
+  if (!little && !big) return false
+  const firstIfdOffset = little ? data.readUInt32LE(4) : data.readUInt32BE(4)
+  return firstIfdOffset >= 8 && firstIfdOffset < data.length
+}
+
+function imageMimeFromBytes(_filePath: string, data: Buffer): string | null {
+  if (isValidPng(data)) {
+    return "image/png"
+  }
+  if (isValidJpeg(data)) return "image/jpeg"
+  if (isValidGif(data)) return "image/gif"
+  if (isValidWebp(data)) return "image/webp"
+  if (isValidBmp(data)) return "image/bmp"
+  if (isValidTiff(data)) return "image/tiff"
+  return null
 }
 
 /**
@@ -151,7 +214,7 @@ export async function readImageForModel(filePath: string, timeoutMs?: number): P
   }
 
   const py = [
-    "import base64, imghdr, json, mimetypes, os, stat, sys, warnings",
+    "import base64, imghdr, json, os, stat, sys, warnings",
     "warnings.filterwarnings('ignore', category=DeprecationWarning)",
     "path = sys.argv[1]",
     "max_bytes = int(sys.argv[2])",
@@ -186,10 +249,6 @@ export async function readImageForModel(filePath: string, timeoutMs?: number): P
     "    'tiff': 'image/tiff',",
     "}",
     "mime = mime_map.get(kind)",
-    "if not mime:",
-    "    guessed, _ = mimetypes.guess_type(path)",
-    "    if guessed and guessed.startswith('image/'):",
-    "        mime = guessed",
     "if not mime:",
     "    out({'ok': False, 'message': f'unsupported image type: {path}'})",
     "    raise SystemExit(0)",

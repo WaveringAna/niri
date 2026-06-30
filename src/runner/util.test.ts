@@ -191,6 +191,45 @@ test("z.ai/GLM image parse rejection (code 1210) is detected as an image parse e
   assert.equal(shouldFallback(err), false)
 })
 
+test("Gemini image processing rejection is detected as an image parse error", () => {
+  const err = new OpenAI.APIError(
+    400,
+    {
+      error: {
+        code: 400,
+        message:
+          "Unable to process input image. Please retry or report in https://developers.generativeai.google/guide/troubleshooting",
+        status: "INVALID_ARGUMENT",
+      },
+    },
+    '400 "API returned 400: {\\n  \\"error\\": {\\n    \\"code\\": 400,\\n    \\"message\\": \\"Unable to process input image. Please retry or report in https://developers.generativeai.google/guide/troubleshooting\\",\\n    \\"status\\": \\"INVALID_ARGUMENT\\"\\n  }\\n}\\n"',
+    undefined,
+  )
+
+  assert.equal(isImageParseError(err), true)
+  assert.equal(isContentFilterError(err), false)
+  assert.equal(shouldFallback(err), false)
+})
+
+test("unreachable source image rejection is detected as an image parse error", () => {
+  const err = new OpenAI.APIError(
+    400,
+    {
+      error: {
+        code: 400,
+        message: "Source image is unreachable",
+        status: "INVALID_ARGUMENT",
+      },
+    },
+    '400 "API returned 400: {\\n  \\"error\\": {\\n    \\"code\\": 400,\\n    \\"message\\": \\"Source image is unreachable\\",\\n    \\"status\\": \\"INVALID_ARGUMENT\\"\\n  }\\n}\\n"',
+    undefined,
+  )
+
+  assert.equal(isImageParseError(err), true)
+  assert.equal(isContentFilterError(err), false)
+  assert.equal(shouldFallback(err), false)
+})
+
 test("z.ai sensitive-content rejection (code 1301) is detected as a content-filter error", () => {
   const err = new OpenAI.APIError(
     400,

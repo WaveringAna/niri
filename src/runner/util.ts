@@ -961,6 +961,8 @@ const IMAGE_PARSE_PHRASES = [
   "image parse",
   "image format",
   "invalid image",
+  "unable to process input image",
+  "source image is unreachable",
   "failed to parse image",
   "decode image",
 ]
@@ -983,7 +985,7 @@ export function isImageParseError(err: unknown): boolean {
   if (rootCode && IMAGE_PARSE_CODES.has(rootCode)) return true
   if (innerCode && IMAGE_PARSE_CODES.has(innerCode)) return true
 
-  const message = (err.message || "").toLowerCase()
+  const message = apiErrorText(err).toLowerCase()
   return IMAGE_PARSE_PHRASES.some((phrase) => message.includes(phrase.toLowerCase()))
 }
 
