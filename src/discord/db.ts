@@ -691,6 +691,7 @@ export type BatchMessageRow = {
   raw_json: string
   guild_name: string | null
   channel_name: string | null
+  pronouns: string | null
 }
 
 export type BatchPendingRow = {
@@ -706,6 +707,7 @@ export type BatchPendingRow = {
   raw_json: string
   guild_name: string | null
   channel_name: string | null
+  pronouns: string | null
 }
 
 /**
@@ -735,10 +737,12 @@ export function queryBatchMessages(opts: {
          m.is_dm,
          m.raw_json,
          c.guild_name,
-         c.channel_name
+         c.channel_name,
+         p.pronouns
        from discord_messages m
        left join discord_channels c on c.channel_id = m.channel_id
        left join discord_items i on i.message_id = m.message_id
+       left join discord_user_pronouns p on p.user_id = m.author_id
        where (? = '' or coalesce(m.author_id, '') != ?)
          and m.first_seen_at > ?
          and (i.message_id is null or i.status = 'pending')
@@ -802,10 +806,12 @@ export function queryBatchPendingPreview(opts: {
          m.message_id,
          m.raw_json,
          c.guild_name,
-         c.channel_name
+         c.channel_name,
+         p.pronouns
        from discord_items i
        join discord_messages m on m.message_id = i.message_id
        left join discord_channels c on c.channel_id = m.channel_id
+       left join discord_user_pronouns p on p.user_id = m.author_id
        where i.status = 'pending'
          and (? = '' or coalesce(m.author_id, '') != ?)
          ${opts.channelScopeClause}

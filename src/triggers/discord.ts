@@ -1,6 +1,7 @@
 import type { UserMessage } from "../types"
 import { getDb } from "../db"
 import { asObject, asString, extractImageAttachments, renderDiscordUserMentions } from "../discord/parse"
+import { getCachedPronouns } from "../discord/pronouns"
 
 function asIsoTimestamp(value: unknown, fallback: string): string {
   if (typeof value !== "string" && typeof value !== "number") return fallback
@@ -136,6 +137,14 @@ export function fromDiscord(body: unknown): UserMessage {
       b.author ??
       "unknown",
   )
+  const authorId = String(author?.id ?? b.author_id ?? "")
+  let pronouns = ""
+  if (authorId) {
+    const cached = getCachedPronouns(authorId)
+    if (cached) pronouns = cached
+  }
+  const pronounsSuffix = pronouns ? ` (${pronouns})` : ""
+
   const channelId = String(message.channel_id ?? b.channel_id ?? channel?.id ?? "unknown")
   const messageId = String(message.id ?? b.message_id ?? "unknown")
   const location = isDm
@@ -151,7 +160,7 @@ export function fromDiscord(body: unknown): UserMessage {
   return {
     source: "discord",
     triggeredAt,
-    content: `${header} @${authorName}\ncontext: ${location}\nmessage_id: ${messageId}\nsource_item_id: ${messageId}\ntimestamp: ${timestamp}${replyLine ? `\n${replyLine}` : ""}\naction: ${action}\n\n${content}${imageBlock}`,
+    content: `${header} @${authorName}${pronounsSuffix}\ncontext: ${location}\nmessage_id: ${messageId}\nsource_item_id: ${messageId}\ntimestamp: ${timestamp}${replyLine ? `\n${replyLine}` : ""}\naction: ${action}\n\n${content}${imageBlock}`,
     raw: body,
   }
 }

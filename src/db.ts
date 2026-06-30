@@ -150,6 +150,12 @@ export function initDb(): void {
       updated_at text not null
     );
 
+    create table if not exists discord_user_pronouns (
+      user_id    text primary key,
+      pronouns   text not null,
+      updated_at text not null
+    );
+
     create table if not exists memory_documents (
       id           integer primary key autoincrement,
       path         text    not null unique,

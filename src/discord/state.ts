@@ -63,6 +63,7 @@ import {
   makeRestClient,
   withDiscordRestRetry,
 } from "./rest"
+import { maybeFetchAndCachePronouns } from "./pronouns"
 
 // ── result types ───────────────────────────────────────────────────────
 
@@ -184,6 +185,10 @@ export function ingestDiscordEvent(payload: unknown, options?: { botUserId?: str
   if (channelRecord) upsertDiscordChannel(channelRecord)
 
   upsertDiscordMessage(record)
+
+  if (record.authorId) {
+    void maybeFetchAndCachePronouns(record.authorId)
+  }
 
   const bucket = detectInboxBucket(record)
   if (bucket) {
@@ -382,7 +387,8 @@ export function buildDiscordBatchDigest(params?: {
 
   for (const row of recentMessages) {
     const label = channelLabel(row)
-    const author = row.author_username ? `@${row.author_username}` : "@unknown"
+    const pronounsSuffix = row.pronouns ? ` (${row.pronouns})` : ""
+    const author = row.author_username ? `@${row.author_username}${pronounsSuffix}` : "@unknown"
     const ts = formatBatchTimestamp(row.created_at)
     const replyTo = replyContextByMessageId.get(row.message_id)
     lines.push(`- source_item_id=${row.message_id} [${label}] [${ts}] ${author}${formatReplyContext(replyTo)}: ${fullMessageText(row.content)}${formatBatchImages(row.raw_json)}`)
@@ -399,7 +405,8 @@ export function buildDiscordBatchDigest(params?: {
   } else {
     for (const row of pendingPreview) {
       const label = channelLabel(row)
-      const author = row.author_username ? `@${row.author_username}` : "@unknown"
+      const pronounsSuffix = row.pronouns ? ` (${row.pronouns})` : ""
+      const author = row.author_username ? `@${row.author_username}${pronounsSuffix}` : "@unknown"
       const ts = formatBatchTimestamp(row.created_at)
       const replyTo = replyContextByMessageId.get(row.message_id)
       lines.push(`- source_item_id=${row.item_id} bucket=${row.bucket} [${label}] [${ts}] ${author}${formatReplyContext(replyTo)}: ${compactText(row.content, 120)}${formatBatchImages(row.raw_json)}`)
