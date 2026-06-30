@@ -428,33 +428,6 @@ export const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
-      name: "discord_mark",
-      description:
-        "Set decision state for a Discord inbox item so future scans remember handled/ignored choices.",
-      parameters: {
-        type: "object",
-        properties: {
-          item_id: { type: "string", description: "Inbox item id (usually message id)." },
-          status: {
-            type: "string",
-            enum: ["pending", "seen", "acted", "ignored"],
-          },
-          action: {
-            type: "string",
-            enum: ["none", "replied", "messaged", "dismissed", "noted"],
-          },
-          note: {
-            type: "string",
-            description: "Optional decision note.",
-          },
-        },
-        required: ["item_id", "status"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
       name: "discord_send",
       description:
         "Send a Discord message. Provide content plus either channel_id or source_item_id. Prefer source_item_id from the target Discord message; it routes to that message's channel. reply_mode=auto sends plain unless conversation continuity is ambiguous, then it uses an explicit reply reference.",
@@ -680,20 +653,22 @@ export function restForestFromMessages(messages: Message[]): string {
 }
 
 export async function saveRestSnapshot(messages: Message[], note?: string): Promise<void> {
+  const summaryIndex = findSummaryMessageIndex(messages)
+  if (summaryIndex < 0) return
+
   const trimmedNote = typeof note === "string" ? note.trim() : ""
   const snapshot: RestSnapshot = {
     restedAt: new Date().toISOString(),
     ...(trimmedNote ? { note: trimmedNote } : {}),
-    forest: restForestFromMessages(messages),
+    forest: messageStringContent(messages[summaryIndex]!),
   }
   await fs.writeFile(REST_SNAPSHOT_FILE, JSON.stringify(snapshot, null, 2), { encoding: "utf-8", mode: 0o666 })
 }
 
-export async function consumeRestSnapshot(): Promise<RestSnapshot | null> {
+export async function loadRestSnapshot(): Promise<RestSnapshot | null> {
   try {
     const raw = await fs.readFile(REST_SNAPSHOT_FILE, "utf-8")
     const parsed = JSON.parse(raw) as RestSnapshot
-    await fs.unlink(REST_SNAPSHOT_FILE).catch(() => {})
     if (!parsed || typeof parsed.restedAt !== "string" || typeof parsed.forest !== "string") return null
     return parsed
   } catch {
@@ -1399,11 +1374,6 @@ function describeToolCall(call: { name: string; args: Record<string, unknown> })
     if (!content) return `discord_send -> ${channelTag}`
     return `discord_send -> ${channelTag}: ${normalizeSummaryText(content)}`
   }
-  if (name === "discord_mark") {
-    const itemId = typeof args.item_id === "string" ? args.item_id : ""
-    const action = typeof args.action === "string" ? args.action : ""
-    return `discord_mark ${action || "?"} ${itemId}`.trim()
-  }
   if (name === "shell") {
     const cmd = typeof args.command === "string" ? args.command : ""
     return cmd ? `shell: ${normalizeSummaryText(cmd)}` : "shell"
@@ -1462,7 +1432,7 @@ function compactToolResult(content: string): string | null {
   const trimmed = content.trim()
   if (!trimmed) return null
   if (trimmed === WAIT_TOOL_RESULT) return null
-  // Compact discord_send / discord_mark ok JSON to a short ack
+  // Compact discord_send ok JSON to a short ack
   if (trimmed.startsWith("{")) {
     try {
       const parsed = JSON.parse(trimmed)

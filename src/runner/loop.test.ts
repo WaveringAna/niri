@@ -14,6 +14,8 @@ function makeState(): LoopState {
     memoryRecallCooldowns: {},
     memoryRecallTurn: 0,
     memoryRecallPending: false,
+    shutdownRequested: false,
+    turnInFlight: false,
   }
 }
 
@@ -126,6 +128,9 @@ test("applyLoopGuardNudge appends an in-band user nudge and saves", async () => 
       saveSession: async () => {
         saved = true
       },
+      saveShutdownSnapshot: async () => {},
+      shouldShutdown: () => false,
+      resolveShutdown: () => {},
     },
     "loop guard tripped after 120 turns",
   )
@@ -159,6 +164,9 @@ test("waitForNextEvent waits for and injects the next external event", async () 
     flushDeferredEvents: () => {},
     clearSession: async () => {},
     saveSession: async () => {},
+    saveShutdownSnapshot: async () => {},
+    shouldShutdown: () => false,
+    resolveShutdown: () => {},
   })
 
   assert.deepEqual(calls, ["wait", "inject:still here"])

@@ -48,7 +48,7 @@ async function main() {
   async function gracefulShutdown(sig: string) {
     if (shuttingDown) return  // ignore duplicate signals
     shuttingDown = true
-    console.log(`\n[niri] ${sig} received, asking niri to journal and rest...`)
+    console.log(`\n[niri] ${sig} received, saving session snapshot...`)
 
     const timeout = new Promise<void>((resolve) =>
       setTimeout(() => { console.log("[niri] shutdown timed out, forcing exit"); resolve() }, 60_000)

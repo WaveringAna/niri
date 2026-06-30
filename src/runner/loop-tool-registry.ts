@@ -6,7 +6,6 @@ import {
   listDiscordBackread,
   listDiscordChannels,
   listDiscordInbox,
-  markDiscordItem,
   scanDiscordChannels,
   sendDiscordMessage,
   setDiscordChannelNote,
@@ -376,32 +375,6 @@ export function buildToolHandlers(): Record<string, ToolHandler> {
             null,
             2,
           ),
-      }),
-
-    discord_mark: (ctx) =>
-      runStandardTool(ctx, {
-        name: "discord_mark",
-        logArgKeys: ["item_id", "status", "action"] as const,
-        runArgKeys: ["item_id", "status", "note", "action"] as const,
-        run: async (item_id, status, note, action) => {
-          markDiscordItem(
-            item_id as string,
-            status as "pending" | "seen" | "acted" | "ignored",
-            (note as string | undefined) ?? "",
-            (action as "none" | "replied" | "messaged" | "dismissed" | "noted" | undefined) ?? "none",
-          )
-          return JSON.stringify(
-            {
-              ok: true,
-              item_id,
-              status,
-              action: action ?? "none",
-              note: note ?? "",
-            },
-            null,
-            2,
-          )
-        },
       }),
 
     discord_send: (ctx) => {

@@ -11,10 +11,12 @@ import {
   isImageParseError,
   isQuotaExhaustedError,
   isTransientTransportError,
+  loadRestSnapshot,
   primaryFailoverStatus,
   recordPrimaryQuotaFailover,
   restForestFromMessages,
   sanitizeMessages,
+  saveRestSnapshot,
   scrubImagesFromConversation,
   shouldFallback,
   shouldRetryProvider,
@@ -22,6 +24,7 @@ import {
 } from "./util"
 
 const PRIMARY_FAILOVER_FILE = new URL("../../primary-failover.json", import.meta.url)
+const REST_SNAPSHOT_FILE = new URL("../../rest-snapshot.json", import.meta.url)
 
 type AssistantMessageWithReasoning = OpenAI.Chat.ChatCompletionAssistantMessageParam & {
   reasoning_content?: string
@@ -42,6 +45,25 @@ async function withPreservedPrimaryFailoverFile(fn: () => Promise<void>): Promis
     await clearPrimaryFailover()
     if (original !== null) {
       await fs.writeFile(PRIMARY_FAILOVER_FILE, original, "utf-8")
+    }
+  }
+}
+
+async function withPreservedRestSnapshotFile(fn: () => Promise<void>): Promise<void> {
+  let original: string | null = null
+  try {
+    original = await fs.readFile(REST_SNAPSHOT_FILE, "utf-8")
+  } catch {
+    original = null
+  }
+
+  try {
+    await fs.unlink(REST_SNAPSHOT_FILE).catch(() => {})
+    await fn()
+  } finally {
+    await fs.unlink(REST_SNAPSHOT_FILE).catch(() => {})
+    if (original !== null) {
+      await fs.writeFile(REST_SNAPSHOT_FILE, original, "utf-8")
     }
   }
 }
@@ -132,6 +154,25 @@ test("recordPrimaryQuotaFailover sets a daily primary retry cooldown", async () 
     const atRetry = await primaryFailoverStatus(nowMs + PRIMARY_QUOTA_RETRY_MS)
     assert.equal(atRetry.active, false)
     assert.equal(atRetry.remainingMs, 0)
+  })
+})
+
+test("loadRestSnapshot keeps the snapshot available for later boots", async () => {
+  await withPreservedRestSnapshotFile(async () => {
+    const messages: Message[] = [
+      { role: "system", content: "soul" },
+      { role: "user", content: "[context summary v1]\nThread: persistence\n- held over from rest" },
+    ]
+
+    await saveRestSnapshot(messages, "still here")
+
+    const first = await loadRestSnapshot()
+    const second = await loadRestSnapshot()
+    const raw = await fs.readFile(REST_SNAPSHOT_FILE, "utf-8")
+
+    assert.equal(first?.note, "still here")
+    assert.equal(second?.note, "still here")
+    assert.match(raw, /held over from rest/)
   })
 })
 

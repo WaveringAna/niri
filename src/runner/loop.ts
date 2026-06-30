@@ -224,7 +224,13 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
     if (preCompacted) await hooks.saveSession()
 
     const turnStart = state.conversation.length
-    const outcome = await processAssistantTurn(convId, state, hooks)
+    state.turnInFlight = true
+    let outcome: CycleOutcome
+    try {
+      outcome = await processAssistantTurn(convId, state, hooks)
+    } finally {
+      state.turnInFlight = false
+    }
     turnCount += 1
 
     const turnMessages = state.conversation.slice(turnStart)
@@ -251,6 +257,11 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
     }
 
     if (outcome === CycleOutcome.Rest) return "rest"
+    if (hooks.shouldShutdown()) {
+      await hooks.saveShutdownSnapshot()
+      hooks.resolveShutdown()
+      return "rest"
+    }
     if (outcome === CycleOutcome.NoTools) {
       if (discordSendNudged) continue
       await hooks.saveSession()

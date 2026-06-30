@@ -69,6 +69,8 @@ test("content-filter recovery redacts discord body but keeps routing context", (
     memoryRecallCooldowns: {},
     memoryRecallTurn: 1,
     memoryRecallPending: true,
+    shutdownRequested: false,
+    turnInFlight: false,
   }
 
   const result = __completionTest.quarantineLatestIncomingForContentFilter(state)

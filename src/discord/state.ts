@@ -407,7 +407,11 @@ export function buildDiscordBatchDigest(params?: {
   }
 
   lines.push("")
-  lines.push("you can reply if useful via discord_send using source_item_id from the target message, or choose not to reply. mark decisions with discord_mark when you handle pending items.")
+  lines.push("you can reply if useful via discord_send using source_item_id from the target message, or choose not to reply.")
+
+  for (const row of pendingPreview) {
+    updateInboxItem(row.item_id, "seen", "noted", "auto-seen after inclusion in Discord batch context")
+  }
 
   setDiscordMeta("discord_batch_last_dispatched_at", nowIso)
 

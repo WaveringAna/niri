@@ -1,14 +1,15 @@
 import { buildBootstrap } from "../bootstrap"
+import { markDiscordItem } from "../discord/state"
 import { endConversation, logMessage, startConversation } from "../db"
 import { emit } from "../stream"
 import { runLoop } from "./loop"
 import { setRunnerPresence } from "./presence"
 import type { RunnerStateInternal } from "./types"
-import { clearSession, consumeRestSnapshot, loadSession, saveSession } from "./util"
+import { clearSession, loadRestSnapshot, loadSession, saveRestSnapshot, saveSession } from "./util"
 import type { UserMessage } from "../types"
 
 let eventResolvers: Array<(event: UserMessage) => void> = []
-let shutdownResolve: (() => void) | null = null
+let shutdownResolvers: Array<() => void> = []
 const PROCESS_STARTED_AT = new Date().toISOString()
 
 const state: RunnerStateInternal = {
@@ -21,6 +22,8 @@ const state: RunnerStateInternal = {
   memoryRecallCooldowns: {},
   memoryRecallTurn: 0,
   memoryRecallPending: false,
+  shutdownRequested: false,
+  turnInFlight: false,
   deferredEvents: [],
 }
 
@@ -126,28 +129,35 @@ export function enqueueEvent(event: UserMessage, options: EnqueueOptions = {}): 
 }
 
 /**
- * Requests graceful shutdown by injecting a final chat event and waiting for rest.
+ * Persists the active runner state for a process shutdown.
  *
  * Resolves immediately if no session is currently running.
  *
- * @returns A promise that resolves when shutdown handling has completed.
+ * @returns A promise that resolves when shutdown persistence has completed.
  */
-export function shutdown(): Promise<void> {
-  if (!state.running) return Promise.resolve()
+export async function shutdown(): Promise<void> {
+  if (!state.running || state.conversation.length === 0) return
 
-  return new Promise<void>((resolve) => {
-    if (!state.running) {
-      resolve()
-      return
-    }
-    shutdownResolve = resolve
-    deliverEvent({
-      source: "chat",
-      content: "hey, the harness is shutting down. please journal this session and rest 💙",
-      triggeredAt: new Date().toISOString(),
-      raw: {},
+  state.shutdownRequested = true
+  if (state.turnInFlight || state.toolInFlight) {
+    await new Promise<void>((resolve) => {
+      shutdownResolvers.push(resolve)
     })
-  })
+    return
+  }
+
+  await saveRuntimeSnapshot()
+}
+
+function resolveShutdown(): void {
+  const resolvers = shutdownResolvers
+  shutdownResolvers = []
+  for (const resolve of resolvers) resolve()
+}
+
+async function saveRuntimeSnapshot(): Promise<void> {
+  await saveSession(state.conversation)
+  await saveRestSnapshot(state.conversation, "runtime checkpoint")
 }
 
 /** Wait until the next event arrives (or return immediately if one is pending). */
@@ -191,6 +201,20 @@ function formatIncomingEvent(event: UserMessage): string {
   return `[incoming — ${event.source}]\n\n${event.content}`
 }
 
+function autoSeeDiscordEvent(event: UserMessage): void {
+  if (event.source !== "discord") return
+
+  const match = event.content.match(/^source_item_id:\s*(\S+)/m)
+  const itemId = match?.[1]?.trim()
+  if (!itemId) return
+
+  try {
+    markDiscordItem(itemId, "seen", "auto-seen after injection into runner context", "noted")
+  } catch (err) {
+    console.warn(`[runner] failed to auto-see Discord item ${itemId}: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
 function emitUserEvent(event: UserMessage): void {
   emit({
     type: "user",
@@ -202,6 +226,7 @@ function emitUserEvent(event: UserMessage): void {
 }
 
 function injectIncomingEvent(convId: number, event: UserMessage): void {
+  autoSeeDiscordEvent(event)
   const incomingMessage = formatIncomingEvent(event)
   state.conversation.push({
     role: "user",
@@ -240,12 +265,14 @@ export async function wake(event: UserMessage): Promise<void> {
   const saved = await loadSession()
   if (saved) {
     state.conversation = saved
+    autoSeeDiscordEvent(event)
     state.conversation.push({
       role: "user",
       content: `[harness restarted — ${event.source} @ ${event.triggeredAt}]\n\n${event.content}`,
     })
   } else {
-    state.conversation = await buildBootstrap(event, await consumeRestSnapshot())
+    autoSeeDiscordEvent(event)
+    state.conversation = await buildBootstrap(event, await loadRestSnapshot())
   }
 
   const convId = startConversation(event.source, event.triggeredAt)
@@ -265,7 +292,10 @@ export async function wake(event: UserMessage): Promise<void> {
       injectIncomingEvent,
       flushDeferredEvents,
       clearSession,
-      saveSession: async () => saveSession(state.conversation),
+      saveSession: saveRuntimeSnapshot,
+      saveShutdownSnapshot: saveRuntimeSnapshot,
+      shouldShutdown: () => state.shutdownRequested,
+      resolveShutdown,
     })
     if (exit === "rest") setRunnerPresence("resting")
   } catch (err) {
@@ -273,7 +303,7 @@ export async function wake(event: UserMessage): Promise<void> {
     console.error(`[runner] loop aborted: ${message}`)
     if (err instanceof Error && err.stack) console.error(err.stack)
     try {
-      await saveSession(state.conversation)
+      await saveRuntimeSnapshot()
     } catch (saveErr) {
       console.warn(`[runner] failed to persist session after abort: ${saveErr instanceof Error ? saveErr.message : String(saveErr)}`)
     }
@@ -285,13 +315,14 @@ export async function wake(event: UserMessage): Promise<void> {
     state.memoryRecallCooldowns = {}
     state.memoryRecallTurn = 0
     state.memoryRecallPending = false
+    state.shutdownRequested = false
+    state.turnInFlight = false
     flushDeferredEvents()
     state.deferredEvents = []
     eventResolvers = []
+    resolveShutdown()
     setRunnerPresence("resting")
     console.log("[runner] niri is resting")
-    shutdownResolve?.()
-    shutdownResolve = null
 
     if (state.pendingInputs.length > 0) {
       const next = state.pendingInputs.shift()!

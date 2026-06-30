@@ -17,6 +17,10 @@ export interface LoopState {
    * doesn't flood context while the assistant works through a single turn.
    */
   memoryRecallPending: boolean
+  /** True after process shutdown has requested the loop to stop at a checkpoint. */
+  shutdownRequested: boolean
+  /** True while an assistant/tool turn is actively mutating conversation state. */
+  turnInFlight: boolean
 }
 
 /** Lifecycle hooks injected by the runner orchestrator into the loop. */
@@ -33,10 +37,18 @@ export interface LoopHooks {
   clearSession: () => Promise<void>
   /** Persists the current in-memory session state. */
   saveSession: () => Promise<void>
+  /** Persists both resumable session and reusable rest snapshot state. */
+  saveShutdownSnapshot: () => Promise<void>
+  /** Returns whether process shutdown requested the loop to stop. */
+  shouldShutdown: () => boolean
+  /** Resolves pending shutdown waiters after the loop has persisted state. */
+  resolveShutdown: () => void
 }
 
 /** Internal runtime state for the runner service. */
 export interface RunnerStateInternal extends RunnerState {
   toolInFlight: boolean
+  shutdownRequested: boolean
+  turnInFlight: boolean
   deferredEvents: Array<{ event: UserMessage; priority: boolean }>
 }
