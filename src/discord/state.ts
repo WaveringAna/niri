@@ -19,6 +19,7 @@ import {
   parseMessageRecord,
   type DiscordObject,
 } from "./parse"
+import { inactiveCooldownChannelIds } from "./cooldown"
 import {
   autoDemoteStalePendingItems,
   buildReplyTargetContextMap,
@@ -71,6 +72,7 @@ export type DiscordIngestResult = {
   stored: boolean
   isNew: boolean
   messageId?: string
+  channelId?: string
   itemId?: string
   bucket?: "dm" | "mention"
   isFromBot?: boolean
@@ -197,6 +199,7 @@ export function ingestDiscordEvent(payload: unknown, options?: { botUserId?: str
       stored: true,
       isNew,
       messageId: record.messageId,
+      channelId: record.channelId,
       itemId: record.messageId,
       bucket,
       isFromBot: record.isFromBot,
@@ -208,6 +211,7 @@ export function ingestDiscordEvent(payload: unknown, options?: { botUserId?: str
     stored: true,
     isNew,
     messageId: record.messageId,
+    channelId: record.channelId,
     isFromBot: record.isFromBot,
     isFromSelf: record.isFromSelf,
     ...(!record.isDm && record.mentionsBot && !isConfiguredDiscordChannel(record.channelId)
@@ -350,7 +354,11 @@ export function buildDiscordBatchDigest(params?: {
     : ""
   const botUserId = process.env.DISCORD_BOT_USER_ID?.trim() ?? ""
 
-  autoDemoteStalePendingItems(autoSeenMinutes)
+  // Cooldown channels outside their active window: spare their pending items
+  // from both the stale-demote and this digest, so they resurface when active.
+  const inactiveChannelIds = inactiveCooldownChannelIds()
+
+  autoDemoteStalePendingItems(autoSeenMinutes, inactiveChannelIds)
   repairDiscordMessageChannelFlags()
 
   const from =
@@ -370,8 +378,22 @@ export function buildDiscordBatchDigest(params?: {
 
   const pendingPreview = queryBatchPendingPreview({ ...queryOpts, limit: previewLimit })
 
-  const replyContextByMessageId = buildReplyTargetContextMap([...recentMessages, ...pendingPreview])
-  const hasImages = [...recentMessages, ...pendingPreview].some(
+  // Cooldown channels outside their active window are dropped from this digest
+  // and left as `pending` so they resurface once the window opens. The inactive
+  // set was computed above (before the stale-demote) and reused here.
+  const visibleRecentMessages = inactiveChannelIds.length
+    ? recentMessages.filter((row) => !inactiveChannelIds.includes(row.channel_id))
+    : recentMessages
+  const visiblePendingPreview = inactiveChannelIds.length
+    ? pendingPreview.filter((row) => !inactiveChannelIds.includes(row.channel_id))
+    : pendingPreview
+
+  // If cooldown filtering removed everything, skip this batch (leave items
+  // pending) rather than waking the agent with an empty digest.
+  if (visibleRecentMessages.length === 0 && visiblePendingPreview.length === 0) return null
+
+  const replyContextByMessageId = buildReplyTargetContextMap([...visibleRecentMessages, ...visiblePendingPreview])
+  const hasImages = [...visibleRecentMessages, ...visiblePendingPreview].some(
     (row) => extractImageAttachmentsFromRawJson(row.raw_json).length > 0,
   )
 
@@ -385,7 +407,7 @@ export function buildDiscordBatchDigest(params?: {
     "recent messages:",
   ]
 
-  for (const row of recentMessages) {
+  for (const row of visibleRecentMessages) {
     const label = channelLabel(row)
     const pronounsSuffix = row.pronouns ? ` (${row.pronouns})` : ""
     const author = row.author_username ? `@${row.author_username}${pronounsSuffix}` : "@unknown"
@@ -400,10 +422,10 @@ export function buildDiscordBatchDigest(params?: {
 
   lines.push("")
   lines.push("pending preview:")
-  if (pendingPreview.length === 0) {
+  if (visiblePendingPreview.length === 0) {
     lines.push("- (none)")
   } else {
-    for (const row of pendingPreview) {
+    for (const row of visiblePendingPreview) {
       const label = channelLabel(row)
       const pronounsSuffix = row.pronouns ? ` (${row.pronouns})` : ""
       const author = row.author_username ? `@${row.author_username}${pronounsSuffix}` : "@unknown"
@@ -416,7 +438,9 @@ export function buildDiscordBatchDigest(params?: {
   lines.push("")
   lines.push("you can reply if useful via discord_send using source_item_id from the target message, or choose not to reply.")
 
-  for (const row of pendingPreview) {
+  // Only mark items we actually surfaced as seen. Inactive cooldown-channel
+  // items are left `pending` so they reappear once their window opens.
+  for (const row of visiblePendingPreview) {
     updateInboxItem(row.item_id, "seen", "noted", "auto-seen after inclusion in Discord batch context")
   }
 

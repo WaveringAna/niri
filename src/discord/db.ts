@@ -195,15 +195,27 @@ export function ensureConfiguredChannelsMaterialized(channelIds?: string[] | str
  * Auto-demotes stale pending inbox items to `"seen"` after a timeout.
  *
  * @param staleMinutes - Minutes after which pending items are demoted.
- * @returns Number of demoted items.
+ * @param excludeChannelIds - Channel ids whose pending items are spared (e.g.
+ *   cooldown channels outside their active window, so they survive until then).
+ * @returns Number of demoted rows.
  */
-export function autoDemoteStalePendingItems(staleMinutes: number): number {
+export function autoDemoteStalePendingItems(staleMinutes: number, excludeChannelIds?: string[]): number {
   if (staleMinutes <= 0) return 0
 
   const db = getDb()
   const nowIso = new Date().toISOString()
   const cutoffIso = new Date(Date.now() - staleMinutes * 60_000).toISOString()
   const note = `auto-demoted after ${staleMinutes}m pending timeout`
+
+  const exclude = (excludeChannelIds ?? []).filter(Boolean)
+  const excludeClause =
+    exclude.length > 0
+      ? `and i.item_id not in (
+           select im.message_id from discord_items im
+           join discord_messages dm on dm.message_id = im.message_id
+           where dm.channel_id in (${exclude.map(() => "?").join(", ")})
+         )`
+      : ""
 
   const result = db.prepare(
     `update discord_items
@@ -213,8 +225,9 @@ export function autoDemoteStalePendingItems(staleMinutes: number): number {
          last_decision_at = ?,
          last_seen_at = ?
      where status = 'pending'
-       and first_seen_at <= ?`,
-  ).run(note, nowIso, nowIso, cutoffIso)
+       and first_seen_at <= ?
+       ${excludeClause}`,
+  ).run(note, nowIso, nowIso, cutoffIso, ...exclude)
 
   return Number(result.changes ?? 0)
 }
