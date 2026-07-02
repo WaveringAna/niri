@@ -176,6 +176,20 @@ export function ingestDiscordEvent(payload: unknown, options?: { botUserId?: str
     return { stored: false, isNew: false, reason: "payload is missing message/channel identity" }
   }
 
+  if (record.isDm && !record.isFromSelf) {
+    const whitelist = process.env.DISCORD_DM_WHITELIST
+    if (whitelist && whitelist.trim()) {
+      const allowedIds = whitelist.split(",").map((id) => id.trim()).filter(Boolean)
+      if (!record.authorId || !allowedIds.includes(record.authorId)) {
+        return {
+          stored: false,
+          isNew: false,
+          reason: "ignored DM: sender is not in DISCORD_DM_WHITELIST",
+        }
+      }
+    }
+  }
+
   const isNew = !messageExists(record.messageId)
 
   const channelRecord = parseChannelRecord(payload, {
