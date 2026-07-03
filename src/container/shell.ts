@@ -266,10 +266,28 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
   return new Promise((resolve, reject) => {
     let startWriteTimer: ReturnType<typeof setTimeout> | null = null
     let timer: ReturnType<typeof setTimeout> | null = null
+    let commandWritten = false
+
+    const writeCommandAndDoneSentinel = (): void => {
+      if (commandWritten || settled) return
+      commandWritten = true
+      session.write(
+        [
+          groupedCommand,
+          "stty -echo 2>/dev/null",
+          // Keep unterminated command output from sharing a line with the done
+          // sentinel. The captured body is trimEnd()'d, so this is not visible.
+          `printf '\\n%s\\n' "$__niri_done"`,
+          "",
+        ].join("\n"),
+      )
+    }
+
     const dataDisposable = session.onData((chunk: string) => {
       raw += chunk
       const cleaned = cleanOutput(raw)
       const startLine = findSentinelOutput(cleaned, startSentinel)
+      if (startLine) writeCommandAndDoneSentinel()
       const endLine = startLine ? findSentinelOutput(cleaned, endSentinel, startLine.nextLineStart) : null
       if (startLine && endLine) {
         if (settled) return
@@ -332,9 +350,6 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
           `__niri_start=${shellQuote(startSentinel)}`,
           `__niri_done=${shellQuote(endSentinel)}`,
           `printf '%s\\n' "$__niri_start"`,
-          groupedCommand,
-          "stty -echo 2>/dev/null",
-          `printf '%s\\n' "$__niri_done"`,
           "",
         ].join("\n"),
       )

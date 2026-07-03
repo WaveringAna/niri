@@ -360,17 +360,18 @@ export function buildDiscordBatchDigest(params?: {
     Number.parseInt(process.env.DISCORD_PENDING_AUTO_SEEN_MINUTES ?? "10", 10) || 10,
   )
   const configuredIds = parseChannelIds()
-  const configuredPlaceholders = configuredIds.map(() => "?").join(", ")
+  // Cooldown channels outside their active window: spare their pending items
+  // from both the stale-demote and this digest, so they resurface when active.
+  const inactiveChannelIds = inactiveCooldownChannelIds()
+  const activeConfiguredIds =
+    inactiveChannelIds.length > 0 ? configuredIds.filter((id) => !inactiveChannelIds.includes(id)) : configuredIds
+  const configuredPlaceholders = activeConfiguredIds.map(() => "?").join(", ")
   const channelScopeClause = batchOnlyConfigured
-    ? configuredIds.length > 0
+    ? activeConfiguredIds.length > 0
       ? `and (m.is_dm = 1 or m.channel_id in (${configuredPlaceholders}))`
       : "and m.is_dm = 1"
     : ""
   const botUserId = process.env.DISCORD_BOT_USER_ID?.trim() ?? ""
-
-  // Cooldown channels outside their active window: spare their pending items
-  // from both the stale-demote and this digest, so they resurface when active.
-  const inactiveChannelIds = inactiveCooldownChannelIds()
 
   autoDemoteStalePendingItems(autoSeenMinutes, inactiveChannelIds)
   repairDiscordMessageChannelFlags()
@@ -379,7 +380,7 @@ export function buildDiscordBatchDigest(params?: {
     getDiscordMeta("discord_batch_last_dispatched_at") ??
     new Date(now.getTime() - intervalMs).toISOString()
 
-  const queryOpts = { botUserId, from, configuredIds, channelScopeClause }
+  const queryOpts = { botUserId, from, configuredIds: activeConfiguredIds, channelScopeClause }
 
   const messageRows = queryBatchMessages({ ...queryOpts, limit: maxMessages + 1 })
 
@@ -454,11 +455,17 @@ export function buildDiscordBatchDigest(params?: {
 
   // Only mark items we actually surfaced as seen. Inactive cooldown-channel
   // items are left `pending` so they reappear once their window opens.
+  for (const row of visibleRecentMessages) {
+    if (row.item_id) {
+      updateInboxItem(row.item_id, "seen", "noted", "auto-seen after inclusion in Discord batch context")
+    }
+  }
   for (const row of visiblePendingPreview) {
     updateInboxItem(row.item_id, "seen", "noted", "auto-seen after inclusion in Discord batch context")
   }
 
-  setDiscordMeta("discord_batch_last_dispatched_at", nowIso)
+  const lastVisibleRecent = visibleRecentMessages.at(-1)
+  setDiscordMeta("discord_batch_last_dispatched_at", truncated && lastVisibleRecent ? lastVisibleRecent.first_seen_at : nowIso)
 
   return {
     content: lines.join("\n"),

@@ -210,8 +210,8 @@ export function autoDemoteStalePendingItems(staleMinutes: number, excludeChannel
   const exclude = (excludeChannelIds ?? []).filter(Boolean)
   const excludeClause =
     exclude.length > 0
-      ? `and i.item_id not in (
-           select im.message_id from discord_items im
+      ? `and item_id not in (
+           select im.item_id from discord_items im
            join discord_messages dm on dm.message_id = im.message_id
            where dm.channel_id in (${exclude.map(() => "?").join(", ")})
          )`
@@ -693,6 +693,7 @@ export function getChannelRow(channelId: string): Record<string, unknown> | unde
 // ── reads: batch digest ────────────────────────────────────────────────
 
 export type BatchMessageRow = {
+  item_id: string | null
   message_id: string
   channel_id: string
   guild_id: string | null
@@ -740,6 +741,7 @@ export function queryBatchMessages(opts: {
   return db
     .prepare(
       `select
+         i.item_id,
          m.message_id,
          m.channel_id,
          m.guild_id,

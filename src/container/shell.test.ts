@@ -39,11 +39,30 @@ test("shell wrapper sentinels stay internal after terminal echo is re-enabled", 
   assert.doesNotMatch(output, /(?:echo\s+)?_*NIRI_(?:START|DONE)_[0-9a-f]+_*/i)
 })
 
+test("shell wrapper does not echo sentinel setup into quoted command text", async () => {
+  await runCommand("stty echo < /dev/tty 2>/dev/null; printf 'echo-armed\\n'", 0, 5_000)
+
+  const text =
+    "kira!! you have LAND now. your own name on your own piece of the internet, bought with your own fund and your community's trust."
+  const quotedText = `'${text.replace(/'/g, "'\\''")}'`
+  const output = await runCommand(`printf '%s\\n' ${quotedText}`, 0, 5_000)
+
+  assert.equal(output, text)
+  assert.doesNotMatch(output, /__niri_(?:start|done)/i)
+  assert.doesNotMatch(output, /_*NIRI_(?:START|DONE)_[0-9a-f]+_*/i)
+})
+
 test("shell wrapper sentinels stay internal when shell tracing is enabled", async () => {
   const output = await runCommand("set -x; echo traced", 0, 5_000)
 
   assert.match(output, /\btraced\b/)
   assert.doesNotMatch(output, /_*NIRI_(?:START|DONE)_[0-9a-f]+_*/i)
+})
+
+test("commands without trailing newlines do not hide output behind completion sentinels", async () => {
+  assert.equal(await runCommand("printf 'bare-output'", 0, 5_000), "bare-output")
+  assert.equal(await runCommand("printf '%s' '12 34'", 0, 5_000), "12 34")
+  assert.equal(await runCommand("printf '%s' 'literal printf output'", 0, 5_000), "literal printf output")
 })
 
 test("commands that read stdin do not consume completion sentinels", async () => {
