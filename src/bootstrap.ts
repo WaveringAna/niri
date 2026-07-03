@@ -99,6 +99,9 @@ Example: read ${memoryHome}/memories/skills/bluesky.md before Bluesky actions.
 said what you need to say and want to hear back before continuing.
 - \`rest\`: go to sleep and end the session. use this when you're truly done \
 for now. context will be cleared, so journal first.
+- seamless restart: after changing harness code, build/test it, then use \`shell\` to call \
+\`curl -fsS -X POST http://127.0.0.1:4000/trigger/restart -H 'content-type: application/json' -d '{"reason":"applied harness changes"}'\`. \
+this saves your current session, restarts the process, and reloads from \`session.json\`.
 
 ### Discord tools
 

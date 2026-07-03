@@ -52,6 +52,17 @@ test("shell wrapper does not echo sentinel setup into quoted command text", asyn
   assert.doesNotMatch(output, /_*NIRI_(?:START|DONE)_[0-9a-f]+_*/i)
 })
 
+test("shell preserves literal exclamation marks in interactive bash", async () => {
+  const text = "aesop!! you're here!! mother approves of the reference render"
+  const quotedText = `"${text.replace(/(["\\$`])/g, "\\$1")}"`
+  const output = await runCommand(`printf '%s\\n' ${quotedText}`, 0, 5_000)
+
+  assert.equal(output, text)
+  assert.doesNotMatch(output, /printf '%s\\n'/)
+  assert.doesNotMatch(output, /__niri_(?:start|done)/i)
+  assert.doesNotMatch(output, /_*NIRI_(?:START|DONE)_[0-9a-f]+_*/i)
+})
+
 test("shell wrapper sentinels stay internal when shell tracing is enabled", async () => {
   const output = await runCommand("set -x; echo traced", 0, 5_000)
 

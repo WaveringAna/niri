@@ -59,7 +59,7 @@ function parseMetricTypes(raw: string | undefined): MetricListType[] | undefined
   return types.length ? types : undefined
 }
 
-export function createServer() {
+export function createServer(options: { requestRestart?: (reason?: string) => void } = {}) {
   const app = Fastify({ logger: false })
   let discordBatchInFlight = false
   let discordBatchTimer: ReturnType<typeof setInterval> | null = null
@@ -194,6 +194,17 @@ export function createServer() {
     return reply.send({ ok: true, agentId: AGENT_ID })
   })
 
+  app.post("/awp/restart", async (req, reply) => {
+    if (!options.requestRestart) {
+      return reply.code(503).send({ error: "restart is not available in this process" })
+    }
+
+    const body = req.body && typeof req.body === "object" ? (req.body as { reason?: unknown }) : {}
+    const reason = typeof body.reason === "string" ? body.reason : undefined
+    options.requestRestart(reason)
+    return reply.send({ ok: true, agentId: AGENT_ID, restarting: true })
+  })
+
   app.get("/awp/stream", (req, reply) => {
     const query = req.query as { after_seq?: string; limit?: string }
     const afterSeq = Math.max(0, Number.parseInt(query.after_seq ?? "0", 10) || 0)
@@ -313,6 +324,17 @@ export function createServer() {
     const event = fromWebhook(req.body)
     isRunning() ? enqueueEvent(event) : wake(event)
     return reply.send({ ok: true })
+  })
+
+  app.post("/trigger/restart", async (req, reply) => {
+    if (!options.requestRestart) {
+      return reply.code(503).send({ error: "restart is not available in this process" })
+    }
+
+    const body = req.body && typeof req.body === "object" ? (req.body as { reason?: unknown }) : {}
+    const reason = typeof body.reason === "string" ? body.reason : "webhook restart"
+    options.requestRestart(reason)
+    return reply.send({ ok: true, restarting: true })
   })
 
   app.post("/trigger/cron", async (req, reply) => {

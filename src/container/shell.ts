@@ -208,8 +208,8 @@ export async function openBash(): Promise<void> {
   })
 
   // Echo is now off. Clear the token prompt, source .bashrc, done.
-  await runRaw("export PS1='' PS2=''")
-  await runRaw("source ~/.bashrc 2>/dev/null || true; export PS1='' PS2=''")
+  await runRaw("set +H; export PS1='' PS2=''")
+  await runRaw("source ~/.bashrc 2>/dev/null || true; set +H; export PS1='' PS2=''")
   console.log(`[bash:${backend}] session ready`)
 }
 
@@ -347,6 +347,7 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
       if (settled) return
       session.write(
         [
+          "set +H",
           `__niri_start=${shellQuote(startSentinel)}`,
           `__niri_done=${shellQuote(endSentinel)}`,
           `printf '%s\\n' "$__niri_start"`,

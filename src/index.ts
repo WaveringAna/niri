@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process"
 import { openBash, closeBash } from "./container/index"
 import { createServer } from "./server"
 import { initDb } from "./db"
@@ -11,6 +12,19 @@ import { ensureSoulFilePlacement } from "./bootstrap"
 import { startAntigravityBridge, stopAntigravityBridge } from "./antigravity-bridge"
 
 const PORT = parseInt(process.env.PORT ?? "3000")
+const RESTART_COMMAND = process.env.NIRI_RESTART_COMMAND?.trim() || "npm run start"
+
+function spawnReplacementProcess(): void {
+  console.log(`[niri] spawning replacement: ${RESTART_COMMAND}`)
+  const child = spawn(RESTART_COMMAND, {
+    cwd: process.cwd(),
+    env: process.env,
+    shell: true,
+    detached: true,
+    stdio: "inherit",
+  })
+  child.unref()
+}
 
 async function main() {
   console.log("[niri] starting up...")
@@ -38,17 +52,29 @@ async function main() {
     console.warn("[discord gateway] startup failed:", err)
   }
 
-  const server = createServer()
+  let shuttingDown = false
+  let restartRequested = false
+  let restartReason: string | undefined
+
+  function requestRestart(reason?: string): void {
+    if (restartRequested || shuttingDown) return
+    restartRequested = true
+    restartReason = reason?.trim() || undefined
+    setTimeout(() => {
+      void gracefulShutdown("RESTART")
+    }, 50).unref?.()
+  }
+
+  const server = createServer({ requestRestart })
 
   await server.listen({ port: PORT, host: "0.0.0.0" })
   console.log(`[niri] listening on :${PORT}`)
 
-  let shuttingDown = false
-
   async function gracefulShutdown(sig: string) {
     if (shuttingDown) return  // ignore duplicate signals
     shuttingDown = true
-    console.log(`\n[niri] ${sig} received, saving session snapshot...`)
+    const detail = restartRequested && restartReason ? ` (${restartReason})` : ""
+    console.log(`\n[niri] ${sig} received${detail}, saving session snapshot...`)
 
     const timeout = new Promise<void>((resolve) =>
       setTimeout(() => { console.log("[niri] shutdown timed out, forcing exit"); resolve() }, 60_000)
@@ -61,6 +87,7 @@ async function main() {
     await server.close()
     await stopAntigravityBridge()
     closeBash()
+    if (restartRequested) spawnReplacementProcess()
     process.exit(0)
   }
 
