@@ -16,6 +16,18 @@ test("maps OpenAI chat history and tools to Codex Responses input", () => {
   assert.equal(mapped.input[2].type, "function_call_output")
 })
 
+test("maps chat content arrays to Codex Responses content types", () => {
+  const mapped = __codexBridgeTest.mapMessages([
+    { role: "user", content: [{ type: "text", text: "look" }, { type: "image_url", image_url: { url: "data:image/png;base64,AA==", detail: "high" } }] },
+    { role: "assistant", content: [{ type: "text", text: "seen" }] },
+  ])
+  assert.deepEqual(mapped.input[0].content, [
+    { type: "input_text", text: "look" },
+    { type: "input_image", image_url: "data:image/png;base64,AA==", detail: "high" },
+  ])
+  assert.deepEqual(mapped.input[1].content, [{ type: "output_text", text: "seen" }])
+})
+
 test("bridge uses Codex credentials and translates a completion", async () => {
   const dir = fs.mkdtempSync("/tmp/niri-codex-bridge-")
   const authPath = `${dir}/auth.json`

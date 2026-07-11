@@ -73,6 +73,25 @@ function mapModel(model: unknown): string {
   return String(model)
 }
 
+function mapMessageContent(role: "user" | "assistant", content: unknown): any[] {
+  const textType = role === "assistant" ? "output_text" : "input_text"
+  if (typeof content === "string") return [{ type: textType, text: content }]
+  if (!Array.isArray(content)) return [{ type: textType, text: JSON.stringify(content ?? "") }]
+  return content.map((part) => {
+    if (!part || typeof part !== "object") return { type: textType, text: String(part ?? "") }
+    if (part.type === "text") return { ...part, type: textType }
+    if (part.type === "image_url") {
+      const image = part.image_url
+      return {
+        type: "input_image",
+        image_url: typeof image === "string" ? image : image?.url,
+        ...(typeof image === "object" && image?.detail ? { detail: image.detail } : {}),
+      }
+    }
+    return part
+  })
+}
+
 function mapMessages(messages: any[]): { instructions?: string; input: any[] } {
   const instructions: string[] = []
   const input: any[] = []
@@ -86,10 +105,7 @@ function mapMessages(messages: any[]): { instructions?: string; input: any[] } {
       if (message.content) input.push({ role: "assistant", content: [{ type: "output_text", text: String(message.content) }] })
       for (const call of message.tool_calls) input.push({ type: "function_call", call_id: call.id, name: call.function?.name, arguments: call.function?.arguments || "{}" })
     } else if (role === "user" || role === "assistant") {
-      const content = typeof message.content === "string"
-        ? [{ type: role === "assistant" ? "output_text" : "input_text", text: message.content }]
-        : message.content
-      input.push({ role, content })
+      input.push({ role, content: mapMessageContent(role, message.content) })
     }
   }
   return { instructions: instructions.length ? instructions.join("\n\n") : undefined, input }
