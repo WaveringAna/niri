@@ -7,7 +7,7 @@ import Fastify, { type FastifyInstance } from "fastify"
 const CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
 const TOKEN_URL = "https://auth.openai.com/oauth/token"
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
-const DEFAULT_MODEL = process.env.CODEX_BRIDGE_MODEL?.trim() || "gpt-5.4"
+const DEFAULT_MODEL = process.env.CODEX_BRIDGE_MODEL?.trim() || "gpt-5.6-sol"
 const DEFAULT_REASONING_EFFORT = process.env.CODEX_BRIDGE_REASONING_EFFORT?.trim() || "low"
 
 type CodexAuth = {
