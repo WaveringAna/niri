@@ -11,6 +11,8 @@ apps/*/dist/
 session.json
 primary-failover.json
 rest-snapshot.json
+.niri-client/
+/data/
 
 # agent home — ignore everything except the example file
 home/*

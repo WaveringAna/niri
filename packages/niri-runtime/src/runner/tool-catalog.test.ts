@@ -1,0 +1,21 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+import { createNiriToolCatalog } from "./tool-catalog"
+
+test("Niri catalog keeps server tools separate from client capabilities", () => {
+  const names = createNiriToolCatalog({ discord: false }).map((tool) => tool.function.name)
+  assert.equal(names.includes("shell"), false)
+  assert.equal(names.includes("memory_search"), true)
+  assert.equal(names.includes("discord_send"), false)
+})
+
+test("Discord and client tools are independently gated", () => {
+  const names = createNiriToolCatalog({
+    clientCapabilities: ["read_file"],
+    workspace: { id: "client", root: "/client" },
+    discord: true,
+  }).map((tool) => tool.function.name)
+  assert.equal(names.includes("read_file"), true)
+  assert.equal(names.includes("shell"), false)
+  assert.equal(names.includes("discord_send"), true)
+})

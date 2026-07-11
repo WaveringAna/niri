@@ -1,0 +1,41 @@
+{
+  "name": "@mira/harness-client-node",
+  "version": "0.1.0",
+  "description": "Node.js shell, filesystem, image, and reconnecting transport host for remote AI harness tools.",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "dist",
+    "postinstall.mjs"
+  ],
+  "bin": {
+    "harness-tool-client": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "prebuild": "node ../../scripts/clean-dist.mjs",
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test 'src/**/*.test.ts'",
+    "postinstall": "node postinstall.mjs"
+  },
+  "dependencies": {
+    "@mira/harness-core": "0.1.0",
+    "@mira/harness-protocol": "0.1.0",
+    "node-pty": "^1.1.0"
+  },
+  "publishConfig": { "access": "public" },
+  "engines": { "node": ">=20" },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
+  }
+}

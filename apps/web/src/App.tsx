@@ -46,6 +46,12 @@ type WorkerStatus = {
   processStartedAt?: string
   uptimeMs?: number
   error?: string
+  client?: {
+    connected?: boolean
+    clientId?: string
+    capabilities?: string[]
+    workspace?: { root?: string }
+  }
 }
 
 type Compaction = {
@@ -87,15 +93,20 @@ type ChatLine = {
 }
 
 const PANEL_COOKIE = "niri_control_panels"
-const WORKER_EVENT_TYPES = [
-  "worker.hello",
-  "worker.heartbeat",
-  "runner.status",
-  "stream.event",
-  "conversation.started",
-  "conversation.message",
-  "conversation.ended",
-]
+const CONTROL_TOKEN_KEY = "niri_control_token"
+
+function readControlToken(): string {
+  const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""))
+  const token = fragment.get("token")?.trim()
+  if (token) {
+    sessionStorage.setItem(CONTROL_TOKEN_KEY, token)
+    history.replaceState(null, "", `${window.location.pathname}${window.location.search}`)
+    return token
+  }
+  return sessionStorage.getItem(CONTROL_TOKEN_KEY)?.trim() ?? ""
+}
+
+const CONTROL_TOKEN = readControlToken()
 
 function cookieValue(name: string): string | null {
   const prefix = `${name}=`
@@ -141,9 +152,7 @@ function readPanels(): Panel[] {
             baseUrl: cleanBaseUrl(panel.baseUrl),
           }))
       }
-    } catch {
-      // Ignore old or malformed cookies.
-    }
+    } catch {}
   }
 
   return [
@@ -164,6 +173,7 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       ...(init?.body ? { "content-type": "application/json" } : {}),
+      ...(CONTROL_TOKEN ? { authorization: `Bearer ${CONTROL_TOKEN}` } : {}),
       ...(init?.headers ?? {}),
     },
   })
@@ -174,6 +184,35 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error(message)
   }
   return data as T
+}
+
+async function consumeWorkerStream(url: string, signal: AbortSignal, onEvent: (event: WorkerEvent) => void): Promise<void> {
+  const res = await fetch(url, {
+    signal,
+    headers: CONTROL_TOKEN ? { authorization: `Bearer ${CONTROL_TOKEN}` } : {},
+  })
+  if (!res.ok || !res.body) throw new Error(res.ok ? "stream body missing" : `${res.status} ${res.statusText}`)
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) return
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n")
+    const blocks = buffer.split("\n\n")
+    buffer = blocks.pop() ?? ""
+    for (const block of blocks) {
+      const payload = block
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n")
+      if (!payload) continue
+      try {
+        onEvent(JSON.parse(payload) as WorkerEvent)
+      } catch {}
+    }
+  }
 }
 
 function eventPayloadObject(event: WorkerEvent): Record<string, unknown> {
@@ -450,6 +489,15 @@ function overviewStatusText(status: WorkerStatus | null): string {
   return "resting"
 }
 
+function clientStatusText(status: WorkerStatus | null): string {
+  const client = status?.client
+  if (!client) return "client status unavailable"
+  if (!client.connected) return "no tool client"
+  const label = client.clientId || "tool client"
+  const capabilityCount = client.capabilities?.length ?? 0
+  return `${label} attached${capabilityCount ? ` · ${capabilityCount} tools` : ""}`
+}
+
 function codeLanguage(text: string): string | undefined {
   const trimmed = text.trim()
   if (!trimmed) return undefined
@@ -631,7 +679,7 @@ export function App() {
   const [error, setError] = useState("")
   const [openCompaction, setOpenCompaction] = useState<string | null>(null)
   const [expandedTools, setExpandedTools] = useState<Set<string>>(() => new Set())
-  const streamRef = useRef<EventSource | null>(null)
+  const streamRef = useRef<AbortController | null>(null)
 
   const selected = useMemo(() => {
     if (!selectedKey) return null
@@ -711,33 +759,22 @@ export function App() {
 
   useEffect(() => {
     if (!selected) return
-    streamRef.current?.close()
-
-    const source = new EventSource(
-      urlFor(selected.panel, `/agents/${encodeURIComponent(selected.agent.id)}/stream?after_seq=${selected.agent.lastSeq}`),
+    streamRef.current?.abort()
+    const controller = new AbortController()
+    streamRef.current = controller
+    const streamUrl = urlFor(
+      selected.panel,
+      `/agents/${encodeURIComponent(selected.agent.id)}/stream?after_seq=${selected.agent.lastSeq}`,
     )
-    streamRef.current = source
-
-    const onWorkerEvent = (raw: MessageEvent) => {
-      try {
-        const event = JSON.parse(raw.data) as WorkerEvent
-        mergeEvents([event])
-        if (event.type === "metric.recorded") void loadSelected()
-      } catch {
-        // Ignore keepalives or malformed events.
-      }
-    }
-
-    for (const type of WORKER_EVENT_TYPES) {
-      source.addEventListener(type, onWorkerEvent as EventListener)
-    }
-    source.onerror = () => setError(`stream lost for ${selected.agent.name}`)
+    void consumeWorkerStream(streamUrl, controller.signal, (event) => {
+      mergeEvents([event])
+      if (event.type === "metric.recorded") void loadSelected()
+    }).catch((error) => {
+      if (!controller.signal.aborted) setError(`stream lost for ${selected.agent.name}: ${error instanceof Error ? error.message : String(error)}`)
+    })
 
     return () => {
-      for (const type of WORKER_EVENT_TYPES) {
-        source.removeEventListener(type, onWorkerEvent as EventListener)
-      }
-      source.close()
+      controller.abort()
     }
   }, [loadSelected, mergeEvents, selected])
 
@@ -887,6 +924,7 @@ export function App() {
               {overviewStatusText(status)}
               {status?.processStartedAt ? ` since ${formatTime(status.processStartedAt)}` : ""}
             </p>
+            <p className="quiet">{clientStatusText(status)}</p>
           </div>
           <div className="readout" aria-label="current token status">
             <span>{formatNumber(status?.contextSize)} ctx</span>

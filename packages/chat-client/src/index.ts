@@ -1,21 +1,6 @@
-export type StreamEvent =
-  | { type: "text"; text: string }
-  | { type: "user"; text: string; source: string; triggeredAt: string; clientId?: string }
-  | { type: "thinking"; text: string }
-  | { type: "tool"; name: string; args: Record<string, unknown>; result: string }
-  | {
-      type: "usage"
-      /** Prompt tokens reported by the runner provider. */
-      promptTokens?: number
-      /** Completion tokens reported by the runner provider. */
-      completionTokens?: number
-      /** Total tokens reported by the runner provider. */
-      totalTokens?: number
-      /** Runner-measured stream duration in milliseconds. */
-      elapsedMs?: number
-      /** Runner-computed completion throughput in tokens per second. */
-      tokensPerSecond?: number
-    }
+import type { StreamEvent } from "@niri/protocol"
+
+export type { StreamEvent } from "@niri/protocol"
 
 export type FetchLike = (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>
 
@@ -23,6 +8,8 @@ export interface CreateChatClientOptions {
   baseUrl: string
   fetchImpl?: FetchLike
   clientId?: string
+  agentId?: string
+  token?: string
 }
 
 export interface StreamOptions {
@@ -118,9 +105,7 @@ const parseError = async (res: Response): Promise<string> => {
   try {
     const data = (await res.json()) as { error?: unknown }
     if (typeof data.error === "string" && data.error.trim()) return data.error
-  } catch {
-    // ignore non-json errors
-  }
+  } catch {}
 
   return fallback || "request failed"
 }
@@ -136,12 +121,20 @@ export function createChatClient(options: CreateChatClientOptions): ChatClient {
   const fetchImpl = options.fetchImpl ?? fetch
   const baseUrl = normalizeUrl(options.baseUrl)
   const clientId = options.clientId
+  const agentId = options.agentId?.trim()
+  const authorization = options.token?.trim()
+  const headers = (json = false): HeadersInit => ({
+    ...(json ? { "content-type": "application/json" } : {}),
+    ...(authorization ? { authorization: `Bearer ${authorization}` } : {}),
+  })
   const url = (path: string) => `${baseUrl}${path}`
+  const agentUrl = (path: string) =>
+    agentId ? url(`/agents/${encodeURIComponent(agentId)}${path}`) : url(path)
 
   const send: ChatClient["send"] = async (content) => {
-    const res = await fetchImpl(url("/trigger/chat"), {
+    const res = await fetchImpl(agentUrl(agentId ? "/events" : "/trigger/chat"), {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: headers(true),
       body: JSON.stringify({ content, ...(clientId ? { clientId } : {}) }),
     })
 
@@ -153,7 +146,7 @@ export function createChatClient(options: CreateChatClientOptions): ChatClient {
   }
 
   const getStatus: ChatClient["getStatus"] = async () => {
-    const res = await fetchImpl(url("/status"))
+    const res = await fetchImpl(agentUrl("/status"), { headers: headers() })
     if (!res.ok) {
       throw new Error(await parseError(res))
     }
@@ -163,7 +156,7 @@ export function createChatClient(options: CreateChatClientOptions): ChatClient {
   }
 
   const stream: ChatClient["stream"] = async ({ signal, onEvent }) => {
-    const res = await fetchImpl(url("/chat/stream"), { signal })
+    const res = await fetchImpl(agentUrl(agentId ? "/stream" : "/chat/stream"), { signal, headers: headers() })
     if (!res.ok || !res.body) {
       throw new Error(res.ok ? "stream body missing" : await parseError(res))
     }
@@ -187,11 +180,11 @@ export function createChatClient(options: CreateChatClientOptions): ChatClient {
         if (!payload) continue
 
         try {
-          const event = toEvent(JSON.parse(payload))
+          const raw = JSON.parse(payload) as unknown
+          const envelope = raw && typeof raw === "object" ? (raw as { type?: unknown; payload?: unknown }) : null
+          const event = envelope?.type === "stream.event" ? toEvent(envelope.payload) : toEvent(raw)
           if (event) onEvent(event)
-        } catch {
-          // ignore malformed SSE data lines
-        }
+        } catch {}
       }
     }
   }
