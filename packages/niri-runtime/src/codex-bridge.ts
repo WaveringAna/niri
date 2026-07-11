@@ -9,6 +9,7 @@ const TOKEN_URL = "https://auth.openai.com/oauth/token"
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const DEFAULT_MODEL = process.env.CODEX_BRIDGE_MODEL?.trim() || "gpt-5.6-sol"
 const DEFAULT_REASONING_EFFORT = process.env.CODEX_BRIDGE_REASONING_EFFORT?.trim() || "low"
+const DEFAULT_BODY_LIMIT = 64 * 1024 * 1024
 
 type CodexAuth = {
   tokens?: { access_token?: string; refresh_token?: string; account_id?: string; id_token?: string }
@@ -134,7 +135,11 @@ function collectResult(events: any[]): { content: string; toolCalls: any[]; usag
 }
 
 export function createCodexBridgeServer(options: BridgeOptions = {}): FastifyInstance {
-  const app = Fastify({ logger: false })
+  const configuredBodyLimit = Number.parseInt(process.env.CODEX_BRIDGE_BODY_LIMIT_BYTES || "", 10)
+  const bodyLimit = Number.isSafeInteger(configuredBodyLimit) && configuredBodyLimit > 0
+    ? configuredBodyLimit
+    : DEFAULT_BODY_LIMIT
+  const app = Fastify({ logger: false, bodyLimit })
   const authPath = options.authPath || process.env.CODEX_AUTH_PATH?.trim() || path.join(os.homedir(), ".codex", "auth.json")
   const fetchImpl = options.fetchImpl || fetch
 

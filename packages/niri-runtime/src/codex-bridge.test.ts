@@ -43,3 +43,25 @@ test("bridge uses Codex credentials and translates a completion", async () => {
   assert.equal(sent.input[0].content[0].text, "hi")
   await app.close()
 })
+
+test("bridge accepts conversations larger than Fastify's default one megabyte limit", async () => {
+  const dir = fs.mkdtempSync("/tmp/niri-codex-bridge-large-")
+  const authPath = `${dir}/auth.json`
+  fs.writeFileSync(authPath, JSON.stringify({ tokens: { access_token: "header.payload.signature" } }))
+  let upstreamBytes = 0
+  const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+    upstreamBytes = Buffer.byteLength(String(init?.body))
+    const response = { id: "resp_large", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } }
+    const sse = `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok" })}\n\ndata: ${JSON.stringify({ type: "response.completed", response })}\n\ndata: [DONE]\n\n`
+    return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } })
+  }) as typeof fetch
+  const app = createCodexBridgeServer({ authPath, fetchImpl })
+  const response = await app.inject({
+    method: "POST",
+    url: "/v1/chat/completions",
+    payload: { model: "Codex", messages: [{ role: "user", content: "x".repeat(1_200_000) }] },
+  })
+  assert.equal(response.statusCode, 200)
+  assert.ok(upstreamBytes > 1_000_000)
+  await app.close()
+})
