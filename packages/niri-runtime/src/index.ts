@@ -9,6 +9,7 @@ import { startDiscordEmbeddingBackfill } from "./discord/search"
 import { setDiscordToolsAvailable } from "./discord/availability"
 import { ensureSoulFilePlacement } from "./bootstrap"
 import { startAntigravityBridge, stopAntigravityBridge } from "./antigravity-bridge"
+import { startCodexBridge, stopCodexBridge } from "./codex-bridge"
 
 const PORT = Number.parseInt(process.env.PORT ?? "3000", 10)
 const WORKER_HOST = process.env.NIRI_WORKER_HOST?.trim() || "127.0.0.1"
@@ -38,6 +39,7 @@ async function main() {
   initMetricsDb()
   try {
     await startAntigravityBridge()
+    await startCodexBridge()
   } catch (err) {
     console.error("[bridge] failed to start:", err)
   }
@@ -95,6 +97,7 @@ async function main() {
       setDiscordToolsAvailable(false)
       await server.close()
       await stopAntigravityBridge()
+      await stopCodexBridge()
     }
     const cleanupTimeout = new Promise<void>((resolve) =>
       setTimeout(() => { console.log("[niri] cleanup timed out, exiting anyway"); resolve() }, 10_000)

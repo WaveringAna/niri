@@ -111,3 +111,11 @@ test("Discord and Antigravity endpoints cannot overlap across agents", () => {
   assert.throws(() => assertNoDuplicateDiscordTokens(agents, {}), /share DISCORD_BOT_TOKEN/)
   assert.throws(() => assertNoDuplicateBridgePorts(agents, {}, 4300), /conflicts with worker b/)
 })
+
+test("Codex and Antigravity bridge ports cannot overlap", () => {
+  const agents = resolveLocalAgents([
+    { id: "a", port: 4301, env: { ANTIGRAVITY_BRIDGE_ENABLED: "true", ANTIGRAVITY_BRIDGE_PORT: "4400" } },
+    { id: "b", port: 4302, env: { CODEX_BRIDGE_ENABLED: "true", CODEX_BRIDGE_PORT: "4400" } },
+  ], options)
+  assert.throws(() => assertNoDuplicateBridgePorts(agents, {}, 4300), /a Antigravity and b Codex bridges share port 4400/)
+})

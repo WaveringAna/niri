@@ -225,17 +225,23 @@ export function assertNoDuplicateBridgePorts(
   const owners = new Map<number, string>()
   const workerPorts = new Map(agents.map((agent) => [agent.port, agent.id]))
   for (const agent of agents) {
-    const enabled = (agent.env.ANTIGRAVITY_BRIDGE_ENABLED ?? parentEnv.ANTIGRAVITY_BRIDGE_ENABLED)?.trim().toLowerCase() === "true"
-    if (!enabled) continue
-    const port = Number.parseInt(agent.env.ANTIGRAVITY_BRIDGE_PORT ?? parentEnv.ANTIGRAVITY_BRIDGE_PORT ?? "8000", 10)
-    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`invalid Antigravity bridge port for ${agent.id}`)
-    const workerOwner = workerPorts.get(port)
-    if (port === controlPort || workerOwner) {
-      throw new Error(`Antigravity bridge port ${port} conflicts with ${port === controlPort ? "the control plane" : `worker ${workerOwner}`}`)
+    for (const bridge of [
+      { name: "Antigravity", enabled: "ANTIGRAVITY_BRIDGE_ENABLED", port: "ANTIGRAVITY_BRIDGE_PORT", fallback: "8000" },
+      { name: "Codex", enabled: "CODEX_BRIDGE_ENABLED", port: "CODEX_BRIDGE_PORT", fallback: "8001" },
+    ] as const) {
+      const enabled = (agent.env[bridge.enabled] ?? parentEnv[bridge.enabled])?.trim().toLowerCase() === "true"
+      if (!enabled) continue
+      const port = Number.parseInt(agent.env[bridge.port] ?? parentEnv[bridge.port] ?? bridge.fallback, 10)
+      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`invalid ${bridge.name} bridge port for ${agent.id}`)
+      const workerOwner = workerPorts.get(port)
+      if (port === controlPort || workerOwner) {
+        throw new Error(`${bridge.name} bridge port ${port} conflicts with ${port === controlPort ? "the control plane" : `worker ${workerOwner}`}`)
+      }
+      const owner = `${agent.id} ${bridge.name}`
+      const prior = owners.get(port)
+      if (prior) throw new Error(`${prior} and ${owner} bridges share port ${port}`)
+      owners.set(port, owner)
     }
-    const prior = owners.get(port)
-    if (prior) throw new Error(`agents ${prior} and ${agent.id} share Antigravity bridge port ${port}`)
-    owners.set(port, agent.id)
   }
 }
 
