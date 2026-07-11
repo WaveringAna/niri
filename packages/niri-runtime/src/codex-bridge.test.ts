@@ -39,7 +39,7 @@ test("bridge uses Codex credentials and translates a completion", async () => {
   assert.equal(observed.url, "https://chatgpt.com/backend-api/codex/responses")
   assert.equal(new Headers(observed.init?.headers).get("chatgpt-account-id"), "acct_test")
   const sent = JSON.parse(String(observed.init?.body))
-  assert.equal(sent.model, "gpt-5.4")
+  assert.equal(sent.model, "gpt-5.6")
   assert.equal(sent.input[0].content[0].text, "hi")
   await app.close()
 })
