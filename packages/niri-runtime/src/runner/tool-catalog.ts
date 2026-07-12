@@ -53,27 +53,51 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
       ),
       functionTool(
         "memory_write",
-        "Append to or replace one Markdown file in this agent's server-owned memory directory.",
+        "Append content to or patch (replace exact substring) within one Markdown file in this agent's server-owned memory directory.",
         {
           type: "object",
           additionalProperties: false,
           properties: {
             path: { type: "string", description: "Relative path such as journal/2026-07-09.md or core.md." },
-            content: { type: "string" },
-            mode: { type: "string", enum: ["append", "replace"] },
+            content: { type: "string", description: "The content to append or use as replacement text." },
+            mode: { type: "string", enum: ["append", "patch"] },
+            target: { type: "string", description: "Only required when mode is 'patch'. The exact text sequence in the file to be replaced." },
           },
           required: ["path", "content", "mode"],
         },
       ),
       functionTool(
         "soul_write",
-        "Replace this agent's server-owned soul.md.",
+        "Append content to or patch (replace exact substring) this agent's server-owned soul.md.",
         {
           type: "object",
           additionalProperties: false,
-          properties: { content: { type: "string" } },
-          required: ["content"],
+          properties: {
+            content: { type: "string", description: "The content to append or use as replacement text." },
+            mode: { type: "string", enum: ["append", "patch"] },
+            target: { type: "string", description: "Only required when mode is 'patch'. The exact text sequence in the file to be replaced." },
+          },
+          required: ["content", "mode"],
         },
+      ),
+      functionTool(
+        "memory_read",
+        "Read a Markdown file in this agent's server-owned memory directory, with optional inclusive line bounds.",
+        {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            path: { type: "string", description: "Relative path such as journal/2026-07-09.md or core.md." },
+            start_line: { type: "integer", minimum: 1 },
+            end_line: { type: "integer", minimum: 1 },
+          },
+          required: ["path"],
+        },
+      ),
+      functionTool(
+        "memory_ls",
+        "List all Markdown files under the server-owned memory directory recursively.",
+        emptyParameters,
       ),
     )
   }

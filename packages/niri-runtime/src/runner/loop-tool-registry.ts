@@ -1,6 +1,6 @@
 import OpenAI from "openai"
 import { AGENT_ID } from "../agent-config"
-import { writeMemory, writeSoul } from "../agent-state-tools"
+import { writeMemory, writeSoul, readMemory, listMemory } from "../agent-state-tools"
 import { logMessage } from "../db"
 import {
   listDiscordBackread,
@@ -53,11 +53,37 @@ function validateClientImage(image: { mime: string; bytes: number; dataUrl: stri
   if (!validSignature || !validSignature(data)) throw new Error(`client image bytes do not match ${image.mime}`)
 }
 
+function hasAlreadyBeenNudged(conversation: Message[], tool: string, filePath: string): boolean {
+  for (let i = conversation.length - 1; i >= 0; i--) {
+    const msg = conversation[i]
+    if (msg.role === "tool") {
+      const content = typeof msg.content === "string" ? msg.content : ""
+      if (
+        content.startsWith("Nudge: You are accessing a memory/soul path") &&
+        content.includes(tool) &&
+        content.includes(filePath)
+      ) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
 async function executeClientText(
   hooks: Pick<LoopHooks, "clientTools">,
   ctx: Parameters<ToolHandler>[0],
   tool: "shell" | "read_file" | "edit_file",
 ): Promise<string> {
+  if (tool === "read_file" || tool === "edit_file") {
+    const filePath = String(ctx.args.path ?? "").toLowerCase()
+    if (filePath.includes("soul.md") || filePath.includes("memories/") || filePath.includes("memories\\")) {
+      if (!hasAlreadyBeenNudged(ctx.state.conversation, tool, filePath)) {
+        return `Nudge: You are accessing a memory/soul path ('${ctx.args.path}') using '${tool}'. If you are trying to view or edit your memories/soul, it is recommended to use the specialized memory tools ('memory_read', 'memory_write', 'soul_write') instead. If you have a specific reason to use '${tool}' for this path, repeat the call to proceed.`
+      }
+    }
+  }
+
   const result = await hooks.clientTools.execute({
     agentId: AGENT_ID,
     tool,
@@ -325,8 +351,8 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
       runStandardTool(ctx, {
         name: "memory_write",
         logArgKeys: ["path", "mode"] as const,
-        runArgKeys: ["path", "content", "mode"] as const,
-        run: (filePath, content, mode) => writeMemory(filePath, content, mode),
+        runArgKeys: ["path", "content", "mode", "target"] as const,
+        run: (filePath, content, mode, target) => writeMemory(filePath, content, mode, target),
         emitArgKeys: ["path", "mode"] as const,
         previewChars: 0,
       }),
@@ -334,9 +360,29 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
     soul_write: (ctx) =>
       runStandardTool(ctx, {
         name: "soul_write",
+        logArgKeys: ["mode"] as const,
+        runArgKeys: ["content", "mode", "target"] as const,
+        run: (content, mode, target) => writeSoul(content, mode, target),
+        emitArgKeys: ["mode"] as const,
+        previewChars: 0,
+      }),
+
+    memory_read: (ctx) =>
+      runStandardTool(ctx, {
+        name: "memory_read",
+        logArgKeys: ["path"] as const,
+        runArgKeys: ["path", "start_line", "end_line"] as const,
+        run: (filePath, startLine, endLine) => readMemory(filePath, startLine, endLine),
+        emitArgKeys: ["path"] as const,
+        previewChars: 0,
+      }),
+
+    memory_ls: (ctx) =>
+      runStandardTool(ctx, {
+        name: "memory_ls",
         logArgKeys: [] as const,
-        runArgKeys: ["content"] as const,
-        run: (content) => writeSoul(content),
+        runArgKeys: [] as const,
+        run: () => listMemory(),
         previewChars: 0,
       }),
 

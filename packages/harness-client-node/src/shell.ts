@@ -213,7 +213,7 @@ export async function openBash(): Promise<void> {
     }, 25)
   })
 
-  await runRaw("set +H; export PS1='' PS2=''")
+  await runRaw("set +H; bind 'set enable-bracketed-paste off'; export PS1='' PS2=''")
   console.log(`[bash:${backend}] session ready`)
 }
 
