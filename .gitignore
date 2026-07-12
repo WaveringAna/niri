@@ -19,3 +19,6 @@ home/*
 !home/soul.example.md
 
 .codex
+.codex-tmp-baal-sync
+.codex-tmp*
+
