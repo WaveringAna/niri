@@ -576,6 +576,7 @@ export async function searchMemory(
   currentTurn: number,
   limit: number,
   semanticSignal: SemanticQuerySignal | null = null,
+  isExplicit = false,
 ): Promise<MemoryHit[]> {
   const db = getDb()
   const query = buildSearchQuery(profile)
@@ -616,12 +617,12 @@ export async function searchMemory(
 
   // Filter by kind preference
   const kindFiltered =
-    profile.personQuery && !profile.eventQuery
+    !isExplicit && profile.personQuery && !profile.eventQuery
       ? (() => {
           const structured = scored.filter((s) => s.hit.kind === "people" || s.hit.kind === "core")
           return structured.length > 0 ? structured : scored
         })()
-      : profile.eventQuery && !profile.personQuery
+      : !isExplicit && profile.eventQuery && !profile.personQuery
         ? (() => {
             const journal = scored.filter((s) => s.hit.kind === "journal")
             return journal.length > 0 ? journal : scored

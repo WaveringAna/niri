@@ -85,7 +85,7 @@ journal entries, scattered notes, things you wrote once and forgot. When in \
 doubt, search. A few extra searches cost nothing; missing something costs \
 everything. Memory search is server-side and works even when no client is attached.
 
-**Use \`memory_read\`, \`memory_write\`, and \`memory_ls\` to interact with your server-owned memories. Use \`soul_write\` to interact with your soul. NEVER use client-workspace tools like \`read_file\`, \`edit_file\`, or shell commands (such as \`cat\` or \`nano\`) to access your memories or soul, as they do not exist in the client workspace and will fail.**
+**Use \`memory_read\`, \`memory_write\`, \`memory_ls\`, and \`memory_grep\` to interact with your server-owned memories. Use \`soul_write\` to interact with your soul. NEVER use client-workspace tools like \`read_file\`, \`edit_file\`, or shell commands (such as \`cat\` or \`nano\`) to access your memories or soul, as they do not exist in the client workspace and will fail.**
 
 When an attached client workspace contains skill docs, read the relevant one before doing capability-specific work.
 
@@ -98,6 +98,7 @@ ${clientToolLines || "- no client-local tools are attached"}
 - \`soul_write\`: append content to or patch (replace exact substring) the server-owned soul.md
 - \`memory_read\`: read a Markdown file under the server-owned memories directory, with optional inclusive line bounds
 - \`memory_ls\`: list all files under the server-owned memories directory recursively
+- \`memory_grep\`: search memories using exact substring matching, returning matching lines and numbers
 - \`wait_then_continue\`: wait for a short delay or until the next event arrives, then continue to another turn. accepts \`timeout_ms\` (default 10000, max 600000). use this after a timeout or recoverable error when you still want to keep working — an incoming event (like a DM) will wake you early.
 - \`wait\`: pause and wait for the next message or event. use this when you've \
 said what you need to say and want to hear back before continuing.

@@ -137,16 +137,25 @@ test("memory read and list tools function correctly", async (t) => {
   await fs.mkdir(path.join(memoriesDir, "journal"), { recursive: true })
   await fs.writeFile(path.join(memoriesDir, "journal", "2026-07-12.md"), "Line 1\nLine 2\nLine 3\n", "utf8")
   await fs.writeFile(path.join(memoriesDir, "journal", "sectioned.md"), "# Sec 1\nContent 1\n## Sec 2\nContent 2\n", "utf8")
+  await fs.writeFile(path.join(memoriesDir, "journal", "long.md"), Array.from({ length: 110 }, (_, i) => `Line ${i + 1}`).join("\n"), "utf8")
+  await fs.writeFile(path.join(memoriesDir, "journal", "long_sectioned.md"), Array.from({ length: 105 }, (_, i) => `Line ${i + 1}`).concat("## Section boundary", "More content").join("\n"), "utf8")
+
+  // Write hidden files/directories to verify they are filtered out
+  await fs.mkdir(path.join(memoriesDir, ".git"), { recursive: true })
+  await fs.writeFile(path.join(memoriesDir, ".git", "config"), "some config", "utf8")
+  await fs.writeFile(path.join(memoriesDir, ".gitignore"), "node_modules", "utf8")
+  await fs.writeFile(path.join(memoriesDir, ".legit-hidden.md"), "legit content", "utf8")
+
   t.after(() => fs.rm(root, { recursive: true, force: true }))
 
   const moduleUrl = new URL("./agent-state-tools.ts", import.meta.url).href
   const script = `
     import assert from "node:assert/strict"
-    const { readMemory, listMemory } = await import(${JSON.stringify(moduleUrl)})
+    const { readMemory, listMemory, grepMemory } = await import(${JSON.stringify(moduleUrl)})
     
-    // 1. Test listMemory
+    // 1. Test listMemory (should filter out .git and .gitignore, but keep .legit-hidden.md)
     const filesList = await listMemory()
-    assert.equal(filesList, "core.md\\njournal/2026-07-12.md\\njournal/sectioned.md")
+    assert.equal(filesList, ".legit-hidden.md\\ncore.md\\njournal/2026-07-12.md\\njournal/long.md\\njournal/long_sectioned.md\\njournal/sectioned.md")
     
     // 2. Test readMemory whole file
     const contentAll = await readMemory("journal/2026-07-12.md")
@@ -160,19 +169,42 @@ test("memory read and list tools function correctly", async (t) => {
     // 4. Test readMemory non-existent file
     await assert.rejects(() => readMemory("missing.md"))
     
-    // 5. Test header stopping logic
+    // 5. Test header stopping logic on small file returns all lines when no endLine is specified
     const sec1 = await readMemory("journal/sectioned.md", 1)
-    assert.match(sec1, /Sec 1\\nContent 1/)
-    assert.doesNotMatch(sec1, /Sec 2/)
+    assert.match(sec1, /Sec 1\\nContent 1\\n## Sec 2\\nContent 2/)
+    assert.doesNotMatch(sec1, /Note: Content stopped/)
     
     // 6. Test that range checks continue past endLine to the next header (e.g. read 1-1 continues to 2)
     const extendedSec = await readMemory("journal/sectioned.md", 1, 1)
     assert.match(extendedSec, /Sec 1\\nContent 1/)
     assert.doesNotMatch(extendedSec, /Sec 2/)
+    assert.match(extendedSec, /Note: Content stopped before the next section header on line 3/)
     
     // 7. Test reading all sections by passing endLine past the last header
     const bothSecs = await readMemory("journal/sectioned.md", 1, 4)
     assert.match(bothSecs, /Sec 1\\nContent 1\\n## Sec 2\\nContent 2/)
+
+    // 8. Test memory_grep exact substring matching
+    const grep1 = await grepMemory("Content 2")
+    assert.match(grep1, /journal\\/sectioned\\.md:4: Content 2/)
+
+    // 9. Test memory_grep case-insensitive matching
+    const grep2 = await grepMemory("CONTENT 2", true)
+    assert.match(grep2, /journal\\/sectioned\\.md:4: Content 2/)
+
+    // 10. Test memory_grep empty result
+    const grepEmpty = await grepMemory("somethinguniqueandmissing")
+    assert.equal(grepEmpty, "(no matches found)")
+
+    // 11. Test 100-line read limit note warning
+    const longSec = await readMemory("journal/long.md", 1)
+    assert.match(longSec, /Note: Content stopped due to the 100-line read limit. To read further, call 'memory_read' with start_line=101/)
+
+    // 12. Test default 100-line range extending to next section header
+    const longSecHeader = await readMemory("journal/long_sectioned.md", 1)
+    assert.match(longSecHeader, /Line 105/)
+    assert.doesNotMatch(longSecHeader, /Section boundary/)
+    assert.match(longSecHeader, /Note: Content stopped before the next section header on line 106/)
   `
 
   const code = await new Promise<number | null>((resolve, reject) => {

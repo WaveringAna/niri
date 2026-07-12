@@ -1,6 +1,6 @@
 import OpenAI from "openai"
 import { AGENT_ID } from "../agent-config"
-import { writeMemory, writeSoul, readMemory, listMemory } from "../agent-state-tools"
+import { writeMemory, writeSoul, readMemory, listMemory, grepMemory } from "../agent-state-tools"
 import { logMessage } from "../db"
 import {
   listDiscordBackread,
@@ -383,6 +383,16 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
         logArgKeys: [] as const,
         runArgKeys: [] as const,
         run: () => listMemory(),
+        previewChars: 0,
+      }),
+
+    memory_grep: (ctx) =>
+      runStandardTool(ctx, {
+        name: "memory_grep",
+        logArgKeys: ["query"] as const,
+        runArgKeys: ["query", "case_insensitive"] as const,
+        run: (query, caseInsensitive) => grepMemory(query, caseInsensitive),
+        emitArgKeys: ["query"] as const,
         previewChars: 0,
       }),
 

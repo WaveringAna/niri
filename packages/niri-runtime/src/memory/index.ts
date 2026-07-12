@@ -215,6 +215,7 @@ export async function searchMemories(rawQuery: string, limit = 5): Promise<Memor
     Number.POSITIVE_INFINITY,
     Math.max(1, Math.min(limit, 10)),
     semanticSignal,
+    true,
   )).map(toMemorySearchResult)
   recordMetric({
     type: "memory",

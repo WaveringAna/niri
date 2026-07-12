@@ -212,6 +212,19 @@ export async function writeMemory(
   }
 }
 
+function isGarbageFile(name: string): boolean {
+  const lower = name.toLowerCase()
+  return (
+    lower === ".git" ||
+    lower === ".ds_store" ||
+    lower === ".gitignore" ||
+    lower === ".gitattributes" ||
+    lower.startsWith(".codex-tmp") ||
+    lower.endsWith(".tmp") ||
+    lower.endsWith(".temp")
+  )
+}
+
 async function getFilesRecursively(dir: string): Promise<string[]> {
   let entries: import("node:fs").Dirent[]
   try {
@@ -222,6 +235,7 @@ async function getFilesRecursively(dir: string): Promise<string[]> {
   }
   const files = await Promise.all(
     entries.map(async (entry) => {
+      if (isGarbageFile(entry.name)) return []
       const res = path.join(dir, entry.name)
       if (entry.isDirectory()) {
         return getFilesRecursively(res)
@@ -251,13 +265,10 @@ export async function readMemory(relativePath: unknown, startLine?: unknown, end
   const totalLines = lines.length
 
   const startIdx = start - 1
-  let searchStartIdx: number
-  if (endLine !== undefined) {
-    const end = Math.max(start, Math.trunc(Number(endLine)) || start)
-    searchStartIdx = end
-  } else {
-    searchStartIdx = startIdx + 1
-  }
+  const end = endLine !== undefined
+    ? Math.max(start, Math.trunc(Number(endLine)) || start)
+    : start + 99
+  const searchStartIdx = end
 
   let effectiveEnd: number
   let foundHeaderIdx = -1
@@ -271,10 +282,17 @@ export async function readMemory(relativePath: unknown, startLine?: unknown, end
   if (foundHeaderIdx !== -1) {
     effectiveEnd = foundHeaderIdx
   } else {
-    effectiveEnd = Math.min(searchStartIdx + 99, totalLines > 0 ? totalLines : searchStartIdx + 99)
+    effectiveEnd = Math.min(searchStartIdx, totalLines)
   }
 
-  const selected = lines.slice(startIdx, effectiveEnd).join("\n")
+  let selected = lines.slice(startIdx, effectiveEnd).join("\n")
+  if (effectiveEnd < totalLines) {
+    if (foundHeaderIdx !== -1) {
+      selected += `\n\n[Note: Content stopped before the next section header on line ${effectiveEnd + 1}. To read further, call 'memory_read' with start_line=${effectiveEnd + 1}.]`
+    } else {
+      selected += `\n\n[Note: Content stopped due to the 100-line read limit. To read further, call 'memory_read' with start_line=${effectiveEnd + 1}.]`
+    }
+  }
 
   const rangeStr = `lines ${start}–${effectiveEnd}`
   const totalStr = totalLines > 0 ? ` of ${totalLines} total` : ""
@@ -290,6 +308,43 @@ export async function listMemory(): Promise<string> {
     return "(no memories found)"
   }
   return relativeFiles.sort().join("\n")
+}
+
+export async function grepMemory(query: unknown, caseInsensitive?: unknown): Promise<string> {
+  if (typeof query !== "string" || !query) {
+    throw new Error("query is required")
+  }
+  const isCaseInsensitive = caseInsensitive === true
+
+  await fs.mkdir(MEMORY_ROOT, { recursive: true, mode: 0o700 })
+  const absoluteFiles = await getFilesRecursively(MEMORY_ROOT)
+
+  const matches: string[] = []
+  const searchQuery = isCaseInsensitive ? query.toLowerCase() : query
+
+  for (const file of absoluteFiles) {
+    const relativePath = path.relative(MEMORY_ROOT, file)
+    let content: string
+    try {
+      content = await fs.readFile(file, "utf8")
+    } catch {
+      continue
+    }
+
+    const lines = content.split("\n")
+    for (let lineNum = 1; lineNum <= lines.length; lineNum++) {
+      const line = lines[lineNum - 1]!
+      const lineToSearch = isCaseInsensitive ? line.toLowerCase() : line
+      if (lineToSearch.includes(searchQuery)) {
+        matches.push(`${relativePath}:${lineNum}: ${line}`)
+      }
+    }
+  }
+
+  if (matches.length === 0) {
+    return "(no matches found)"
+  }
+  return matches.join("\n")
 }
 
 export const __agentStateToolsTest = { memoryPath }

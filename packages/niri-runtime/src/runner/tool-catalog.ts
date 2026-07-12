@@ -99,6 +99,19 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
         "List all Markdown files under the server-owned memory directory recursively.",
         emptyParameters,
       ),
+      functionTool(
+        "memory_grep",
+        "Search memories using exact substring matching, returning matching lines and numbers.",
+        {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            query: { type: "string", description: "Search query text." },
+            case_insensitive: { type: "boolean", description: "Whether to perform case-insensitive search. Default is false." },
+          },
+          required: ["query"],
+        },
+      ),
     )
   }
 
