@@ -9,7 +9,6 @@ export interface CreateChatClientOptions {
   fetchImpl?: FetchLike
   clientId?: string
   agentId?: string
-  token?: string
 }
 
 export interface StreamOptions {
@@ -122,10 +121,8 @@ export function createChatClient(options: CreateChatClientOptions): ChatClient {
   const baseUrl = normalizeUrl(options.baseUrl)
   const clientId = options.clientId
   const agentId = options.agentId?.trim()
-  const authorization = options.token?.trim()
   const headers = (json = false): HeadersInit => ({
     ...(json ? { "content-type": "application/json" } : {}),
-    ...(authorization ? { authorization: `Bearer ${authorization}` } : {}),
   })
   const url = (path: string) => `${baseUrl}${path}`
   const agentUrl = (path: string) =>

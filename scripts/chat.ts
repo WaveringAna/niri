@@ -7,7 +7,6 @@ const directWorker = process.env.NIRI_CHAT_DIRECT_WORKER?.trim().toLowerCase() =
 const controlAgentId = directWorker ? undefined : (process.env.NIRI_AGENT_ID ?? "niri").trim() || "niri"
 const PORT = directWorker ? process.env.PORT ?? "3000" : process.env.CONTROL_PORT ?? process.env.PORT ?? "3000"
 const BASE = process.env.NIRI_SERVER_URL?.replace(/\/+$/, "") || `${HOST}:${PORT}`
-const token = directWorker ? process.env.NIRI_WORKER_TOKEN : process.env.NIRI_CONTROL_TOKEN
 
 const c = {
   gray: (s: string) => `\x1b[90m${s}\x1b[0m`,
@@ -64,7 +63,7 @@ const createClientId = (): string => {
 }
 
 const clientId = createClientId()
-const client = createChatClient({ baseUrl: BASE, clientId, agentId: controlAgentId, token })
+const client = createChatClient({ baseUrl: BASE, clientId, agentId: controlAgentId })
 
 let showAllTools = false
 let showThinking = false

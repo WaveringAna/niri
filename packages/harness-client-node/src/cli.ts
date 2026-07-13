@@ -1,55 +1,39 @@
 #!/usr/bin/env node
-import os from "node:os"
 import path from "node:path"
+import os from "node:os"
 import { NodeToolHost, parseToolCapabilities } from "./host.js"
-import { RemoteToolClient } from "./remote.js"
+import { ToolClientHttpServer } from "./http-server.js"
 
-function required(name: string): string {
-  const value = process.env[name]?.trim()
-  if (!value) throw new Error(`${name} is required`)
-  return value
-}
-
-function fileSafe(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._-]+/g, "_")
+function argument(name: string): string | undefined {
+  const index = process.argv.indexOf(name)
+  return index >= 0 ? process.argv[index + 1] : undefined
 }
 
 async function main(): Promise<void> {
-  const endpoint = required("HARNESS_ENDPOINT").replace(/\/+$/, "")
-  const agentId = required("HARNESS_AGENT_ID")
-  const clientId = process.env.HARNESS_CLIENT_ID?.trim() || `${agentId}-local`
-  const workspaceRoot = path.resolve(required("HARNESS_CLIENT_WORKSPACE"))
-  const stateDir = path.resolve(
-    process.env.HARNESS_STATE_DIR ?? path.join(os.homedir(), ".local", "state", "mira-harness", "clients"),
-  )
+  const workspaceRoot = path.resolve(argument("--workspace") ?? os.homedir())
   const host = new NodeToolHost({
-    capabilities: parseToolCapabilities(process.env.HARNESS_CLIENT_CAPABILITIES),
-    workspace: {
-      id: process.env.HARNESS_CLIENT_WORKSPACE_ID?.trim() || path.basename(workspaceRoot) || "workspace",
-      root: workspaceRoot,
-    },
+    capabilities: parseToolCapabilities(argument("--capabilities")),
+    workspace: { id: path.basename(workspaceRoot) || "workspace", root: workspaceRoot },
   })
-  const client = new RemoteToolClient({
-    endpoint,
-    agentId,
-    clientId,
-    token: required("HARNESS_TOKEN"),
+  const client = new ToolClientHttpServer({
     host,
-    journalPath: process.env.HARNESS_JOURNAL ?? path.join(stateDir, `${fileSafe(agentId)}-${fileSafe(clientId)}.json`),
-    onStatus: (status) => console.log(`[harness-tool-client] ${status}`),
+    listenHost: argument("--host") ?? "0.0.0.0",
+    port: Number.parseInt(argument("--port") ?? "3002", 10),
   })
 
   let closing = false
   const close = async (signal: string): Promise<void> => {
     if (closing) return
     closing = true
-    console.log(`[harness-tool-client] ${signal} received, disconnecting`)
-    await client.close()
+    console.log(`[harness-tool-client] ${signal} received, stopping`)
+    await client.stop()
     process.exit(0)
   }
   process.on("SIGINT", () => void close("SIGINT"))
   process.on("SIGTERM", () => void close("SIGTERM"))
-  await client.start()
+
+  const address = await client.start()
+  console.log(`[harness-tool-client] listening on ${address.host}:${address.port}; workspace=${workspaceRoot}`)
 }
 
 main().catch((error) => {

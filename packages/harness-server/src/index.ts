@@ -1,4 +1,2 @@
-export { ClientToolBroker } from "./client-broker.js"
-export type { ClientBrokerOptions, ClientBrokerStatus } from "./client-broker.js"
-export { handleClientBrokerHttpRequest } from "./http-adapter.js"
-export type { ClientBrokerHttpResponse, ClientBrokerOperation } from "./http-adapter.js"
+export { HttpToolClient } from "./http-client.js"
+export type { HttpToolClientOptions, HttpToolClientStatus } from "./http-client.js"

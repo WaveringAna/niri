@@ -1,7 +1,6 @@
-import Fastify, { type FastifyReply, type FastifyRequest } from "fastify"
-import { handleClientBrokerHttpRequest, type ClientBrokerOperation } from "@mira/harness-server"
+import Fastify from "fastify"
 import { AGENT_ID } from "./agent-config"
-import { clientToolBroker } from "./client"
+import { clientTools } from "./client"
 import { listWorkerEvents, publishWorkerEvent, subscribeWorkerEvents } from "./awp/outbox"
 import type { ControlCommand } from "./awp/types"
 import { wake, isRunning, isWaitingForEvent, enqueueEvent, getRunnerStatus } from "./runner/index"
@@ -57,25 +56,6 @@ export function createServer(options: { requestRestart?: (reason?: string) => vo
   const app = Fastify({ logger: false, bodyLimit: Math.max(2_000_000, imageMaxBytes * 2 + 1_000_000) })
   let discordBatchInFlight = false
   let discordBatchTimer: ReturnType<typeof setInterval> | null = null
-
-  const workerToken = process.env.NIRI_WORKER_TOKEN?.trim()
-  if (!workerToken) throw new Error("NIRI_WORKER_TOKEN is required")
-  app.addHook("onRequest", async (req, reply) => {
-    if (req.method === "OPTIONS" || req.url === "/health") return
-    if (req.url.startsWith("/awp/client/") && req.url !== "/awp/client/status") {
-      if (!clientToolBroker.hasConfiguredToken()) {
-        return reply.code(503).send({ error: "tool client pairing is disabled; set NIRI_TOOL_CLIENT_TOKEN on this agent worker" })
-      }
-      if (!clientToolBroker.isAuthorized(req.headers.authorization)) {
-        return reply.code(401).send({ error: "invalid tool client authorization" })
-      }
-      return
-    }
-    if (req.url === "/awp/client/status" && clientToolBroker.isAuthorized(req.headers.authorization)) return
-    if (req.headers.authorization !== `Bearer ${workerToken}`) {
-      return reply.code(401).send({ error: "invalid worker authorization" })
-    }
-  })
 
   app.options("/*", async (_req, reply) => reply.code(204).send())
   app.get("/health", async () => ({
@@ -166,20 +146,10 @@ export function createServer(options: { requestRestart?: (reason?: string) => vo
   app.get("/awp/status", async () => ({
     agentId: AGENT_ID,
     ...getRunnerStatus(),
-    client: clientToolBroker.status(),
+    client: clientTools.status(),
   }))
 
-  const clientOperation = async (operation: ClientBrokerOperation, req: FastifyRequest, reply: FastifyReply) => {
-    const response = await handleClientBrokerHttpRequest(clientToolBroker, operation, req.headers.authorization, req.body)
-    return reply.code(response.statusCode).send(response.body)
-  }
-
-  app.post("/awp/client/hello", async (req, reply) => clientOperation("hello", req, reply))
-  app.post("/awp/client/poll", async (req, reply) => clientOperation("poll", req, reply))
-  app.post("/awp/client/results", async (req, reply) => clientOperation("results", req, reply))
-  app.post("/awp/client/detach", async (req, reply) => clientOperation("detach", req, reply))
-
-  app.get("/awp/client/status", async () => clientToolBroker.status())
+  app.get("/awp/client/status", async () => clientTools.status())
 
   app.post("/awp/events", async (req, reply) => {
     const body =

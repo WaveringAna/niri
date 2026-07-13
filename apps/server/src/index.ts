@@ -1,41 +1,40 @@
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { registerConfiguredAgents } from "./control/config"
 import { initControlDb, upsertAgent } from "./control/db"
 import { createControlServer } from "./control/server"
 import {
   assertNoDuplicateDiscordTokens,
   assertNoDuplicateBridgePorts,
   buildWorkerEnvironment,
-  parseLocalAgents,
+  loadAgentFiles,
   resolveLocalAgents,
 } from "./local-agents"
 import { LocalAgentSupervisor } from "./supervisor"
 
-const controlPort = Number.parseInt(process.env.CONTROL_PORT ?? process.env.PORT ?? "3000", 10)
-const controlHost = process.env.NIRI_CONTROL_HOST?.trim() || "127.0.0.1"
-const controlToken = process.env.NIRI_CONTROL_TOKEN?.trim()
+function argument(name: string): string | undefined {
+  const index = process.argv.indexOf(name)
+  return index >= 0 ? process.argv[index + 1] : undefined
+}
+
+const controlPort = Number.parseInt(argument("--port") ?? "3000", 10)
+const controlHost = argument("--host") ?? "127.0.0.1"
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..")
 const workerEntry = path.join(repoRoot, "packages", "niri-runtime", "src", "index.ts")
+const agentDirectory = path.resolve(argument("--agents") ?? path.join(repoRoot, "agents"))
 
 async function main(): Promise<void> {
   if (!Number.isInteger(controlPort) || controlPort < 1 || controlPort > 65535) {
-    throw new Error(`invalid control port: ${process.env.CONTROL_PORT ?? process.env.PORT}`)
+    throw new Error(`invalid control port: ${argument("--port")}`)
   }
-  if (!controlToken) throw new Error("NIRI_CONTROL_TOKEN is required")
   process.umask(0o077)
 
   initControlDb()
-  registerConfiguredAgents()
-  const agents = resolveLocalAgents(parseLocalAgents(process.env, controlPort), { controlPort, repoRoot, controlToken })
-  assertNoDuplicateDiscordTokens(agents, process.env)
-  assertNoDuplicateBridgePorts(agents, process.env, controlPort)
+  const agents = resolveLocalAgents(loadAgentFiles(agentDirectory), { controlPort, repoRoot })
+  assertNoDuplicateDiscordTokens(agents)
+  assertNoDuplicateBridgePorts(agents, controlPort)
 
   const supervisors = new Map<string, LocalAgentSupervisor>()
   for (const agent of agents) {
-    if (!agent.toolClientToken) {
-      console.warn(`[server] ${agent.id} has no tool client token; client-owned tools are disabled`)
-    }
     supervisors.set(agent.id, new LocalAgentSupervisor({
       agent,
       repoRoot,
@@ -46,14 +45,13 @@ async function main(): Promise<void> {
           id: readyAgent.id,
           name: readyAgent.name,
           baseUrl: `http://127.0.0.1:${readyAgent.port}`,
-          token: readyAgent.workerToken,
         })
       },
     }))
   }
 
   const server = createControlServer({
-    token: controlToken,
+    configuredAgentIds: new Set(agents.map((agent) => agent.id)),
     stopLocalAgent: async (id) => {
       const supervisor = supervisors.get(id)
       if (!supervisor) return false

@@ -1,5 +1,5 @@
 import { buildBootstrap } from "../bootstrap"
-import { clientToolBroker } from "../client"
+import { clientTools } from "../client"
 import { areDiscordToolsAvailable } from "../discord/availability"
 import { markDiscordItem } from "../discord/state"
 import { endConversation, logMessage, startConversation } from "../db"
@@ -17,8 +17,8 @@ const PROCESS_STARTED_AT = new Date().toISOString()
 
 function currentToolCatalog() {
   return createNiriToolCatalog({
-    clientCapabilities: clientToolBroker.getCapabilities(),
-    workspace: clientToolBroker.getWorkspace(),
+    clientCapabilities: clientTools.getCapabilities(),
+    workspace: clientTools.getWorkspace(),
     memory: true,
     discord: areDiscordToolsAvailable(),
   })
@@ -299,8 +299,8 @@ export async function wake(event: UserMessage): Promise<void> {
   } else {
     autoSeeDiscordEvent(event)
     state.conversation = await buildBootstrap(event, await loadRestSnapshot(), {
-      clientCapabilities: clientToolBroker.getCapabilities(),
-      workspace: clientToolBroker.getWorkspace(),
+      clientCapabilities: clientTools.getCapabilities(),
+      workspace: clientTools.getWorkspace(),
       discord: areDiscordToolsAvailable(),
     })
   }
@@ -317,7 +317,7 @@ export async function wake(event: UserMessage): Promise<void> {
 
   try {
     const exit = await runLoop(convId, state, {
-      clientTools: clientToolBroker,
+      clientTools,
       getTools: currentToolCatalog,
       waitForEvent,
       waitForEventWithTimeout,

@@ -1,0 +1,42 @@
+# one file is one agent. copy this to agents/mira.yaml, chmod it to 0600,
+# and fill in the values. real agent files are ignored by git.
+id: mira
+name: Mira
+home: ./data/agents/mira
+
+# point at a client started with `npm run start` on another machine.
+client: http://mira-macbook.local:3002
+
+# to run tools on the server instead, replace `client` above with these lines:
+# client: local
+# workspace: /Users/mira
+
+model:
+  provider: openai
+  name: openai/gpt-5
+  baseUrl: https://openrouter.ai/api/v1
+  apiKey: replace-me
+  thinking: true
+
+fallback:
+  name: local-model
+  baseUrl: http://127.0.0.1:1234/v1
+  apiKey: local
+
+embedding:
+  name: google/gemini-embedding-2-preview
+  baseUrl: https://openrouter.ai/api/v1
+  apiKey: replace-me
+  dimensions: 3072
+
+discord:
+  token: replace-me
+  enabled: true
+  wakeOnEvent: true
+
+# uncommon runtime knobs can use their existing names here. lifecycle and
+# topology values are managed by the server and rejected in this section.
+settings:
+  CONTEXT_COMPACT_TARGET_TOKENS: 65000
+  CONTEXT_COMPACT_TRIGGER_TOKENS: 90000
+  RUNNER_MAX_TURNS: 120

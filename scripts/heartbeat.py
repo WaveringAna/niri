@@ -9,7 +9,6 @@ CONF = os.environ.get("NIRI_HEARTBEAT_CONF", "/home/regent/Developer/niri/home/h
 SERVER = os.environ.get("NIRI_SERVER_URL", "http://localhost:3000").rstrip("/")
 AGENT = os.environ.get("NIRI_AGENT_ID", "niri")
 TRIGGER = f"{SERVER}/agents/{AGENT}/trigger/cron"
-CONTROL_TOKEN = os.environ.get("NIRI_CONTROL_TOKEN", "").strip()
 DEFAULT_INTERVAL = 100
 
 
@@ -27,8 +26,7 @@ def read_interval() -> int:
 
 def trigger() -> bool:
     try:
-        headers = {"Authorization": f"Bearer {CONTROL_TOKEN}"} if CONTROL_TOKEN else {}
-        req = urllib.request.Request(TRIGGER, headers=headers, method="POST")
+        req = urllib.request.Request(TRIGGER, method="POST")
         with urllib.request.urlopen(req) as resp:
             return resp.status < 400
     except urllib.error.URLError:

@@ -16,7 +16,6 @@ export type AgentRecord = {
   id: string
   name: string
   baseUrl: string
-  token?: string
   status: string
   lastSeenAt?: string
   lastSeq: number
@@ -26,7 +25,6 @@ type AgentRow = {
   id: string
   name: string
   base_url: string
-  token: string | null
   status: string
   last_seen_at: string | null
   last_seq: number
@@ -37,7 +35,6 @@ function agentFromRow(row: AgentRow): AgentRecord {
     id: row.id,
     name: row.name,
     baseUrl: row.base_url,
-    ...(row.token ? { token: row.token } : {}),
     status: row.status,
     ...(row.last_seen_at ? { lastSeenAt: row.last_seen_at } : {}),
     lastSeq: row.last_seq,
@@ -77,7 +74,6 @@ export function initControlDb(): void {
       id           text primary key,
       name         text not null,
       base_url     text not null,
-      token        text,
       status       text not null default 'unknown',
       last_seen_at text,
       last_seq     integer not null default 0,
@@ -108,7 +104,6 @@ export function upsertAgent(input: {
   id: string
   name?: string
   baseUrl: string
-  token?: string
 }): AgentRecord {
   const id = input.id.trim()
   const baseUrl = input.baseUrl.trim().replace(/\/+$/, "")
@@ -121,28 +116,27 @@ export function upsertAgent(input: {
 
   const name = input.name?.trim() || id
   db.prepare(
-    `insert into agents (id, name, base_url, token, status, updated_at)
-     values (?, ?, ?, ?, 'unknown', ?)
+    `insert into agents (id, name, base_url, status, updated_at)
+     values (?, ?, ?, 'unknown', ?)
      on conflict(id) do update set
        name = excluded.name,
        base_url = excluded.base_url,
-       token = excluded.token,
        updated_at = excluded.updated_at`,
-  ).run(id, name, baseUrl, input.token?.trim() || null, new Date().toISOString())
+  ).run(id, name, baseUrl, new Date().toISOString())
 
   return getAgent(id)!
 }
 
 export function listAgents(): AgentRecord[] {
   const rows = db
-    .prepare("select id, name, base_url, token, status, last_seen_at, last_seq from agents order by id asc")
+    .prepare("select id, name, base_url, status, last_seen_at, last_seq from agents order by id asc")
     .all() as AgentRow[]
   return rows.map(agentFromRow)
 }
 
 export function getAgent(id: string): AgentRecord | null {
   const row = db
-    .prepare("select id, name, base_url, token, status, last_seen_at, last_seq from agents where id = ?")
+    .prepare("select id, name, base_url, status, last_seen_at, last_seq from agents where id = ?")
     .get(id) as AgentRow | undefined
   return row ? agentFromRow(row) : null
 }

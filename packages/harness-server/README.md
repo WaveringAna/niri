@@ -1,33 +1,21 @@
 # @mira/harness-server
 
-An authenticated in-memory broker for one agent worker and its attached tool client.
-
-```sh
-npm install @mira/harness-server @mira/harness-core @mira/harness-protocol
-```
-
-Mount the four operations at one endpoint prefix. This Fastify example matches `RemoteToolClient`:
+Direct HTTP caller for a remote harness tool client.
 
 ```ts
-import Fastify from "fastify"
-import { ClientToolBroker, handleClientBrokerHttpRequest } from "@mira/harness-server"
+import { HttpToolClient } from "@mira/harness-server"
 
-const app = Fastify()
-const broker = new ClientToolBroker({ agentId: "mira", token: process.env.TOOL_TOKEN })
+const tools = new HttpToolClient({
+  agentId: "mira",
+  endpoint: "http://mira-macbook.local:3002",
+})
 
-for (const operation of ["hello", "poll", "results", "detach"] as const) {
-  app.post(`/client/${operation}`, async (request, reply) => {
-    const response = await handleClientBrokerHttpRequest(
-      broker,
-      operation,
-      request.headers.authorization,
-      request.body,
-    )
-    return reply.code(response.statusCode).send(response.body)
-  })
-}
+await tools.start()
+const result = await tools.execute({
+  agentId: "mira",
+  tool: "shell",
+  args: { command: "pwd" },
+})
 ```
 
-Pass the broker as your model loop's `ClientToolExecutor`. It has no server-local tool fallback. Leases bind agent, client, and invocation ownership; a different client cannot take over pending work; matching late results remain valid; detach resolves pending work as unknown.
-
-The broker is intentionally in-memory. Persist model-loop checkpoints separately and run one broker per agent worker.
+Use the endpoint only on a trusted network; any reachable caller can invoke its exposed tools.

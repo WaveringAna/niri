@@ -15,7 +15,6 @@ test("control-plane mode scopes chat and status requests to one agent", async ()
     baseUrl: "https://control.example/",
     agentId: "mira",
     clientId: "cli-1",
-    token: "control-secret",
     fetchImpl,
   })
 
@@ -25,8 +24,8 @@ test("control-plane mode scopes chat and status requests to one agent", async ()
   assert.equal(requests[0]?.url, "https://control.example/agents/mira/events")
   assert.deepEqual(JSON.parse(String(requests[0]?.init?.body)), { content: "hello", clientId: "cli-1" })
   assert.equal(requests[1]?.url, "https://control.example/agents/mira/status")
-  assert.equal(new Headers(requests[0]?.init?.headers).get("authorization"), "Bearer control-secret")
-  assert.equal(new Headers(requests[1]?.init?.headers).get("authorization"), "Bearer control-secret")
+  assert.equal(new Headers(requests[0]?.init?.headers).has("authorization"), false)
+  assert.equal(new Headers(requests[1]?.init?.headers).has("authorization"), false)
   assert.deepEqual(status, { running: true, idle: true })
 })
 

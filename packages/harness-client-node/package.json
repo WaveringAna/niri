@@ -1,7 +1,7 @@
 {
   "name": "@mira/harness-client-node",
   "version": "0.1.0",
-  "description": "Node.js shell, filesystem, image, and reconnecting transport host for remote AI harness tools.",
+  "description": "Zero-config HTTP host for shell, filesystem, and image tools.",
   "license": "MIT",
   "type": "module",
   "files": [

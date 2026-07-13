@@ -4,8 +4,12 @@ node_modules/
 dist/
 apps/*/dist/
 
-# environment
+# private agent definitions
 .env
+agents/*.yaml
+agents/*.yml
+!agents/*.example.yaml
+!agents/*.example.yml
 
 # runtime state
 session.json

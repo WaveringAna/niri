@@ -1,16 +1,39 @@
-import { randomBytes } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
+import { parse as parseYaml } from "yaml"
 
-export type LocalAgentConfig = {
-  id: string
+type ProviderConfig = {
+  provider?: "openai" | "anthropic"
+  name?: string
+  baseUrl?: string
+  apiKey?: string
+  thinking?: boolean
+}
+
+type OpenAiProviderConfig = Omit<ProviderConfig, "provider" | "thinking">
+
+type DiscordConfig = {
+  token?: string
+  enabled?: boolean
+  botUserId?: string
+  dmWhitelist?: string
+  scanChannelIds?: string
+  wakeOnEvent?: boolean
+}
+
+export type AgentFile = {
+  id?: string
   name?: string
   port?: number
   home?: string
-  workerToken?: string
-  toolClientToken?: string
-  expectedClientId?: string
-  env?: Record<string, string>
+  client?: string
+  workspace?: string
+  model?: ProviderConfig
+  fallback?: OpenAiProviderConfig
+  embedding?: OpenAiProviderConfig & { dimensions?: number }
+  summary?: OpenAiProviderConfig
+  discord?: DiscordConfig
+  settings?: Record<string, string | number | boolean>
 }
 
 export type ResolvedLocalAgent = {
@@ -18,154 +41,264 @@ export type ResolvedLocalAgent = {
   name: string
   port: number
   home: string
-  workerToken: string
-  toolClientToken?: string
-  expectedClientId?: string
-  env: Record<string, string>
+  client: string
+  workspace?: string
+  settings: Record<string, string>
+  source: string
 }
 
-const RESERVED_AGENT_ENV = new Set([
-  "AGENT_ID",
-  "AGENT_NAME",
-  "CONTROL_PORT",
-  "HOME",
-  "NIRI_AGENT_ID",
-  "NIRI_AGENT_STATE_DIR",
-  "NIRI_CONTROL_DB",
-  "NIRI_CONTROL_HOME",
-  "NIRI_CONTROL_TOKEN",
-  "NIRI_EXPECTED_CLIENT_ID",
-  "NIRI_HOME",
-  "NIRI_LOCAL_AGENTS_JSON",
-  "NIRI_MANAGED_WORKER",
-  "NIRI_RESTART_COMMAND",
-  "NIRI_RESTART_CWD",
-  "NIRI_TOOL_CLIENT_TOKEN",
-  "NIRI_WORKER_HOST",
-  "NIRI_WORKER_INSTANCE_ID",
-  "NIRI_WORKER_TOKEN",
-  "PORT",
-])
-
-const LOCAL_AGENT_KEYS = new Set([
+const AGENT_KEYS = new Set([
   "id",
   "name",
   "port",
   "home",
-  "workerToken",
-  "toolClientToken",
-  "expectedClientId",
-  "env",
+  "client",
+  "workspace",
+  "model",
+  "fallback",
+  "embedding",
+  "summary",
+  "discord",
+  "settings",
 ])
 
-const STRIPPED_PARENT_ENV = new Set([
-  ...RESERVED_AGENT_ENV,
-  "NIRI_AGENTS",
-  "NIRI_AGENTS_JSON",
-  "NIRI_AGENT_URL",
+const RESERVED_SETTINGS = new Set([
+  "AGENT_ID",
+  "AGENT_NAME",
+  "HOME",
+  "NIRI_AGENT_ID",
+  "NIRI_AGENT_STATE_DIR",
+  "NIRI_CLIENT",
+  "NIRI_CLIENT_WORKSPACE",
+  "NIRI_CONTROL_DB",
+  "NIRI_CONTROL_HOME",
+  "NIRI_HOME",
+  "NIRI_MANAGED_WORKER",
+  "NIRI_RESTART_COMMAND",
+  "NIRI_RESTART_CWD",
+  "NIRI_WORKER_HOST",
+  "NIRI_WORKER_INSTANCE_ID",
+  "PORT",
 ])
 
-function parseEnvironment(value: unknown, index: number): Record<string, string> | undefined {
-  if (value === undefined) return undefined
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`NIRI_LOCAL_AGENTS_JSON[${index}].env must be an object of strings`)
-  }
-  const env: Record<string, string> = {}
-  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof item !== "string") throw new Error(`NIRI_LOCAL_AGENTS_JSON[${index}].env.${key} must be a string`)
-    if (RESERVED_AGENT_ENV.has(key)) throw new Error(`${key} is reserved; configure it on the agent object instead of env`)
-    env[key] = item
-  }
-  return env
+const SAFE_PARENT_SETTINGS = new Set([
+  "COLORTERM",
+  "LANG",
+  "NO_COLOR",
+  "NODE_OPTIONS",
+  "PATH",
+  "TEMP",
+  "TERM",
+  "TMP",
+  "TMPDIR",
+])
+
+function object(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`)
+  return value as Record<string, unknown>
 }
 
-export function parseLocalAgents(parentEnv: NodeJS.ProcessEnv, controlPort: number): LocalAgentConfig[] {
-  const raw = parentEnv.NIRI_LOCAL_AGENTS_JSON?.trim()
-  if (!raw) {
-    if (parentEnv.NIRI_AGENTS?.trim() || parentEnv.NIRI_AGENTS_JSON?.trim() || parentEnv.NIRI_AGENT_URL?.trim()) return []
-    const id = (parentEnv.NIRI_AGENT_ID ?? parentEnv.AGENT_ID ?? "niri").trim() || "niri"
-    return [{
-      id,
-      name: parentEnv.AGENT_NAME?.trim() || id,
-      port: Number.parseInt(parentEnv.NIRI_WORKER_PORT ?? `${controlPort + 1}`, 10),
-      home: parentEnv.NIRI_HOME,
-      workerToken: parentEnv.NIRI_WORKER_TOKEN,
-      toolClientToken: parentEnv.NIRI_TOOL_CLIENT_TOKEN,
-      expectedClientId: parentEnv.NIRI_EXPECTED_CLIENT_ID,
-      env: {
-        NIRI_MIGRATE_LEGACY_STATE: parentEnv.NIRI_MIGRATE_LEGACY_STATE?.trim() || "true",
-      },
-    }]
-  }
+function optionalString(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${label} must be a non-empty string`)
+  return value.trim()
+}
 
-  let parsed: unknown
+function optionalBoolean(value: unknown, label: string): boolean | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== "boolean") throw new Error(`${label} must be true or false`)
+  return value
+}
+
+function parseProvider(value: unknown, label: string, allowProvider: boolean, extraKeys: string[] = []): ProviderConfig | undefined {
+  if (value === undefined) return undefined
+  const item = object(value, label)
+  const allowed = new Set(["name", "baseUrl", "apiKey", ...extraKeys, ...(allowProvider ? ["provider", "thinking"] : [])])
+  const unknown = Object.keys(item).filter((key) => !allowed.has(key))
+  if (unknown.length > 0) throw new Error(`${label} has unknown keys: ${unknown.join(", ")}`)
+  const provider = optionalString(item.provider, `${label}.provider`)
+  if (provider && provider !== "openai" && provider !== "anthropic") {
+    throw new Error(`${label}.provider must be openai or anthropic`)
+  }
+  return {
+    ...(provider ? { provider: provider as ProviderConfig["provider"] } : {}),
+    ...(optionalString(item.name, `${label}.name`) ? { name: String(item.name).trim() } : {}),
+    ...(optionalString(item.baseUrl, `${label}.baseUrl`) ? { baseUrl: String(item.baseUrl).trim() } : {}),
+    ...(optionalString(item.apiKey, `${label}.apiKey`) ? { apiKey: String(item.apiKey).trim() } : {}),
+    ...(allowProvider && item.thinking !== undefined ? { thinking: optionalBoolean(item.thinking, `${label}.thinking`) } : {}),
+  }
+}
+
+function parseDiscord(value: unknown, label: string): DiscordConfig | undefined {
+  if (value === undefined) return undefined
+  const item = object(value, label)
+  const allowed = new Set(["token", "enabled", "botUserId", "dmWhitelist", "scanChannelIds", "wakeOnEvent"])
+  const unknown = Object.keys(item).filter((key) => !allowed.has(key))
+  if (unknown.length > 0) throw new Error(`${label} has unknown keys: ${unknown.join(", ")}`)
+  return {
+    ...(optionalString(item.token, `${label}.token`) ? { token: String(item.token).trim() } : {}),
+    ...(item.enabled !== undefined ? { enabled: optionalBoolean(item.enabled, `${label}.enabled`) } : {}),
+    ...(optionalString(item.botUserId, `${label}.botUserId`) ? { botUserId: String(item.botUserId).trim() } : {}),
+    ...(optionalString(item.dmWhitelist, `${label}.dmWhitelist`) ? { dmWhitelist: String(item.dmWhitelist).trim() } : {}),
+    ...(optionalString(item.scanChannelIds, `${label}.scanChannelIds`) ? { scanChannelIds: String(item.scanChannelIds).trim() } : {}),
+    ...(item.wakeOnEvent !== undefined ? { wakeOnEvent: optionalBoolean(item.wakeOnEvent, `${label}.wakeOnEvent`) } : {}),
+  }
+}
+
+function parseSettings(value: unknown, label: string): Record<string, string | number | boolean> | undefined {
+  if (value === undefined) return undefined
+  const item = object(value, label)
+  const result: Record<string, string | number | boolean> = {}
+  for (const [key, raw] of Object.entries(item)) {
+    if (!/^[A-Z][A-Z0-9_]*$/.test(key)) throw new Error(`${label}.${key} must use an uppercase runtime setting name`)
+    if (
+      RESERVED_SETTINGS.has(key) ||
+      key.startsWith("NIRI_CLIENT_") ||
+      key.startsWith("NIRI_CONTROL_") ||
+      key.startsWith("NIRI_TOOL_CLIENT_") ||
+      key.startsWith("NIRI_WORKER_")
+    ) {
+      throw new Error(`${label}.${key} is managed by the server`)
+    }
+    if (!["string", "number", "boolean"].includes(typeof raw)) throw new Error(`${label}.${key} must be a string, number, or boolean`)
+    result[key] = raw as string | number | boolean
+  }
+  return result
+}
+
+export function parseAgentFile(filePath: string): AgentFile {
+  let raw: unknown
   try {
-    parsed = JSON.parse(raw)
+    raw = parseYaml(fs.readFileSync(filePath, "utf8"))
   } catch (error) {
-    throw new Error(`NIRI_LOCAL_AGENTS_JSON is not valid JSON: ${error instanceof Error ? error.message : String(error)}`)
+    throw new Error(`${filePath}: invalid yaml: ${error instanceof Error ? error.message : String(error)}`)
   }
-  if (!Array.isArray(parsed)) throw new Error("NIRI_LOCAL_AGENTS_JSON must be an array")
+  const item = object(raw, filePath)
+  const unknown = Object.keys(item).filter((key) => !AGENT_KEYS.has(key))
+  if (unknown.length > 0) throw new Error(`${filePath}: unknown keys: ${unknown.join(", ")}`)
+  if (item.port !== undefined && (typeof item.port !== "number" || !Number.isInteger(item.port))) {
+    throw new Error(`${filePath}: port must be an integer`)
+  }
 
-  return parsed.map((value, index) => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      throw new Error(`NIRI_LOCAL_AGENTS_JSON[${index}] must be an object`)
+  const embedding = parseProvider(item.embedding, `${filePath}.embedding`, false, ["dimensions"]) as AgentFile["embedding"]
+  if (item.embedding && "dimensions" in object(item.embedding, `${filePath}.embedding`)) {
+    const dimensions = object(item.embedding, `${filePath}.embedding`).dimensions
+    if (typeof dimensions !== "number" || !Number.isInteger(dimensions) || dimensions < 1) {
+      throw new Error(`${filePath}.embedding.dimensions must be a positive integer`)
     }
-    const item = value as Record<string, unknown>
-    const unknownKeys = Object.keys(item).filter((key) => !LOCAL_AGENT_KEYS.has(key))
-    if (unknownKeys.length > 0) {
-      throw new Error(`NIRI_LOCAL_AGENTS_JSON[${index}] has unknown keys: ${unknownKeys.join(", ")}`)
-    }
-    const id = typeof item.id === "string" ? item.id.trim() : ""
-    if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error(`invalid local agent id at index ${index}`)
-    if (item.port !== undefined && (typeof item.port !== "number" || !Number.isInteger(item.port))) {
-      throw new Error(`NIRI_LOCAL_AGENTS_JSON[${index}].port must be an integer`)
-    }
-    const env = parseEnvironment(item.env, index)
-    return {
-      id,
-      ...(typeof item.name === "string" && item.name.trim() ? { name: item.name.trim() } : {}),
-      ...(typeof item.port === "number" ? { port: item.port } : {}),
-      ...(typeof item.home === "string" && item.home.trim() ? { home: item.home.trim() } : {}),
-      ...(typeof item.workerToken === "string" && item.workerToken.trim() ? { workerToken: item.workerToken.trim() } : {}),
-      ...(typeof item.toolClientToken === "string" && item.toolClientToken.trim() ? { toolClientToken: item.toolClientToken.trim() } : {}),
-      ...(typeof item.expectedClientId === "string" && item.expectedClientId.trim() ? { expectedClientId: item.expectedClientId.trim() } : {}),
-      ...(env ? { env } : {}),
-    }
+    if (embedding) embedding.dimensions = dimensions
+  }
+
+  return {
+    ...(optionalString(item.id, `${filePath}.id`) ? { id: String(item.id).trim() } : {}),
+    ...(optionalString(item.name, `${filePath}.name`) ? { name: String(item.name).trim() } : {}),
+    ...(typeof item.port === "number" ? { port: item.port } : {}),
+    ...(optionalString(item.home, `${filePath}.home`) ? { home: String(item.home).trim() } : {}),
+    ...(optionalString(item.client, `${filePath}.client`) ? { client: String(item.client).trim() } : {}),
+    ...(optionalString(item.workspace, `${filePath}.workspace`) ? { workspace: String(item.workspace).trim() } : {}),
+    ...(item.model !== undefined ? { model: parseProvider(item.model, `${filePath}.model`, true) } : {}),
+    ...(item.fallback !== undefined ? { fallback: parseProvider(item.fallback, `${filePath}.fallback`, false) } : {}),
+    ...(embedding ? { embedding } : {}),
+    ...(item.summary !== undefined ? { summary: parseProvider(item.summary, `${filePath}.summary`, false) } : {}),
+    ...(item.discord !== undefined ? { discord: parseDiscord(item.discord, `${filePath}.discord`) } : {}),
+    ...(item.settings !== undefined ? { settings: parseSettings(item.settings, `${filePath}.settings`) } : {}),
+  }
+}
+
+export function loadAgentFiles(directory: string): Array<{ config: AgentFile; source: string }> {
+  if (!fs.existsSync(directory)) throw new Error(`agent directory does not exist: ${directory}`)
+  const files = fs.readdirSync(directory)
+    .filter((name) => /\.ya?ml$/i.test(name) && !/\.example\.ya?ml$/i.test(name))
+    .sort()
+  if (files.length === 0) throw new Error(`no agent yaml files found in ${directory}`)
+  return files.map((name) => {
+    const source = path.join(directory, name)
+    return { config: parseAgentFile(source), source }
   })
 }
 
+function providerSettings(prefix: string, config: OpenAiProviderConfig | undefined): Record<string, string> {
+  if (!config) return {}
+  return {
+    ...(config.name ? { [`${prefix}MODEL`]: config.name } : {}),
+    ...(config.baseUrl ? { [`${prefix}BASE_URL`]: config.baseUrl } : {}),
+    ...(config.apiKey ? { [`${prefix}API_KEY`]: config.apiKey } : {}),
+  }
+}
+
+function agentSettings(config: AgentFile): Record<string, string> {
+  const settings: Record<string, string> = {}
+  const model = config.model
+  if (model?.provider === "anthropic") {
+    settings.USE_ANTHROPIC = "true"
+    if (model.name) settings.ANTHROPIC_MODEL = model.name
+    if (model.baseUrl) settings.ANTHROPIC_BASE_URL = model.baseUrl
+    if (model.apiKey) settings.ANTHROPIC_API_KEY = model.apiKey
+  } else if (model) {
+    settings.USE_ANTHROPIC = "false"
+    if (model.name) settings.MODEL = model.name
+    if (model.baseUrl) settings.OPENAI_BASE_URL = model.baseUrl
+    if (model.apiKey) settings.OPENAI_API_KEY = model.apiKey
+  }
+  if (model?.thinking !== undefined) settings.ENABLE_THINKING = String(model.thinking)
+  Object.assign(settings, providerSettings("FALLBACK_OPENAI_", config.fallback))
+  if (config.fallback?.name) {
+    settings.FALLBACK_MODEL = config.fallback.name
+    delete settings.FALLBACK_OPENAI_MODEL
+  }
+  Object.assign(settings, providerSettings("EMBEDDING_", config.embedding))
+  if (config.embedding?.dimensions) settings.EMBEDDING_DIMENSIONS = String(config.embedding.dimensions)
+  Object.assign(settings, providerSettings("SUMMARY_", config.summary))
+  if (config.discord?.token) settings.DISCORD_BOT_TOKEN = config.discord.token
+  if (config.discord?.enabled !== undefined) settings.DISCORD_GATEWAY_ENABLED = String(config.discord.enabled)
+  if (config.discord?.botUserId) settings.DISCORD_BOT_USER_ID = config.discord.botUserId
+  if (config.discord?.dmWhitelist) settings.DISCORD_DM_WHITELIST = config.discord.dmWhitelist
+  if (config.discord?.scanChannelIds) settings.DISCORD_SCAN_CHANNEL_IDS = config.discord.scanChannelIds
+  if (config.discord?.wakeOnEvent !== undefined) settings.DISCORD_WAKE_ON_EVENT = String(config.discord.wakeOnEvent)
+  for (const [key, value] of Object.entries(config.settings ?? {})) settings[key] = String(value)
+  return settings
+}
+
 export function resolveLocalAgents(
-  configs: LocalAgentConfig[],
-  options: { controlPort: number; repoRoot: string; controlToken?: string; token?: () => string },
+  files: Array<{ config: AgentFile; source: string }>,
+  options: { controlPort: number; repoRoot: string },
 ): ResolvedLocalAgent[] {
-  const createToken = options.token ?? (() => randomBytes(32).toString("base64url"))
-  const resolved = configs.map((config, index) => {
+  const resolved = files.map(({ config, source }, index) => {
+    const id = (config.id ?? path.basename(source).replace(/\.ya?ml$/i, "")).trim()
+    if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error(`${source}: invalid agent id ${id}`)
     const port = config.port ?? options.controlPort + index + 1
-    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`invalid worker port for ${config.id}`)
-    if (port === options.controlPort) throw new Error(`worker ${config.id} cannot use control port ${options.controlPort}`)
-    const configuredHome = config.home
+    if (!Number.isInteger(port) || port < 1 || port > 65535 || port === options.controlPort) {
+      throw new Error(`${source}: invalid worker port ${port}`)
+    }
+    const home = canonicalPath(config.home
       ? (path.isAbsolute(config.home) ? config.home : path.join(options.repoRoot, config.home))
-      : path.join(options.repoRoot, "data", "agents", config.id)
+      : path.join(options.repoRoot, "data", "agents", id))
+    const client = config.client?.trim()
+    if (!client) throw new Error(`${source}: client is required`)
+    if (client !== "local") {
+      const url = new URL(client)
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
+        throw new Error(`${source}: client must be local or an HTTP(S) URL without credentials`)
+      }
+    }
+    const workspace = config.workspace
+      ? canonicalPath(path.isAbsolute(config.workspace) ? config.workspace : path.join(options.repoRoot, config.workspace))
+      : undefined
     return {
-      id: config.id,
-      name: config.name ?? config.id,
+      id,
+      name: config.name ?? id,
       port,
-      home: canonicalPath(configuredHome),
-      workerToken: config.workerToken?.trim() || createToken(),
-      ...(config.toolClientToken?.trim() ? { toolClientToken: config.toolClientToken.trim() } : {}),
-      ...(config.expectedClientId ? { expectedClientId: config.expectedClientId } : {}),
-      env: { ...(config.env ?? {}) },
+      home,
+      client,
+      ...(workspace ? { workspace } : {}),
+      settings: agentSettings(config),
+      source,
     }
   })
 
   assertUnique(resolved, "id", (agent) => agent.id)
   assertUnique(resolved, "port", (agent) => String(agent.port))
   assertUnique(resolved, "home", (agent) => agent.home)
-  assertUniqueCredentials(resolved)
-  const controlToken = options.controlToken?.trim()
-  if (controlToken && resolved.some((agent) => agent.workerToken === controlToken || agent.toolClientToken === controlToken)) {
-    throw new Error("control and agent credentials must be distinct")
-  }
   return resolved
 }
 
@@ -178,8 +311,7 @@ function canonicalPath(value: string): string {
     suffix.unshift(path.basename(current))
     current = parent
   }
-  const canonicalParent = fs.realpathSync.native(current)
-  return path.join(canonicalParent, ...suffix)
+  return path.join(fs.realpathSync.native(current), ...suffix)
 }
 
 function assertUnique<T>(items: T[], label: string, key: (item: T) => string): void {
@@ -187,29 +319,15 @@ function assertUnique<T>(items: T[], label: string, key: (item: T) => string): v
   items.forEach((item, index) => {
     const value = key(item)
     const prior = owners.get(value)
-    if (prior !== undefined) throw new Error(`local agents at indexes ${prior} and ${index} share ${label}`)
+    if (prior !== undefined) throw new Error(`agents at indexes ${prior} and ${index} share ${label}`)
     owners.set(value, index)
   })
 }
 
-function assertUniqueCredentials(agents: ResolvedLocalAgent[]): void {
-  const owners = new Map<string, { agent: string; role: string }>()
-  for (const agent of agents) {
-    for (const [role, value] of [["worker", agent.workerToken], ["tool client", agent.toolClientToken]] as const) {
-      if (!value) continue
-      const prior = owners.get(value)
-      if (prior) {
-        throw new Error(`agents ${prior.agent} and ${agent.id} reuse a credential across ${prior.role} and ${role} roles`)
-      }
-      owners.set(value, { agent: agent.id, role })
-    }
-  }
-}
-
-export function assertNoDuplicateDiscordTokens(agents: ResolvedLocalAgent[], parentEnv: NodeJS.ProcessEnv): void {
+export function assertNoDuplicateDiscordTokens(agents: ResolvedLocalAgent[]): void {
   const owners = new Map<string, string>()
   for (const agent of agents) {
-    const token = ("DISCORD_BOT_TOKEN" in agent.env ? agent.env.DISCORD_BOT_TOKEN : parentEnv.DISCORD_BOT_TOKEN)?.trim()
+    const token = agent.settings.DISCORD_BOT_TOKEN?.trim()
     if (!token) continue
     const prior = owners.get(token)
     if (prior) throw new Error(`agents ${prior} and ${agent.id} share DISCORD_BOT_TOKEN`)
@@ -217,11 +335,7 @@ export function assertNoDuplicateDiscordTokens(agents: ResolvedLocalAgent[], par
   }
 }
 
-export function assertNoDuplicateBridgePorts(
-  agents: ResolvedLocalAgent[],
-  parentEnv: NodeJS.ProcessEnv,
-  controlPort: number,
-): void {
+export function assertNoDuplicateBridgePorts(agents: ResolvedLocalAgent[], controlPort: number): void {
   const owners = new Map<number, string>()
   const workerPorts = new Map(agents.map((agent) => [agent.port, agent.id]))
   for (const agent of agents) {
@@ -229,9 +343,8 @@ export function assertNoDuplicateBridgePorts(
       { name: "Antigravity", enabled: "ANTIGRAVITY_BRIDGE_ENABLED", port: "ANTIGRAVITY_BRIDGE_PORT", fallback: "8000" },
       { name: "Codex", enabled: "CODEX_BRIDGE_ENABLED", port: "CODEX_BRIDGE_PORT", fallback: "8001" },
     ] as const) {
-      const enabled = (agent.env[bridge.enabled] ?? parentEnv[bridge.enabled])?.trim().toLowerCase() === "true"
-      if (!enabled) continue
-      const port = Number.parseInt(agent.env[bridge.port] ?? parentEnv[bridge.port] ?? bridge.fallback, 10)
+      if (agent.settings[bridge.enabled]?.trim().toLowerCase() !== "true") continue
+      const port = Number.parseInt(agent.settings[bridge.port] ?? bridge.fallback, 10)
       if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`invalid ${bridge.name} bridge port for ${agent.id}`)
       const workerOwner = workerPorts.get(port)
       if (port === controlPort || workerOwner) {
@@ -246,20 +359,21 @@ export function assertNoDuplicateBridgePorts(
 }
 
 export function buildWorkerEnvironment(parentEnv: NodeJS.ProcessEnv, agent: ResolvedLocalAgent): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...parentEnv }
-  for (const key of STRIPPED_PARENT_ENV) delete env[key]
-  Object.assign(env, agent.env, {
+  const env: NodeJS.ProcessEnv = {}
+  for (const [key, value] of Object.entries(parentEnv)) {
+    if (SAFE_PARENT_SETTINGS.has(key) || key.startsWith("LC_")) env[key] = value
+  }
+  Object.assign(env, agent.settings, {
     HOME: agent.home,
     NIRI_AGENT_ID: agent.id,
     AGENT_NAME: agent.name,
     NIRI_HOME: agent.home,
+    NIRI_CLIENT: agent.client,
+    ...(agent.workspace ? { NIRI_CLIENT_WORKSPACE: agent.workspace } : {}),
     PORT: String(agent.port),
     NIRI_WORKER_HOST: "127.0.0.1",
-    NIRI_WORKER_TOKEN: agent.workerToken,
     NIRI_MANAGED_WORKER: "true",
+    NIRI_MIGRATE_LEGACY_STATE: agent.settings.NIRI_MIGRATE_LEGACY_STATE ?? "false",
   })
-  if (!("NIRI_MIGRATE_LEGACY_STATE" in agent.env)) env.NIRI_MIGRATE_LEGACY_STATE = "false"
-  if (agent.toolClientToken) env.NIRI_TOOL_CLIENT_TOKEN = agent.toolClientToken
-  if (agent.expectedClientId) env.NIRI_EXPECTED_CLIENT_ID = agent.expectedClientId
   return env
 }

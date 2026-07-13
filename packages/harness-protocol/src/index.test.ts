@@ -1,33 +1,16 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import {
-  parseClientHello,
-  parseClientLease,
-  parseClientPollResponse,
   parseClientToolResult,
+  parseToolInvocation,
 } from "./index.js"
 
-test("client hello validates identities and de-duplicates capabilities", () => {
-  assert.equal(parseClientHello({}), null)
-  const hello = parseClientHello({
-    protocol: "harness-tool/v1",
-    agentId: "mira",
-    clientId: "mira-macbook",
-    capabilities: ["shell", "shell", "read_file"],
-    workspace: { id: "mira", root: "/Users/mira/project" },
-  })
-  assert.deepEqual(hello?.capabilities, ["shell", "read_file"])
-})
-
 test("wire parsers reject unknown tools, array args, and malformed dates", () => {
-  assert.equal(parseClientLease({ agentId: "a", clientId: "c", leaseId: "l", expiresAt: "not-a-date" }), null)
   assert.equal(
-    parseClientPollResponse({
+    parseToolInvocation({
       type: "tool.call",
       invocationId: "i",
       agentId: "a",
-      clientId: "c",
-      leaseId: "l",
       tool: "server_shell",
       args: {},
       issuedAt: new Date().toISOString(),
@@ -36,12 +19,10 @@ test("wire parsers reject unknown tools, array args, and malformed dates", () =>
     null,
   )
   assert.equal(
-    parseClientPollResponse({
+    parseToolInvocation({
       type: "tool.call",
       invocationId: "i",
       agentId: "a",
-      clientId: "c",
-      leaseId: "l",
       tool: "shell",
       args: [],
       issuedAt: new Date().toISOString(),
@@ -56,8 +37,6 @@ test("tool result image metadata must match a bounded image data URL shape", () 
     type: "tool.result",
     invocationId: "i",
     agentId: "a",
-    clientId: "c",
-    leaseId: "l",
     status: "ok",
     completedAt: new Date().toISOString(),
   }

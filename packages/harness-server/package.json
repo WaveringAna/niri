@@ -1,7 +1,7 @@
 {
   "name": "@mira/harness-server",
   "version": "0.1.0",
-  "description": "Authenticated single-agent tool-client broker with reconnect-safe invocation semantics.",
+  "description": "Tiny direct HTTP client for remote AI harness tools.",
   "license": "MIT",
   "type": "module",
   "files": [

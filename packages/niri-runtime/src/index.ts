@@ -10,6 +10,7 @@ import { setDiscordToolsAvailable } from "./discord/availability"
 import { ensureSoulFilePlacement } from "./bootstrap"
 import { startAntigravityBridge, stopAntigravityBridge } from "./antigravity-bridge"
 import { startCodexBridge, stopCodexBridge } from "./codex-bridge"
+import { clientTools } from "./client"
 
 const PORT = Number.parseInt(process.env.PORT ?? "3000", 10)
 const WORKER_HOST = process.env.NIRI_WORKER_HOST?.trim() || "127.0.0.1"
@@ -30,9 +31,10 @@ function spawnReplacementProcess(): void {
 
 async function main() {
   if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error(`invalid worker port: ${process.env.PORT}`)
-  if (!process.env.NIRI_WORKER_TOKEN?.trim()) throw new Error("NIRI_WORKER_TOKEN is required")
   process.umask(0o077)
   console.log("[niri] starting up...")
+
+  await clientTools.start()
 
   await ensureSoulFilePlacement()
   initDb()
@@ -96,6 +98,7 @@ async function main() {
       if (discordGateway) await discordGateway.stop()
       setDiscordToolsAvailable(false)
       await server.close()
+      await clientTools.stop()
       await stopAntigravityBridge()
       await stopCodexBridge()
     }

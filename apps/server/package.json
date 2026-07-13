@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "predev": "npm run build --workspace @mira/harness-protocol && npm run build --workspace @mira/harness-core && npm run build --workspace @mira/harness-server && npm run build --workspace @niri/protocol && npm run build --workspace @niri/chat-client && npm run build --workspace @niri/web",
-    "prestart": "npm run build --workspace @mira/harness-protocol && npm run build --workspace @mira/harness-core && npm run build --workspace @mira/harness-server && npm run build --workspace @niri/protocol && npm run build --workspace @niri/chat-client && npm run build --workspace @niri/web",
+    "predev": "npm run build --workspace @mira/harness-protocol && npm run build --workspace @mira/harness-core && npm run build --workspace @mira/harness-server && npm run build --workspace @mira/harness-client-node && npm run build --workspace @niri/protocol && npm run build --workspace @niri/chat-client && npm run build --workspace @niri/web",
+    "prestart": "npm run build --workspace @mira/harness-protocol && npm run build --workspace @mira/harness-core && npm run build --workspace @mira/harness-server && npm run build --workspace @mira/harness-client-node && npm run build --workspace @niri/protocol && npm run build --workspace @niri/chat-client && npm run build --workspace @niri/web",
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
     "test": "node --import tsx --test 'src/**/*.test.ts'",
@@ -21,6 +21,7 @@
     "@fastify/static": "^9.1.3",
     "@niri/protocol": "*",
     "better-sqlite3": "^12.8.0",
-    "fastify": "^5.8.4"
+    "fastify": "^5.8.4",
+    "yaml": "^2.8.2"
   }
 }

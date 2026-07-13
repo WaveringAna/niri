@@ -93,20 +93,6 @@ type ChatLine = {
 }
 
 const PANEL_COOKIE = "niri_control_panels"
-const CONTROL_TOKEN_KEY = "niri_control_token"
-
-function readControlToken(): string {
-  const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""))
-  const token = fragment.get("token")?.trim()
-  if (token) {
-    sessionStorage.setItem(CONTROL_TOKEN_KEY, token)
-    history.replaceState(null, "", `${window.location.pathname}${window.location.search}`)
-    return token
-  }
-  return sessionStorage.getItem(CONTROL_TOKEN_KEY)?.trim() ?? ""
-}
-
-const CONTROL_TOKEN = readControlToken()
 
 function cookieValue(name: string): string | null {
   const prefix = `${name}=`
@@ -173,7 +159,6 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       ...(init?.body ? { "content-type": "application/json" } : {}),
-      ...(CONTROL_TOKEN ? { authorization: `Bearer ${CONTROL_TOKEN}` } : {}),
       ...(init?.headers ?? {}),
     },
   })
@@ -187,10 +172,7 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 async function consumeWorkerStream(url: string, signal: AbortSignal, onEvent: (event: WorkerEvent) => void): Promise<void> {
-  const res = await fetch(url, {
-    signal,
-    headers: CONTROL_TOKEN ? { authorization: `Bearer ${CONTROL_TOKEN}` } : {},
-  })
+  const res = await fetch(url, { signal })
   if (!res.ok || !res.body) throw new Error(res.ok ? "stream body missing" : `${res.status} ${res.statusText}`)
   const reader = res.body.getReader()
   const decoder = new TextDecoder()

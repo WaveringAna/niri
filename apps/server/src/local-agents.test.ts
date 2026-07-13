@@ -1,121 +1,97 @@
 import assert from "node:assert/strict"
-import test from "node:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import test from "node:test"
 import {
   assertNoDuplicateBridgePorts,
   assertNoDuplicateDiscordTokens,
   buildWorkerEnvironment,
-  parseLocalAgents,
+  loadAgentFiles,
   resolveLocalAgents,
 } from "./local-agents"
 
-const options = {
-  controlPort: 4300,
-  repoRoot: "/tmp/niri-review",
-  token: (() => {
-    let index = 0
-    return () => `generated-${++index}`
-  })(),
+function fixture(t: test.TestContext, files: Record<string, string>): string {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "niri-agents-"))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  for (const [name, contents] of Object.entries(files)) fs.writeFileSync(path.join(directory, name), contents)
+  return directory
 }
 
-test("multi-agent configuration rejects shared identity, port, home, and client tokens", () => {
-  assert.throws(
-    () => resolveLocalAgents([{ id: "same" }, { id: "same" }], options),
-    /share id/,
-  )
-  assert.throws(
-    () => resolveLocalAgents([{ id: "a", port: 4301 }, { id: "b", port: 4301 }], options),
-    /share port/,
-  )
-  assert.throws(
-    () => resolveLocalAgents([{ id: "a", home: "/tmp/shared" }, { id: "b", home: "/tmp/shared" }], options),
-    /share home/,
-  )
-  assert.throws(
-    () => resolveLocalAgents([{ id: "a", toolClientToken: "shared" }, { id: "b", toolClientToken: "shared" }], options),
-    /reuse a credential/,
-  )
-  assert.throws(
-    () => resolveLocalAgents([{ id: "a", workerToken: "shared" }, { id: "b", toolClientToken: "shared" }], options),
-    /reuse a credential/,
-  )
-  assert.throws(
-    () => resolveLocalAgents([{ id: "a", workerToken: "do-not-log" }, { id: "b", workerToken: "do-not-log" }], options),
-    (error: unknown) => error instanceof Error && !error.message.includes("do-not-log"),
-  )
-  assert.throws(
-    () => resolveLocalAgents([{ id: "a", toolClientToken: "control-secret" }], { ...options, controlToken: "control-secret" }),
-    /control and agent credentials must be distinct/,
-  )
+const options = { controlPort: 4300, repoRoot: "/tmp/niri-review" }
+
+test("one yaml file is one complete agent", (t) => {
+  const directory = fixture(t, {
+    "mira.yaml": `
+name: Mira
+client: http://mira-macbook.local:3002
+model:
+  name: openai/gpt-5
+  baseUrl: https://openrouter.ai/api/v1
+  apiKey: model-secret
+  thinking: true
+discord:
+  token: discord-secret
+  enabled: true
+fallback:
+  name: local-model
+  baseUrl: http://server.local:1234/v1
+settings:
+  RUNNER_MAX_TURNS: 80
+`,
+  })
+  const [agent] = resolveLocalAgents(loadAgentFiles(directory), options)
+  assert.equal(agent?.id, "mira")
+  assert.equal(agent?.name, "Mira")
+  assert.equal(agent?.client, "http://mira-macbook.local:3002")
+  assert.equal(agent?.settings.MODEL, "openai/gpt-5")
+  assert.equal(agent?.settings.OPENAI_API_KEY, "model-secret")
+  assert.equal(agent?.settings.DISCORD_BOT_TOKEN, "discord-secret")
+  assert.equal(agent?.settings.FALLBACK_MODEL, "local-model")
+  assert.equal(agent?.settings.RUNNER_MAX_TURNS, "80")
 })
 
-test("home uniqueness follows filesystem aliases", (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "niri-home-alias-"))
-  const real = path.join(root, "real")
-  const alias = path.join(root, "alias")
-  fs.mkdirSync(real)
-  fs.symlinkSync(real, alias)
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
-
-  assert.throws(
-    () => resolveLocalAgents([{ id: "a", home: real }, { id: "b", home: alias }], options),
-    /share home/,
-  )
+test("local makes the server machine the client", (t) => {
+  const directory = fixture(t, { "local.yaml": "client: local\nmodel:\n  provider: anthropic\n  name: claude\n  apiKey: secret\n" })
+  const [agent] = resolveLocalAgents(loadAgentFiles(directory), options)
+  assert.equal(agent?.client, "local")
+  assert.equal(agent?.settings.USE_ANTHROPIC, "true")
+  assert.equal(agent?.settings.ANTHROPIC_MODEL, "claude")
 })
 
-test("explicit multi-agent workers do not inherit control-plane or sibling secrets", () => {
-  const parent = {
-    PATH: process.env.PATH,
-    NIRI_LOCAL_AGENTS_JSON: JSON.stringify([
-      { id: "alpha", toolClientToken: "alpha-secret" },
-      { id: "beta", toolClientToken: "beta-secret" },
-    ]),
-    NIRI_TOOL_CLIENT_TOKEN: "global-secret",
-    NIRI_CONTROL_TOKEN: "control-secret",
-    NIRI_AGENT_STATE_DIR: "/tmp/shared-state",
-    OPENAI_API_KEY: "provider-secret",
-  }
-  const agents = resolveLocalAgents(parseLocalAgents(parent, 4300), options)
-  const alpha = buildWorkerEnvironment(parent, agents[0]!)
-
-  assert.equal(alpha.NIRI_TOOL_CLIENT_TOKEN, "alpha-secret")
-  assert.equal(alpha.NIRI_LOCAL_AGENTS_JSON, undefined)
-  assert.equal(alpha.NIRI_CONTROL_TOKEN, undefined)
-  assert.equal(alpha.NIRI_AGENT_STATE_DIR, undefined)
-  assert.equal(alpha.OPENAI_API_KEY, "provider-secret")
-  assert.equal(alpha.NIRI_HOME, path.join(fs.realpathSync("/tmp"), "niri-review", "data", "agents", "alpha"))
-  assert.equal(alpha.NIRI_WORKER_HOST, "127.0.0.1")
-  assert.equal(alpha.HOME, alpha.NIRI_HOME)
-  assert.equal(alpha.NIRI_MIGRATE_LEGACY_STATE, "false")
+test("agent identity, ports, and homes stay isolated", (t) => {
+  const directory = fixture(t, {
+    "a.yaml": "client: local\nport: 4301\nhome: /tmp/shared\n",
+    "b.yaml": "client: local\nport: 4301\nhome: /tmp/shared\n",
+  })
+  assert.throws(() => resolveLocalAgents(loadAgentFiles(directory), options), /share port/)
 })
 
-test("reserved lifecycle variables cannot hide inside an agent env object", () => {
-  assert.throws(
-    () => parseLocalAgents({ NIRI_LOCAL_AGENTS_JSON: '[{"id":"a","env":{"NIRI_HOME":"/tmp/escape"}}]' }, 4300),
-    /NIRI_HOME is reserved/,
-  )
-  assert.throws(
-    () => parseLocalAgents({ NIRI_LOCAL_AGENTS_JSON: '[{"id":"a","toolClientTokn":"typo"}]' }, 4300),
-    /unknown keys: toolClientTokn/,
-  )
+test("worker environment contains only host basics and that agent's yaml settings", (t) => {
+  const directory = fixture(t, { "mira.yaml": "client: local\nmodel:\n  name: model\n  apiKey: secret\n" })
+  const [agent] = resolveLocalAgents(loadAgentFiles(directory), options)
+  const env = buildWorkerEnvironment({ PATH: process.env.PATH, SHOULD_NOT_LEAK: "nope" }, agent!)
+  assert.equal(env.PATH, process.env.PATH)
+  assert.equal(env.SHOULD_NOT_LEAK, undefined)
+  assert.equal(env.OPENAI_API_KEY, "secret")
+  assert.equal(env.NIRI_CLIENT, "local")
+  assert.equal(env.NIRI_AGENT_ID, "mira")
 })
 
-test("Discord and Antigravity endpoints cannot overlap across agents", () => {
-  const agents = resolveLocalAgents([
-    { id: "a", port: 4301, env: { DISCORD_BOT_TOKEN: "same", ANTIGRAVITY_BRIDGE_ENABLED: "true", ANTIGRAVITY_BRIDGE_PORT: "4302" } },
-    { id: "b", port: 4302, env: { DISCORD_BOT_TOKEN: " same " } },
-  ], options)
+test("unknown and reserved yaml settings fail startup", (t) => {
+  const unknown = fixture(t, { "a.yaml": "client: local\nmodle: nope\n" })
+  assert.throws(() => loadAgentFiles(unknown), /unknown keys: modle/)
 
-  assert.throws(() => assertNoDuplicateDiscordTokens(agents, {}), /share DISCORD_BOT_TOKEN/)
-  assert.throws(() => assertNoDuplicateBridgePorts(agents, {}, 4300), /conflicts with worker b/)
+  const reserved = fixture(t, { "a.yaml": "client: local\nsettings:\n  NIRI_HOME: /tmp/escape\n" })
+  assert.throws(() => loadAgentFiles(reserved), /NIRI_HOME is managed by the server/)
 })
 
-test("Codex and Antigravity bridge ports cannot overlap", () => {
-  const agents = resolveLocalAgents([
-    { id: "a", port: 4301, env: { ANTIGRAVITY_BRIDGE_ENABLED: "true", ANTIGRAVITY_BRIDGE_PORT: "4400" } },
-    { id: "b", port: 4302, env: { CODEX_BRIDGE_ENABLED: "true", CODEX_BRIDGE_PORT: "4400" } },
-  ], options)
-  assert.throws(() => assertNoDuplicateBridgePorts(agents, {}, 4300), /a Antigravity and b Codex bridges share port 4400/)
+test("Discord credentials and bridge ports cannot overlap", (t) => {
+  const directory = fixture(t, {
+    "a.yaml": "client: local\nport: 4301\ndiscord:\n  token: same\nsettings:\n  ANTIGRAVITY_BRIDGE_ENABLED: true\n  ANTIGRAVITY_BRIDGE_PORT: 4400\n",
+    "b.yaml": "client: local\nport: 4302\ndiscord:\n  token: same\nsettings:\n  CODEX_BRIDGE_ENABLED: true\n  CODEX_BRIDGE_PORT: 4400\n",
+  })
+  const agents = resolveLocalAgents(loadAgentFiles(directory), options)
+  assert.throws(() => assertNoDuplicateDiscordTokens(agents), /share DISCORD_BOT_TOKEN/)
+  assert.throws(() => assertNoDuplicateBridgePorts(agents, 4300), /bridges share port 4400/)
 })

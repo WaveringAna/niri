@@ -11,8 +11,6 @@ function invocation(tool: ClientToolName, args: Record<string, unknown>): ToolIn
     type: "tool.call",
     invocationId: `${tool}-1`,
     agentId: "agent",
-    clientId: "client",
-    leaseId: "lease",
     tool,
     args,
     issuedAt: new Date().toISOString(),
@@ -99,18 +97,18 @@ test("a second host makes the previous process-global runtime fail closed", asyn
 
 test("the model shell does not inherit harness daemon secrets", async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "harness-host-env-"))
-  process.env.NIRI_CONTROL_TOKEN = "control-probe"
-  process.env.NIRI_LOCAL_AGENTS_JSON = "sibling-probe"
+  process.env.OPENAI_API_KEY = "model-probe"
+  process.env.DISCORD_BOT_TOKEN = "discord-probe"
   const host = new NodeToolHost({ capabilities: ["shell"], workspace: { root: workspace } })
   try {
     const result = await host.execute(invocation("shell", {
-      command: "printf '%s|%s' \"${NIRI_CONTROL_TOKEN-}\" \"${NIRI_LOCAL_AGENTS_JSON-}\"",
+      command: "printf '%s|%s' \"${OPENAI_API_KEY-}\" \"${DISCORD_BOT_TOKEN-}\"",
     }))
     assert.equal(result.status, "ok")
     assert.equal(result.output, "|")
   } finally {
-    delete process.env.NIRI_CONTROL_TOKEN
-    delete process.env.NIRI_LOCAL_AGENTS_JSON
+    delete process.env.OPENAI_API_KEY
+    delete process.env.DISCORD_BOT_TOKEN
     await host.stop()
     await fs.rm(workspace, { recursive: true, force: true })
   }

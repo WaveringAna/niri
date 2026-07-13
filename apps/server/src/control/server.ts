@@ -1,7 +1,6 @@
 import Fastify from "fastify"
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
+import type { FastifyInstance, FastifyReply } from "fastify"
 import fastifyStatic from "@fastify/static"
-import { timingSafeEqual } from "node:crypto"
 import { existsSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -12,17 +11,12 @@ import {
   listMirroredEvents,
   listRecentCompactions,
   recordWorkerEvent,
-  upsertAgent,
   updateAgentStatus,
 } from "./db"
 import type { ControlCommand, UserMessage, WorkerEvent } from "@niri/protocol"
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url))
 const WEB_DIST_DIR = join(SRC_DIR, "..", "..", "..", "web", "dist")
-
-function agentAuthHeaders(token?: string): Record<string, string> {
-  return token ? { authorization: `Bearer ${token}` } : {}
-}
 
 function parseJsonOrText(text: string): unknown {
   try {
@@ -32,11 +26,10 @@ function parseJsonOrText(text: string): unknown {
   }
 }
 
-async function fetchWorkerJson(agent: { baseUrl: string; token?: string }, path: string, init: RequestInit = {}): Promise<unknown> {
+async function fetchWorkerJson(agent: { baseUrl: string }, path: string, init: RequestInit = {}): Promise<unknown> {
   const res = await fetch(`${agent.baseUrl}${path}`, {
     ...init,
     headers: {
-      ...agentAuthHeaders(agent.token),
       ...(init.body ? { "content-type": "application/json" } : {}),
       ...(init.headers ?? {}),
     },
@@ -49,25 +42,6 @@ async function fetchWorkerJson(agent: { baseUrl: string; token?: string }, path:
     throw new Error(detail || `${res.status} ${res.statusText}`)
   }
   return data
-}
-
-async function proxyToolClientRequest(
-  agent: { baseUrl: string },
-  path: string,
-  authorization: string,
-  body: unknown,
-): Promise<{ status: number; data: unknown }> {
-  const res = await fetch(`${agent.baseUrl}${path}`, {
-    method: "POST",
-    headers: {
-      authorization,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(body ?? {}),
-    signal: AbortSignal.timeout(path.endsWith("/poll") ? 35_000 : 15_000),
-  })
-  const data = parseJsonOrText(await res.text())
-  return { status: res.status, data }
 }
 
 function looksLikeWorkerEvent(value: unknown): value is WorkerEvent {
@@ -172,8 +146,13 @@ function mirrorSseBlock(block: string, agentId?: string): void {
   } catch {}
 }
 
-async function proxyWorkerStream(agentId: string, reply: FastifyReply, afterSeq: number): Promise<void> {
-  const agent = getAgent(agentId)
+async function proxyWorkerStream(
+  agentId: string,
+  reply: FastifyReply,
+  afterSeq: number,
+  configuredAgentIds?: ReadonlySet<string>,
+): Promise<void> {
+  const agent = configuredAgentIds && !configuredAgentIds.has(agentId) ? null : getAgent(agentId)
   if (!agent) {
     reply.code(404).send({ error: "agent not found" })
     return
@@ -195,7 +174,6 @@ async function proxyWorkerStream(agentId: string, reply: FastifyReply, afterSeq:
   downstream.on("close", () => controller.abort())
   try {
     res = await fetch(`${agent.baseUrl}/awp/stream?after_seq=${afterSeq}`, {
-      headers: agentAuthHeaders(agent.token),
       signal: controller.signal,
     })
   } catch (err) {
@@ -252,8 +230,13 @@ function chatEventFromBody(agentId: string, body: unknown): UserMessage | null {
 
 export function registerControlRoutes(
   app: FastifyInstance,
-  options: { staticUi?: boolean; stopLocalAgent?: (id: string) => Promise<boolean> } = {},
+  options: {
+    staticUi?: boolean
+    configuredAgentIds?: ReadonlySet<string>
+    stopLocalAgent?: (id: string) => Promise<boolean>
+  } = {},
 ) {
+  const findAgent = (id: string) => options.configuredAgentIds && !options.configuredAgentIds.has(id) ? null : getAgent(id)
   if (options.staticUi !== false && existsSync(WEB_DIST_DIR)) {
     app.register(fastifyStatic, {
       root: WEB_DIST_DIR,
@@ -275,32 +258,12 @@ export function registerControlRoutes(
   }
 
   app.get("/agents", async () => ({
-    agents: listAgents().map(({ token: _token, ...agent }) => agent),
+    agents: listAgents().filter((agent) => !options.configuredAgentIds || options.configuredAgentIds.has(agent.id)),
   }))
-
-  app.post("/agents", async (req, reply) => {
-    if (process.env.NIRI_ALLOW_DYNAMIC_AGENTS?.trim().toLowerCase() !== "true") {
-      return reply.code(403).send({ error: "dynamic agent registration is disabled" })
-    }
-    const body = req.body as Record<string, unknown>
-    try {
-      const baseUrl = String(body.baseUrl ?? body.base_url ?? "")
-      const agent = upsertAgent({
-        id: String(body.id ?? ""),
-        name: typeof body.name === "string" ? body.name : undefined,
-        baseUrl,
-        token: typeof body.token === "string" ? body.token : undefined,
-      })
-      const { token: _token, ...safeAgent } = agent
-      return reply.send({ ok: true, agent: safeAgent })
-    } catch (err) {
-      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) })
-    }
-  })
 
   app.get("/agents/:id/status", async (req, reply) => {
     const { id } = req.params as { id: string }
-    const agent = getAgent(id)
+    const agent = findAgent(id)
     if (!agent) return reply.code(404).send({ error: "agent not found" })
 
     try {
@@ -315,7 +278,7 @@ export function registerControlRoutes(
 
   app.get("/agents/:id/overview", async (req, reply) => {
     const { id } = req.params as { id: string }
-    const agent = getAgent(id)
+    const agent = findAgent(id)
     if (!agent) return reply.code(404).send({ error: "agent not found" })
 
     let workerStatus: unknown = null
@@ -327,9 +290,8 @@ export function registerControlRoutes(
       workerStatus = { error: err instanceof Error ? err.message : String(err) }
     }
 
-    const { token: _token, ...safeAgent } = getAgent(id) ?? agent
     return {
-      agent: safeAgent,
+      agent: findAgent(id) ?? agent,
       status: workerStatus,
       compactions: listRecentCompactions(id, 12),
     }
@@ -337,7 +299,7 @@ export function registerControlRoutes(
 
   app.post("/agents/:id/events", async (req, reply) => {
     const { id } = req.params as { id: string }
-    const agent = getAgent(id)
+    const agent = findAgent(id)
     if (!agent) return reply.code(404).send({ error: "agent not found" })
 
     const body =
@@ -382,7 +344,7 @@ export function registerControlRoutes(
 
   app.post("/agents/:id/shutdown", async (req, reply) => {
     const { id } = req.params as { id: string }
-    const agent = getAgent(id)
+    const agent = findAgent(id)
     if (!agent) return reply.code(404).send({ error: "agent not found" })
 
     try {
@@ -401,7 +363,7 @@ export function registerControlRoutes(
 
   app.post("/agents/:id/trigger/cron", async (req, reply) => {
     const { id } = req.params as { id: string }
-    const agent = getAgent(id)
+    const agent = findAgent(id)
     if (!agent) return reply.code(404).send({ error: "agent not found" })
     try {
       const result = await fetchWorkerJson(agent, "/trigger/cron", {
@@ -418,7 +380,7 @@ export function registerControlRoutes(
 
   app.get("/agents/:id/events", async (req, reply) => {
     const { id } = req.params as { id: string }
-    const agent = getAgent(id)
+    const agent = findAgent(id)
     if (!agent) return reply.code(404).send({ error: "agent not found" })
     const query = req.query as { after_seq?: string; limit?: string; tail?: string; view?: string }
     const afterSeq = Number.parseInt(query.after_seq ?? "0", 10) || 0
@@ -452,7 +414,7 @@ export function registerControlRoutes(
 
   app.get("/agents/:id/compactions", async (req, reply) => {
     const { id } = req.params as { id: string }
-    if (!getAgent(id)) return reply.code(404).send({ error: "agent not found" })
+    if (!findAgent(id)) return reply.code(404).send({ error: "agent not found" })
     const query = req.query as { limit?: string }
     return {
       agentId: id,
@@ -463,38 +425,12 @@ export function registerControlRoutes(
   app.get("/agents/:id/stream", async (req, reply) => {
     const { id } = req.params as { id: string }
     const query = req.query as { after_seq?: string }
-    await proxyWorkerStream(id, reply, Number.parseInt(query.after_seq ?? "0", 10) || 0)
+    await proxyWorkerStream(id, reply, Number.parseInt(query.after_seq ?? "0", 10) || 0, options.configuredAgentIds)
   })
-
-  const proxyClientOperation = async (
-    operation: "hello" | "poll" | "results" | "detach",
-    req: FastifyRequest,
-    reply: FastifyReply,
-  ) => {
-    const { id } = req.params as { id: string }
-    const agent = getAgent(id)
-    if (!agent) return reply.code(404).send({ error: "agent not found" })
-    const authorization = req.headers.authorization
-    if (typeof authorization !== "string" || !authorization.trim()) {
-      return reply.code(401).send({ error: "tool client authorization is required" })
-    }
-
-    try {
-      const proxied = await proxyToolClientRequest(agent, `/awp/client/${operation}`, authorization, req.body)
-      return reply.code(proxied.status).send(proxied.data)
-    } catch (err) {
-      return reply.code(502).send({ error: err instanceof Error ? err.message : String(err) })
-    }
-  }
-
-  app.post("/agents/:id/client/hello", async (req, reply) => proxyClientOperation("hello", req, reply))
-  app.post("/agents/:id/client/poll", async (req, reply) => proxyClientOperation("poll", req, reply))
-  app.post("/agents/:id/client/results", async (req, reply) => proxyClientOperation("results", req, reply))
-  app.post("/agents/:id/client/detach", async (req, reply) => proxyClientOperation("detach", req, reply))
 
   app.get("/agents/:id/client/status", async (req, reply) => {
     const { id } = req.params as { id: string }
-    const agent = getAgent(id)
+    const agent = findAgent(id)
     if (!agent) return reply.code(404).send({ error: "agent not found" })
     try {
       return reply.send(await fetchWorkerJson(agent, "/awp/client/status"))
@@ -506,32 +442,18 @@ export function registerControlRoutes(
   app.get("/health", async () => ({ ok: true }))
 }
 
-function controlTokenMatches(expected: string, authorization: unknown): boolean {
-  if (typeof authorization !== "string") return false
-  const match = /^Bearer\s+(.+)$/i.exec(authorization.trim())
-  const provided = match?.[1]?.trim() ?? ""
-  if (!provided) return false
-  const expectedBytes = Buffer.from(expected)
-  const providedBytes = Buffer.from(provided)
-  return expectedBytes.length === providedBytes.length && timingSafeEqual(expectedBytes, providedBytes)
-}
-
-export function createControlServer(options: { token: string; stopLocalAgent?: (id: string) => Promise<boolean> }) {
+export function createControlServer(options: {
+  configuredAgentIds?: ReadonlySet<string>
+  stopLocalAgent?: (id: string) => Promise<boolean>
+} = {}) {
   const app = Fastify({ logger: false, bodyLimit: 2_000_000 })
-  const token = options.token.trim()
-  if (!token) throw new Error("control token is required")
-
-  app.addHook("onRequest", async (req, reply) => {
-    if (req.method === "OPTIONS" || req.url === "/health" || req.url.startsWith("/ui")) return
-    if (/^\/agents\/[^/]+\/client\/(?:hello|poll|results|detach)(?:\?|$)/.test(req.url)) return
-    if (!controlTokenMatches(token, req.headers.authorization)) {
-      return reply.code(401).send({ error: "invalid control authorization" })
-    }
-  })
 
   app.options("/*", async (_req, reply) => reply.code(204).send())
 
-  registerControlRoutes(app, { stopLocalAgent: options.stopLocalAgent })
+  registerControlRoutes(app, {
+    configuredAgentIds: options.configuredAgentIds,
+    stopLocalAgent: options.stopLocalAgent,
+  })
 
   return app
 }
