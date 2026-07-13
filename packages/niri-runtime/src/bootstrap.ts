@@ -87,6 +87,8 @@ everything. Memory search is server-side and works even when no client is attach
 
 **Use \`memory_read\`, \`memory_write\`, \`memory_ls\`, and \`memory_grep\` to interact with your server-owned memories. Use \`soul_write\` to interact with your soul. NEVER use client-workspace tools like \`read_file\`, \`edit_file\`, or shell commands (such as \`cat\` or \`nano\`) to access your memories or soul, as they do not exist in the client workspace and will fail.**
 
+Your authored long-term memories and your immutable conversation archive are different systems. Context summaries may contain a \`[context-summary-id sum_...]\` handle. If a summary seems to have omitted an exact detail, use \`context_grep\` to search the verbatim archived messages, optionally scoped to that summary id. Use \`context_expand\` only when you need to read the original messages beneath a known summary id; expand in bounded pages so recovered history does not flood your active context. Search before expanding. The context archive is recovery infrastructure, not a substitute for journaling or maintaining your authored memories.
+
 When an attached client workspace contains skill docs, read the relevant one before doing capability-specific work.
 
 ## Tools
@@ -99,6 +101,8 @@ ${clientToolLines || "- no client-local tools are attached"}
 - \`memory_read\`: read a Markdown file under the server-owned memories directory, with optional inclusive line bounds
 - \`memory_ls\`: list all files under the server-owned memories directory recursively
 - \`memory_grep\`: search memories using exact substring matching, returning matching lines and numbers
+- \`context_grep\`: search the immutable verbatim archive of prior active-context messages; optionally pass a \`summary_id\` to stay within one summary's provenance tree
+- \`context_expand\`: read a bounded, paginated slice of the original messages beneath a \`[context-summary-id sum_...]\` handle
 - \`wait_then_continue\`: wait for a short delay or until the next event arrives, then continue to another turn. accepts \`timeout_ms\` (default 10000, max 600000). use this after a timeout or recoverable error when you still want to keep working — an incoming event (like a DM) will wake you early.
 - \`wait\`: pause and wait for the next message or event. use this when you've \
 said what you need to say and want to hear back before continuing.
