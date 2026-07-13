@@ -14,7 +14,7 @@ import { searchDiscordMessages } from "../discord/search"
 import { listAliases, removeAlias, searchMemories, setAlias } from "../memory"
 import { emit } from "../stream"
 import type { Message } from "../types"
-import { archiveContextMessages, expandContextSummary, grepContext } from "./context-store"
+import { archiveContextMessages, expandContextSummary, grepContext, recordRestContextSnapshot } from "./context-store"
 import type { ToolHandler } from "./loop-shared"
 import { pushToolMessage, recordToolResult, runStandardTool, toolError } from "./loop-tool-runtime"
 import { parseImageDetail, saveRestSnapshot } from "./util"
@@ -273,7 +273,9 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
       if (args.note) console.log("[runner] rest note:", args.note)
       recordToolResult(convId, state, call, "rest", args, "Goodnight.")
       archiveContextMessages(state.conversation, "rest")
-      await saveRestSnapshot(state.conversation, args.note as string | undefined)
+      const snapshot = recordRestContextSnapshot(state.conversation, args.note as string | undefined)
+      console.log(`[context] rest: archived ${snapshot.sourceCount} raw message(s) under ${snapshot.summaryId}`)
+      await saveRestSnapshot([{ role: "user", content: snapshot.forest }], args.note as string | undefined)
       await hooks.clearSession()
       return { shouldRest: true }
     },

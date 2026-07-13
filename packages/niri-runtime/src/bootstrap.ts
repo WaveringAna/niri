@@ -212,9 +212,13 @@ ${buildEnvironmentSection(options)}`.trim()
   }
 
   const wakeMessage = formatUserMessage(event, priorRest)
+  const priorSummary = priorRest?.forest.startsWith("[context summary v1]")
+    ? [{ role: "user" as const, content: priorRest.forest }]
+    : []
 
   return [
     { role: "system", content: system },
+    ...priorSummary,
     { role: "user", content: wakeMessage },
   ]
 }
@@ -222,7 +226,7 @@ ${buildEnvironmentSection(options)}`.trim()
 function formatUserMessage(event: UserMessage, priorRest?: PriorRestContext | null): string {
   const time = new Date(event.triggeredAt).toLocaleString()
   const priorRestSection = priorRest
-    ? `\n\n[prior session]\nrested_at: ${priorRest.restedAt}\nrest_note: ${priorRest.note?.trim() || "(none)"}\n\nforest:\n${priorRest.forest}`
+    ? `\n\n[prior session]\nrested_at: ${priorRest.restedAt}\nrest_note: ${priorRest.note?.trim() || "(none)"}\ncontext_summary_restored: ${priorRest.forest.startsWith("[context summary v1]") ? "yes" : "no"}`
     : ""
   return `[wake] ${time} — triggered by ${event.source}${priorRestSection}\n\n${event.content}`
 }

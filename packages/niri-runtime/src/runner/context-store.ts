@@ -8,6 +8,9 @@ const DEFAULT_EXPAND_LIMIT = 12
 const MAX_EXPAND_LIMIT = 40
 const DEFAULT_SEARCH_LIMIT = 10
 const MAX_SEARCH_LIMIT = 30
+const CONTEXT_SUMMARY_HEADER = "[context summary v1]"
+const CONTEXT_SUMMARY_NOTE =
+  "Compressed notes of older conversation turns. If anything conflicts, trust newer raw messages."
 
 type ContextMessageRow = {
   id: string
@@ -105,6 +108,43 @@ export function attachContextSummaryId(messages: Message[], summaryId: string): 
       : `${withoutOldId}\n[context-summary-id ${summaryId}]`
     return { ...message, content } as Message
   })
+}
+
+/**
+ * Closes an active session into a new provenance node. The previous summary
+ * becomes its parent and every newer raw message becomes a direct source.
+ */
+export function recordRestContextSnapshot(messages: Message[], note?: string): {
+  summaryId: string
+  forest: string
+  sourceCount: number
+} {
+  const summaryIndex = messages.findIndex((message) => messageText(message).startsWith(CONTEXT_SUMMARY_HEADER))
+  const priorSummaryContent = summaryIndex >= 0 ? messageText(messages[summaryIndex]!) : null
+  const compactedMessages = messages
+    .filter((message) => message.role !== "system" && !messageText(message).startsWith(CONTEXT_SUMMARY_HEADER))
+  const trimmedNote = note?.trim()
+  const summaryText = priorSummaryContent
+    ?? [
+      `The prior session was archived verbatim at ${new Date().toISOString()}.`,
+      trimmedNote ? `Rest note: ${trimmedNote}` : null,
+      `Use context_expand on this summary id to inspect its ${compactedMessages.length} original message(s).`,
+    ].filter(Boolean).join("\n")
+  const summaryId = recordContextCompaction({
+    summaryText,
+    compactedMessages,
+    priorSummaryContent,
+    method: "rest-snapshot",
+  })
+  const baseForest = priorSummaryContent
+    ?? `${CONTEXT_SUMMARY_HEADER}\n${CONTEXT_SUMMARY_NOTE}\n[segments]\n${summaryText}`
+  const forestMessage = attachContextSummaryId([{ role: "user", content: baseForest } as Message], summaryId)[0]!
+
+  return {
+    summaryId,
+    forest: messageText(forestMessage),
+    sourceCount: compactedMessages.length,
+  }
 }
 
 /** Atomically records one summary node, its exact source messages, and its prior-summary edge. */
