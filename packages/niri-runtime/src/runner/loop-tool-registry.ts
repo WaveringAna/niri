@@ -14,6 +14,7 @@ import { searchDiscordMessages } from "../discord/search"
 import { listAliases, removeAlias, searchMemories, setAlias } from "../memory"
 import { emit } from "../stream"
 import type { Message } from "../types"
+import { archiveContextMessages, expandContextSummary, grepContext } from "./context-store"
 import type { ToolHandler } from "./loop-shared"
 import { pushToolMessage, recordToolResult, runStandardTool, toolError } from "./loop-tool-runtime"
 import { parseImageDetail, saveRestSnapshot } from "./util"
@@ -271,6 +272,7 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
     rest: async ({ convId, state, hooks, call, args }) => {
       if (args.note) console.log("[runner] rest note:", args.note)
       recordToolResult(convId, state, call, "rest", args, "Goodnight.")
+      archiveContextMessages(state.conversation, "rest")
       await saveRestSnapshot(state.conversation, args.note as string | undefined)
       await hooks.clearSession()
       return { shouldRest: true }
@@ -319,6 +321,34 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
             2,
           ),
         emptyFallback: '{"query":"","results":[]}',
+      }),
+
+    context_grep: (ctx) =>
+      runStandardTool(ctx, {
+        name: "context_grep",
+        logArgKeys: ["query", "summary_id", "limit"] as const,
+        runArgKeys: ["query", "limit", "summary_id"] as const,
+        run: async (query, limit, summaryId) => JSON.stringify({
+          query,
+          summaryId: summaryId ?? null,
+          results: grepContext(String(query ?? ""), limit as number | undefined, summaryId as string | undefined),
+        }, null, 2),
+        emptyFallback: '{"query":"","results":[]}',
+      }),
+
+    context_expand: (ctx) =>
+      runStandardTool(ctx, {
+        name: "context_expand",
+        logArgKeys: ["summary_id", "offset", "limit"] as const,
+        runArgKeys: ["summary_id", "offset", "limit"] as const,
+        run: async (summaryId, offset, limit) => {
+          const expanded = expandContextSummary(
+            String(summaryId ?? ""),
+            offset as number | undefined,
+            limit as number | undefined,
+          )
+          return JSON.stringify(expanded ?? { error: `unknown context summary: ${String(summaryId ?? "")}` }, null, 2)
+        },
       }),
 
     memory_alias: (ctx) =>

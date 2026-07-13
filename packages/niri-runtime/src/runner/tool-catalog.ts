@@ -112,6 +112,34 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
           required: ["query"],
         },
       ),
+      functionTool(
+        "context_grep",
+        "Search the immutable verbatim history of prior active-context messages. Use this when a compacted summary may have omitted a useful detail.",
+        {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            query: { type: "string", description: "Literal case-insensitive text to find in original messages." },
+            summary_id: { type: "string", description: "Optional context summary id to restrict the search to that summary's provenance tree." },
+            limit: { type: "integer", minimum: 1, maximum: 30 },
+          },
+          required: ["query"],
+        },
+      ),
+      functionTool(
+        "context_expand",
+        "Read a bounded page of verbatim messages beneath a context summary id. Results are paginated to keep the active context from flooding.",
+        {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            summary_id: { type: "string" },
+            offset: { type: "integer", minimum: 0 },
+            limit: { type: "integer", minimum: 1, maximum: 40 },
+          },
+          required: ["summary_id"],
+        },
+      ),
     )
   }
 

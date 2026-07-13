@@ -7,8 +7,9 @@ import {
   estimatePromptTokens,
   findSummaryMessageIndex,
   loadAgentSummaryContext,
-  summarizeConversationViaLLM,
+  summarizeConversationViaLLMWithProvenance,
 } from "./util"
+import { attachContextSummaryId, recordContextCompaction } from "./context-store"
 import { addAssistantMessage, applyUsage, configuredSummaryProvider, emitThinking, fetchCompletion } from "./loop-completion"
 import { assistantContentText, isFunctionToolCall } from "./loop-content"
 import { buildTurnSignature, hasIncomingUserMessage } from "./loop-signatures"
@@ -173,7 +174,7 @@ async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-tu
 
   const beforeCount = state.conversation.length
   const agentContext = await loadAgentSummaryContext()
-  const summarized = await summarizeConversationViaLLM(
+  const compaction = await summarizeConversationViaLLMWithProvenance(
     state.conversation,
     summaryProvider.client,
     summaryProvider.model,
@@ -184,31 +185,37 @@ async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-tu
       agentContext,
     },
   )
-  if (!summarized) {
+  if (!compaction) {
     console.warn(`[context] ${phase}: llm summary unavailable; keeping raw conversation`)
     return false
   }
 
-  const afterEstimate = estimatePromptTokens(summarized)
+  const afterEstimate = estimatePromptTokens(compaction.messages)
   if (afterEstimate >= beforeEstimate) {
     console.warn(`[context] ${phase}: llm summary not smaller (${beforeEstimate} -> ${afterEstimate}); keeping raw conversation`)
     return false
   }
 
-  state.conversation = summarized
-  state.contextSize = afterEstimate
+  const summaryId = recordContextCompaction({
+    summaryText: compaction.summaryText,
+    compactedMessages: compaction.compactedMessages,
+    priorSummaryContent: compaction.priorSummaryContent,
+    method: `${phase}-llm`,
+  })
+  state.conversation = attachContextSummaryId(compaction.messages, summaryId)
+  state.contextSize = estimatePromptTokens(state.conversation)
 
   const summaryIdx = findSummaryMessageIndex(state.conversation)
   const summary = summaryIdx >= 0 ? (state.conversation[summaryIdx]?.content as string) : undefined
 
   console.log(
-    `[context] ${phase}: llm-summarized conversation via ${summaryProvider.model} (${beforeCount} -> ${summarized.length} msgs, ${beforeEstimate} -> ${afterEstimate} tokens)`,
+    `[context] ${phase}: llm-summarized conversation via ${summaryProvider.model} (${beforeCount} -> ${state.conversation.length} msgs, ${beforeEstimate} -> ${state.contextSize} tokens, ${summaryId})`,
   )
 
   recordMetric({
     type: "compaction",
     before: beforeEstimate,
-    after: afterEstimate,
+    after: state.contextSize,
     method: `${phase}-llm`,
     summary,
   })

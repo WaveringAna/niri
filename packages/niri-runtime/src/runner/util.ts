@@ -1348,7 +1348,15 @@ export async function loadAgentSummaryContext(): Promise<string | null> {
  * compacting more of them while keeping the head — soul/core bootstrap system
  * messages, plus any prior `[context summary v1]` block — intact).
  */
-export async function summarizeConversationViaLLM(
+export type ConversationCompaction = {
+  messages: Message[]
+  summaryText: string
+  summaryContent: string
+  compactedMessages: Message[]
+  priorSummaryContent: string | null
+}
+
+export async function summarizeConversationViaLLMWithProvenance(
   messages: Message[],
   summaryClient: OpenAI,
   summaryModel: string,
@@ -1359,7 +1367,7 @@ export async function summarizeConversationViaLLM(
     maxTranscriptChars?: number
     agentContext?: string | null
   } = {},
-): Promise<Message[] | null> {
+): Promise<ConversationCompaction | null> {
   const recentMinKeep = Math.max(2, options.recentMinKeep ?? 6)
   const recentMaxKeep = Math.max(recentMinKeep, options.recentMaxKeep ?? 40)
   const tailCharBudget = Math.max(8_000, options.tailCharBudget ?? 60_000)
@@ -1436,15 +1444,38 @@ export async function summarizeConversationViaLLM(
       `${CONTEXT_SUMMARY_HEADER}\n${CONTEXT_SUMMARY_NOTE}\n${CONTEXT_SUMMARY_SEGMENTS_MARKER}\n` +
       `[llm-summary ${new Date().toISOString()}]\n${summaryText}`
 
-    return [
-      ...head,
-      { role: "user", content: summaryContent } as Message,
-      ...tail,
-    ]
+    return {
+      messages: [
+        ...head,
+        { role: "user", content: summaryContent } as Message,
+        ...tail,
+      ],
+      summaryText,
+      summaryContent,
+      compactedMessages: middle,
+      priorSummaryContent: priorSummaryText,
+    }
   } catch (err) {
     console.warn(`[context] llm summarization failed: ${errorSummary(err)}`)
     return null
   }
+}
+
+/** Backward-compatible summary helper for callers that do not need provenance. */
+export async function summarizeConversationViaLLM(
+  messages: Message[],
+  summaryClient: OpenAI,
+  summaryModel: string,
+  options: {
+    recentMinKeep?: number
+    recentMaxKeep?: number
+    tailCharBudget?: number
+    maxTranscriptChars?: number
+    agentContext?: string | null
+  } = {},
+): Promise<Message[] | null> {
+  const compacted = await summarizeConversationViaLLMWithProvenance(messages, summaryClient, summaryModel, options)
+  return compacted?.messages ?? null
 }
 
 /**

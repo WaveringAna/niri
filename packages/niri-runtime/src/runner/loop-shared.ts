@@ -16,6 +16,8 @@ export type ToolArgs = {
   note?: string
   detail?: string
   limit?: number
+  offset?: number
+  summary_id?: string
   status?: string
   item_id?: string
   action?: string
@@ -48,6 +50,7 @@ export type CompletionRequest = {
   messages: OpenAI.Chat.ChatCompletionMessageParam[]
   tools: OpenAI.Chat.ChatCompletionTool[]
   tool_choice: "required" | "auto" | "none"
+  prompt_cache_key?: string
   include_reasoning?: boolean
   reasoning?: { enabled?: boolean; exclude?: boolean; effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" }
   provider?: { require_parameters?: boolean }

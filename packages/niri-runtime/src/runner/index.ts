@@ -7,6 +7,7 @@ import { emit } from "../stream"
 import { runLoop } from "./loop"
 import { setRunnerPresence } from "./presence"
 import { createNiriToolCatalog } from "./tool-catalog"
+import { archiveContextMessages } from "./context-store"
 import type { RunnerStateInternal } from "./types"
 import { clearSession, loadRestSnapshot, loadSession, saveRestSnapshot, saveSession } from "./util"
 import type { UserMessage } from "../types"
@@ -180,6 +181,7 @@ function resolveShutdown(): void {
 }
 
 async function saveRuntimeSnapshot(): Promise<void> {
+  archiveContextMessages(state.conversation, "runtime-checkpoint")
   await saveSession(state.conversation)
   await saveRestSnapshot(state.conversation, "runtime checkpoint")
 }

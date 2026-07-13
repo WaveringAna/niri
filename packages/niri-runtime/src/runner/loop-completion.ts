@@ -40,8 +40,9 @@ import {
   shouldFallback,
   shouldRetryProvider,
   summaryClient,
-  summarizeConversationViaLLM,
+  summarizeConversationViaLLMWithProvenance,
 } from "./util"
+import { attachContextSummaryId, recordContextCompaction } from "./context-store"
 import { createAnthropicCompletion } from "./anthropic"
 import type { CompletionRequest, CompletionTurnResult, ToolCallAssembly } from "./loop-shared"
 
@@ -685,34 +686,40 @@ async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Pro
 
   console.warn(`[context] recovery: attempting llm summarization via ${summaryProvider.model} (attempt=${attempt + 1})`)
   const agentContext = await loadAgentSummaryContext()
-  const summarized = await summarizeConversationViaLLM(state.conversation, summaryProvider.client, summaryProvider.model, {
+  const compaction = await summarizeConversationViaLLMWithProvenance(state.conversation, summaryProvider.client, summaryProvider.model, {
     agentContext,
   })
-  if (!summarized) {
+  if (!compaction) {
     console.warn(`[context] recovery: llm summarization returned no changes`)
     return false
   }
 
-  const afterEstimate = estimatePromptTokens(summarized)
+  const afterEstimate = estimatePromptTokens(compaction.messages)
   if (afterEstimate >= beforeEstimate) {
     console.warn(`[context] recovery: llm summary not smaller (${beforeEstimate} -> ${afterEstimate}); keeping original`)
     return false
   }
 
-  state.conversation = summarized
-  state.contextSize = afterEstimate
+  const summaryId = recordContextCompaction({
+    summaryText: compaction.summaryText,
+    compactedMessages: compaction.compactedMessages,
+    priorSummaryContent: compaction.priorSummaryContent,
+    method: "force-llm",
+  })
+  state.conversation = attachContextSummaryId(compaction.messages, summaryId)
+  state.contextSize = estimatePromptTokens(state.conversation)
 
   const summaryIdx = findSummaryMessageIndex(state.conversation)
   const summary = summaryIdx >= 0 ? (state.conversation[summaryIdx]?.content as string) : undefined
 
   console.warn(
-    `[context] recovery: llm-summarized conversation (${beforeCount} -> ${summarized.length} msgs, ${beforeEstimate} -> ${afterEstimate} tokens)`,
+    `[context] recovery: llm-summarized conversation (${beforeCount} -> ${state.conversation.length} msgs, ${beforeEstimate} -> ${state.contextSize} tokens, ${summaryId})`,
   )
 
   recordMetric({
     type: "compaction",
     before: beforeEstimate,
-    after: afterEstimate,
+    after: state.contextSize,
     method: "force-llm",
     summary,
   })
