@@ -204,30 +204,9 @@ function validateNoChannelDiscordSendTarget(state: { conversation: Message[] }, 
   return "error: source_item_id is not in the latest Discord target context. Use a source_item_id shown in the current Discord message, latest discord_inbox, or latest discord_backread output; otherwise provide channel_id."
 }
 
-function resultValue(result: Record<string, unknown>, key: string): string | null {
-  const value = result[key]
-  return typeof value === "string" && value.trim() ? value.trim() : null
-}
-
-function formatSentDiscordContent(content: unknown): string | null {
-  if (typeof content !== "string") return null
-  const normalized = content.replace(/\s+/g, " ").trim()
-  return normalized || null
-}
-
-function formatDiscordSendResult(result: Record<string, unknown>, content?: unknown): string {
+function formatDiscordSendResult(result: Record<string, unknown>): string {
   if (result.ok !== true) return JSON.stringify(result, null, 2)
-
-  const parts = [
-    "discord_send ok",
-    resultValue(result, "sent_message_id") ? `sent_message_id=${resultValue(result, "sent_message_id")}` : null,
-    resultValue(result, "channel_id") ? `channel_id=${resultValue(result, "channel_id")}` : null,
-    resultValue(result, "used_reference_message_id") ? `reply_to=${resultValue(result, "used_reference_message_id")}` : null,
-    resultValue(result, "resolved_source_item_id") ? `source_item_id=${resultValue(result, "resolved_source_item_id")}` : null,
-  ].filter((part): part is string => Boolean(part))
-
-  const sentContent = formatSentDiscordContent(content)
-  return sentContent ? `${parts.join(" ")}\nsent: ${sentContent}` : parts.join(" ")
+  return "sent!"
 }
 
 export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record<string, ToolHandler> {
@@ -555,7 +534,7 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
             replyMode: reply_mode as string | undefined,
             referenceMessage: reference_message as string | undefined,
           })
-          return formatDiscordSendResult(result, content)
+          return formatDiscordSendResult(result)
         },
       })
     },

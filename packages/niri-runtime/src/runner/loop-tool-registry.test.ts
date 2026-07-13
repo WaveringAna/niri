@@ -63,7 +63,7 @@ test("discord_send without channel accepts current Discord event source_item_id"
   )
 })
 
-test("formatDiscordSendResult emits a compact ack with optional sent content", () => {
+test("formatDiscordSendResult emits only a minimal success ack", () => {
   const ack = __toolRegistryTest.formatDiscordSendResult({
     ok: true,
     sent_message_id: "1510087371281010840",
@@ -75,23 +75,15 @@ test("formatDiscordSendResult emits a compact ack with optional sent content", (
     stored: true,
   })
 
-  assert.equal(ack, "discord_send ok sent_message_id=1510087371281010840 channel_id=1497733589545123981")
-  assert.equal(ack.includes("\n"), false)
-  assert.equal(ack.includes("null"), false)
+  assert.equal(ack, "sent!")
 
-  const ackWithContent = __toolRegistryTest.formatDiscordSendResult(
-    {
-      ok: true,
-      sent_message_id: "1510087371281010840",
-      channel_id: "1497733589545123981",
-    },
-    "quiet sunday evening vibes. i'm here if anyone wants to yap ^.^",
-  )
+  const ackWithContent = __toolRegistryTest.formatDiscordSendResult({
+    ok: true,
+    sent_message_id: "1510087371281010840",
+    channel_id: "1497733589545123981",
+  })
 
-  assert.equal(
-    ackWithContent,
-    "discord_send ok sent_message_id=1510087371281010840 channel_id=1497733589545123981\nsent: quiet sunday evening vibes. i'm here if anyone wants to yap ^.^",
-  )
+  assert.equal(ackWithContent, "sent!")
 })
 
 test("client image validation checks decoded size and file signature", () => {
