@@ -1,5 +1,6 @@
 import OpenAI from "openai"
 import type { ToolDefinition } from "@mira/harness-core"
+import { AGENT_ID } from "../agent-config"
 import { logMessage } from "../db"
 import { buildCompletionMessages, rememberRecalledMemoryChunks } from "../memory"
 import { recordMetric } from "../metrics"
@@ -113,10 +114,20 @@ export function applyUsage(
   state.tokenCount += usage.total_tokens
   if (usage.prompt_tokens) state.contextSize = usage.prompt_tokens
   const rate = typeof timing.tokensPerSecond === "number" ? ` ${timing.tokensPerSecond.toFixed(1)} tok/s` : ""
-  console.log(`[tokens] +${usage.total_tokens} total=${state.tokenCount}${rate}`)
+  const cachedPromptTokens = usage.prompt_tokens_details?.cached_tokens
+  const cacheWriteTokens = usage.prompt_tokens_details?.cache_write_tokens
+  const cache = [
+    typeof cachedPromptTokens === "number" ? `cached=${cachedPromptTokens}` : null,
+    typeof cacheWriteTokens === "number" ? `cache_write=${cacheWriteTokens}` : null,
+  ].filter(Boolean).join(" ")
+  console.log(
+    `[tokens] +${usage.total_tokens} total=${state.tokenCount} input=${usage.prompt_tokens} output=${usage.completion_tokens}${cache ? ` ${cache}` : ""}${rate}`,
+  )
   emit({
     type: "usage",
     promptTokens: usage.prompt_tokens,
+    cachedPromptTokens,
+    cacheWriteTokens,
     completionTokens: usage.completion_tokens,
     totalTokens: usage.total_tokens,
     elapsedMs: timing.elapsedMs,
@@ -315,6 +326,25 @@ function configuredThinkingRequestExtras(
 function openRouterToolRequestExtras(baseUrl: string): Partial<CompletionRequest> {
   if (!baseUrl.includes("openrouter.ai")) return {}
   return toolCompatibleReasoningExtras()
+}
+
+function promptCacheRequestExtras(baseUrl: string, slot: "primary" | "fallback"): Partial<CompletionRequest> {
+  const configuredKey = process.env.OPENAI_PROMPT_CACHE_KEY?.trim()
+  let isOfficialOpenAI = false
+  let isCodexBridge = false
+  try {
+    const url = new URL(baseUrl)
+    isOfficialOpenAI = url.hostname === "api.openai.com"
+    const bridgePort = process.env.CODEX_BRIDGE_PORT?.trim() || "8001"
+    isCodexBridge =
+      process.env.CODEX_BRIDGE_ENABLED?.trim().toLowerCase() === "true" &&
+      (url.hostname === "127.0.0.1" || url.hostname === "localhost") &&
+      url.port === bridgePort
+  } catch {
+    // An invalid provider URL will fail when the client sends the request.
+  }
+  if (!configuredKey && !isOfficialOpenAI && !isCodexBridge) return {}
+  return { prompt_cache_key: configuredKey || `${AGENT_ID}:${slot}` }
 }
 
 function shouldRetryWithoutStreamUsage(err: unknown): boolean {
@@ -563,6 +593,7 @@ async function createFallbackCompletion(
     messages,
     tools,
     tool_choice: FALLBACK_TOOL_CHOICE,
+    ...promptCacheRequestExtras(FALLBACK_BASE, "fallback"),
     ...openRouterToolRequestExtras(FALLBACK_BASE),
     ...configuredThinkingRequestExtras(),
   }
@@ -621,6 +652,7 @@ async function createPrimaryCompletion(
     messages,
     tools,
     tool_choice: PRIMARY_TOOL_CHOICE,
+    ...promptCacheRequestExtras(API_BASE, "primary"),
     ...openRouterToolRequestExtras(API_BASE),
     ...configuredThinkingRequestExtras(),
   }
@@ -982,5 +1014,6 @@ export async function fetchCompletion(
 
 export const __completionTest = {
   consumeCompletionStream,
+  promptCacheRequestExtras,
   quarantineLatestIncomingForContentFilter,
 }

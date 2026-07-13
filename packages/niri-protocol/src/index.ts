@@ -6,6 +6,8 @@ export type StreamEvent =
   | {
       type: "usage"
       promptTokens?: number
+      cachedPromptTokens?: number
+      cacheWriteTokens?: number
       completionTokens?: number
       totalTokens?: number
       elapsedMs?: number

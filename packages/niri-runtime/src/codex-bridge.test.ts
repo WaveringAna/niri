@@ -35,7 +35,15 @@ test("bridge uses Codex credentials and translates a completion", async () => {
   let observed: { url?: string; init?: RequestInit } = {}
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
     observed = { url: String(url), init }
-    const response = { id: "resp_1", usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 } }
+    const response = {
+      id: "resp_1",
+      usage: {
+        input_tokens: 3,
+        output_tokens: 2,
+        total_tokens: 5,
+        input_tokens_details: { cached_tokens: 2, cache_write_tokens: 1 },
+      },
+    }
     const sse = [
       `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "meow" })}`,
       `data: ${JSON.stringify({ type: "response.completed", response })}`,
@@ -45,14 +53,62 @@ test("bridge uses Codex credentials and translates a completion", async () => {
     return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } })
   }) as typeof fetch
   const app = createCodexBridgeServer({ authPath, fetchImpl })
-  const response = await app.inject({ method: "POST", url: "/v1/chat/completions", payload: { model: "Codex", messages: [{ role: "user", content: "hi" }] } })
+  const response = await app.inject({
+    method: "POST",
+    url: "/v1/chat/completions",
+    payload: { model: "Codex", prompt_cache_key: "mira:primary", messages: [{ role: "user", content: "hi" }] },
+  })
   assert.equal(response.statusCode, 200)
   assert.equal(response.json().choices[0].message.content, "meow")
   assert.equal(observed.url, "https://chatgpt.com/backend-api/codex/responses")
   assert.equal(new Headers(observed.init?.headers).get("chatgpt-account-id"), "acct_test")
   const sent = JSON.parse(String(observed.init?.body))
   assert.equal(sent.model, "gpt-5.6-sol")
+  assert.equal(sent.prompt_cache_key, "mira:primary")
   assert.equal(sent.input[0].content[0].text, "hi")
+  assert.deepEqual(response.json().usage.prompt_tokens_details, { cached_tokens: 2, cache_write_tokens: 1 })
+  await app.close()
+})
+
+test("bridge forwards cached and cache-write token usage in streaming mode", async () => {
+  const dir = fs.mkdtempSync("/tmp/niri-codex-bridge-usage-")
+  const authPath = `${dir}/auth.json`
+  fs.writeFileSync(authPath, JSON.stringify({ tokens: { access_token: "header.payload.signature" } }))
+  const fetchImpl = (async () => {
+    const response = {
+      id: "resp_usage",
+      usage: {
+        input_tokens: 2_006,
+        output_tokens: 300,
+        total_tokens: 2_306,
+        input_tokens_details: { cached_tokens: 1_920, cache_write_tokens: 0 },
+        output_tokens_details: { reasoning_tokens: 100 },
+      },
+    }
+    const sse = `data: ${JSON.stringify({ type: "response.completed", response })}\n\ndata: [DONE]\n\n`
+    return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } })
+  }) as typeof fetch
+  const app = createCodexBridgeServer({ authPath, fetchImpl })
+  const response = await app.inject({
+    method: "POST",
+    url: "/v1/chat/completions",
+    payload: {
+      model: "gpt-5.6-terra",
+      messages: [{ role: "user", content: "hi" }],
+      stream: true,
+      stream_options: { include_usage: true },
+    },
+  })
+  assert.equal(response.statusCode, 200)
+  const chunks = __codexBridgeTest.parseSse(response.body)
+  const usage = chunks.find((chunk) => chunk.usage)?.usage
+  assert.deepEqual(usage, {
+    prompt_tokens: 2_006,
+    completion_tokens: 300,
+    total_tokens: 2_306,
+    prompt_tokens_details: { cached_tokens: 1_920, cache_write_tokens: 0 },
+    completion_tokens_details: { reasoning_tokens: 100 },
+  })
   await app.close()
 })
 

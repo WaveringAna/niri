@@ -150,6 +150,33 @@ function collectResult(events: any[]): { content: string; toolCalls: any[]; usag
   return { content, toolCalls, usage, responseId }
 }
 
+function completionUsage(usage: any): any | undefined {
+  if (!usage || typeof usage !== "object") return undefined
+  const promptTokens = Number(usage.input_tokens ?? usage.prompt_tokens ?? 0)
+  const completionTokens = Number(usage.output_tokens ?? usage.completion_tokens ?? 0)
+  const totalTokens = Number(usage.total_tokens ?? promptTokens + completionTokens)
+  const inputDetails = usage.input_tokens_details ?? usage.prompt_tokens_details
+  const outputDetails = usage.output_tokens_details ?? usage.completion_tokens_details
+
+  return {
+    prompt_tokens: Number.isFinite(promptTokens) ? promptTokens : 0,
+    completion_tokens: Number.isFinite(completionTokens) ? completionTokens : 0,
+    total_tokens: Number.isFinite(totalTokens) ? totalTokens : 0,
+    ...(inputDetails && typeof inputDetails === "object"
+      ? {
+          prompt_tokens_details: {
+            ...(typeof inputDetails.cached_tokens === "number" ? { cached_tokens: inputDetails.cached_tokens } : {}),
+            ...(typeof inputDetails.cache_write_tokens === "number" ? { cache_write_tokens: inputDetails.cache_write_tokens } : {}),
+            ...(typeof inputDetails.audio_tokens === "number" ? { audio_tokens: inputDetails.audio_tokens } : {}),
+          },
+        }
+      : {}),
+    ...(outputDetails && typeof outputDetails === "object"
+      ? { completion_tokens_details: { ...outputDetails } }
+      : {}),
+  }
+}
+
 export function createCodexBridgeServer(options: BridgeOptions = {}): FastifyInstance {
   const configuredBodyLimit = Number.parseInt(process.env.CODEX_BRIDGE_BODY_LIMIT_BYTES || "", 10)
   const bodyLimit = Number.isSafeInteger(configuredBodyLimit) && configuredBodyLimit > 0
@@ -165,7 +192,9 @@ export function createCodexBridgeServer(options: BridgeOptions = {}): FastifyIns
     const body = request.body as any
     const { token, accountId } = await loadCodexAuth(authPath, fetchImpl)
     const mapped = mapMessages(body.messages || [])
-    const sessionId = typeof body.user === "string" && body.user.trim() ? body.user.trim() : crypto.randomUUID()
+    const requestedCacheKey = typeof body.prompt_cache_key === "string" ? body.prompt_cache_key.trim() : ""
+    const requestedUser = typeof body.user === "string" ? body.user.trim() : ""
+    const sessionId = requestedCacheKey || requestedUser || crypto.randomUUID()
     const turnId = crypto.randomUUID()
     const windowId = `${sessionId}:0`
     const turnMetadata = JSON.stringify({
@@ -218,6 +247,7 @@ export function createCodexBridgeServer(options: BridgeOptions = {}): FastifyIns
     if (!upstream.ok) return reply.code(upstream.status).send({ error: { message: raw || upstream.statusText, type: "codex_upstream_error" } })
     const events = parseSse(raw)
     const result = collectResult(events)
+    const usage = completionUsage(result.usage)
     const created = Math.floor(Date.now() / 1000)
     const id = result.responseId || `chatcmpl-${crypto.randomUUID()}`
     const finishReason = result.toolCalls.length ? "tool_calls" : "stop"
@@ -226,13 +256,17 @@ export function createCodexBridgeServer(options: BridgeOptions = {}): FastifyIns
       const chunks: string[] = []
       if (result.content) chunks.push(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model: mapModel(body.model), choices: [{ index: 0, delta: { role: "assistant", content: result.content }, finish_reason: null }] })}\n\n`)
       if (result.toolCalls.length) chunks.push(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model: mapModel(body.model), choices: [{ index: 0, delta: { tool_calls: result.toolCalls.map((call, index) => ({ index, ...call })) }, finish_reason: null }] })}\n\n`)
-      chunks.push(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model: mapModel(body.model), choices: [{ index: 0, delta: {}, finish_reason: finishReason }] })}\n\ndata: [DONE]\n\n`)
+      chunks.push(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model: mapModel(body.model), choices: [{ index: 0, delta: {}, finish_reason: finishReason }] })}\n\n`)
+      if (body.stream_options?.include_usage && usage) {
+        chunks.push(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model: mapModel(body.model), choices: [], usage })}\n\n`)
+      }
+      chunks.push("data: [DONE]\n\n")
       return reply.send(chunks.join(""))
     }
     return reply.send({
       id, object: "chat.completion", created, model: mapModel(body.model),
       choices: [{ index: 0, message: { role: "assistant", content: result.content || null, ...(result.toolCalls.length ? { tool_calls: result.toolCalls } : {}) }, finish_reason: finishReason }],
-      usage: result.usage ? { prompt_tokens: result.usage.input_tokens || 0, completion_tokens: result.usage.output_tokens || 0, total_tokens: result.usage.total_tokens || 0 } : undefined,
+      usage,
     })
   })
   return app
@@ -253,4 +287,4 @@ export async function stopCodexBridge(): Promise<void> {
   bridgeServer = null
 }
 
-export const __codexBridgeTest = { mapMessages, mapTools, parseSse, collectResult }
+export const __codexBridgeTest = { mapMessages, mapTools, parseSse, collectResult, completionUsage }

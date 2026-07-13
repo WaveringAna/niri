@@ -32,6 +32,8 @@ type UnknownEvent = {
   args?: unknown
   result?: unknown
   promptTokens?: unknown
+  cachedPromptTokens?: unknown
+  cacheWriteTokens?: unknown
   completionTokens?: unknown
   totalTokens?: unknown
   elapsedMs?: unknown
@@ -84,6 +86,8 @@ const toEvent = (raw: unknown): StreamEvent | null => {
     return {
       type: "usage",
       promptTokens: typeof event.promptTokens === "number" ? event.promptTokens : undefined,
+      cachedPromptTokens: typeof event.cachedPromptTokens === "number" ? event.cachedPromptTokens : undefined,
+      cacheWriteTokens: typeof event.cacheWriteTokens === "number" ? event.cacheWriteTokens : undefined,
       completionTokens: typeof event.completionTokens === "number" ? event.completionTokens : undefined,
       totalTokens: typeof event.totalTokens === "number" ? event.totalTokens : undefined,
       elapsedMs: typeof event.elapsedMs === "number" ? event.elapsedMs : undefined,

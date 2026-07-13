@@ -38,6 +38,10 @@ test("consumeCompletionStream preserves reasoning_content on assistant messages"
         prompt_tokens: 10,
         completion_tokens: 5,
         total_tokens: 15,
+        prompt_tokens_details: {
+          cached_tokens: 8,
+          cache_write_tokens: 2,
+        },
       },
     }
   }
@@ -48,6 +52,35 @@ test("consumeCompletionStream preserves reasoning_content on assistant messages"
   assert.equal(message.content, "hello")
   assert.equal(message.reasoning_content, "thinking...")
   assert.equal(result.bufferedThinking, "thinking...")
+  assert.equal(result.usage?.prompt_tokens_details?.cached_tokens, 8)
+  assert.equal(result.usage?.prompt_tokens_details?.cache_write_tokens, 2)
+})
+
+test("prompt cache keys are stable for official OpenAI and the local Codex bridge", () => {
+  const previousEnabled = process.env.CODEX_BRIDGE_ENABLED
+  const previousPort = process.env.CODEX_BRIDGE_PORT
+  const previousKey = process.env.OPENAI_PROMPT_CACHE_KEY
+  delete process.env.OPENAI_PROMPT_CACHE_KEY
+  process.env.CODEX_BRIDGE_ENABLED = "true"
+  process.env.CODEX_BRIDGE_PORT = "8001"
+  try {
+    assert.deepEqual(
+      __completionTest.promptCacheRequestExtras("https://api.openai.com/v1", "primary"),
+      { prompt_cache_key: "niri:primary" },
+    )
+    assert.deepEqual(
+      __completionTest.promptCacheRequestExtras("http://127.0.0.1:8001/v1", "primary"),
+      { prompt_cache_key: "niri:primary" },
+    )
+    assert.deepEqual(__completionTest.promptCacheRequestExtras("https://openrouter.ai/api/v1", "fallback"), {})
+  } finally {
+    if (previousEnabled === undefined) delete process.env.CODEX_BRIDGE_ENABLED
+    else process.env.CODEX_BRIDGE_ENABLED = previousEnabled
+    if (previousPort === undefined) delete process.env.CODEX_BRIDGE_PORT
+    else process.env.CODEX_BRIDGE_PORT = previousPort
+    if (previousKey === undefined) delete process.env.OPENAI_PROMPT_CACHE_KEY
+    else process.env.OPENAI_PROMPT_CACHE_KEY = previousKey
+  }
 })
 
 test("content-filter recovery redacts discord body but keeps routing context", () => {
