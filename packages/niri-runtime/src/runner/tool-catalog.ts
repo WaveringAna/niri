@@ -113,6 +113,19 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
         },
       ),
       functionTool(
+        "lcm_describe",
+        "Inspect a known LCM summary by id before expanding it. Returns summary content, lineage, source counts, time ranges, estimated expansion cost, and a bounded-expansion manifest.",
+        {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            id: { type: "string", description: "The context summary id to inspect (sum_*)." },
+            tokenCap: { type: "integer", minimum: 1, maximum: 1000000, description: "Optional token budget used to annotate which provenance nodes fit expansion." },
+          },
+          required: ["id"],
+        },
+      ),
+      functionTool(
         "context_grep",
         "Search the immutable verbatim history of prior active-context messages. Use this when a compacted summary may have omitted a useful detail.",
         {

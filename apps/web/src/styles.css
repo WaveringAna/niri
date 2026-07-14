@@ -92,7 +92,7 @@ h2 {
   height: auto;
   min-height: 0;
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr) 286px;
+  grid-template-columns: 260px minmax(0, 1fr) var(--notes-width, 286px);
   background: #000;
   color: var(--ink);
   overflow: hidden;
@@ -113,6 +113,39 @@ h2 {
 
 .notes {
   border-left: 1px solid var(--line);
+  position: relative;
+}
+
+.notes-resizer {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.notes-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 1px;
+  background: transparent;
+}
+
+.notes-resizer:hover::after,
+.notes-resizer:focus-visible::after,
+.is-resizing-notes .notes-resizer::after {
+  background: var(--cyan);
+}
+
+body.is-resizing-notes {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .connections header,
@@ -220,6 +253,82 @@ textarea {
 dt,
 .compactions small {
   color: var(--muted);
+}
+
+.discord-history {
+  display: grid;
+  gap: 12px;
+}
+
+.discord-channels,
+.discord-messages {
+  display: grid;
+  gap: 7px;
+}
+
+.discord-channel {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  padding: 5px 6px;
+  text-align: left;
+}
+
+.discord-channel.is-current {
+  border-left-color: var(--cyan);
+  background: #090909;
+}
+
+.discord-channel span,
+.discord-channel small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.discord-channel small {
+  color: var(--quiet);
+}
+
+.discord-messages {
+  max-height: 360px;
+  overflow: auto;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 8px;
+}
+
+.discord-messages article {
+  border-left: 1px solid #315252;
+  padding-left: 8px;
+}
+
+.discord-messages article > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--you);
+  font-size: 11px;
+}
+
+.discord-messages time {
+  color: var(--quiet);
+}
+
+.discord-messages p {
+  margin-top: 3px;
+  color: #c8d8d6;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .quiet {
@@ -707,6 +816,10 @@ dd {
   }
 
   .notes {
+    display: none;
+  }
+
+  .notes-resizer {
     display: none;
   }
 }

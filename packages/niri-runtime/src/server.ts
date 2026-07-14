@@ -12,6 +12,8 @@ import { fromCron } from "./triggers/cron"
 import { fromChat } from "./triggers/chat"
 import { subscribe } from "./stream"
 import { getMetrics, getMetricDetail, getDiscordMetricDetail } from "./metrics"
+import { parseChannelIds } from "./discord/parse"
+import { queryChannelMessages, queryChannels } from "./discord/db"
 import type { MetricListType } from "./metrics"
 import type { UserMessage } from "./types"
 
@@ -284,6 +286,22 @@ export function createServer(options: { requestRestart?: (reason?: string) => vo
       ok: true,
       ...result,
     })
+  })
+
+  app.get("/discord/channels", async () => ({
+    agentId: AGENT_ID,
+    channels: queryChannels(parseChannelIds()),
+  }))
+
+  app.get("/discord/channels/:channelId/messages", async (req) => {
+    const { channelId } = req.params as { channelId: string }
+    const query = req.query as { before?: string; limit?: string }
+    const limit = Math.max(1, Math.min(200, Number.parseInt(query.limit ?? "100", 10) || 100))
+    return {
+      agentId: AGENT_ID,
+      channelId,
+      messages: queryChannelMessages(channelId, query.before ?? "", limit).map(({ raw_json: _rawJson, ...message }) => message),
+    }
   })
 
   app.post("/trigger/bsky", async (req, reply) => {

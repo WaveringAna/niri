@@ -1,4 +1,4 @@
-FROM ubuntu:24.04
+FROM node:22-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -28,10 +28,10 @@ RUN set -eux; \
     usermod -u "${AGENT_UID}" "${AGENT_USER}" 2>/dev/null || true; \
     usermod -g "${AGENT_GID}" "${AGENT_USER}"; \
     echo "${AGENT_USER} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers; \
-    mkdir -p "/home/${AGENT_USER}"; \
-    chown -R "${AGENT_UID}:${AGENT_GID}" "/home/${AGENT_USER}"
+    mkdir -p "/home/${AGENT_USER}" /workspace/node_modules; \
+    chown -R "${AGENT_UID}:${AGENT_GID}" "/home/${AGENT_USER}" /workspace
 
-WORKDIR /home/$AGENT_USER
+WORKDIR /workspace
 USER $AGENT_USER
 
-CMD ["sleep", "infinity"]
+CMD ["npm", "run", "start", "--", "--host", "0.0.0.0", "--port", "3001", "--agents", "/workspace/agents"]

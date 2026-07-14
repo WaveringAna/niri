@@ -41,6 +41,48 @@ export type ContextExpansion = {
   messages: Array<{ id: string; role: string; content: unknown; firstSeenAt: string; source: string }>
 }
 
+type ContextSourceStats = {
+  messageCount: number
+  estimatedTokens: number
+  roleCounts: Record<string, number>
+  earliestAt: string | null
+  latestAt: string | null
+}
+
+export type ContextSummaryDescription = {
+  id: string
+  type: "summary"
+  summary: {
+    content: string
+    method: string
+    createdAt: string
+    parentIds: string[]
+    childIds: string[]
+    provenanceDepth: number
+    provenanceNodeCount: number
+    directSources: ContextSourceStats
+    expandedSources: ContextSourceStats
+    manifest: Array<{
+      summaryId: string
+      parentSummaryId: string | null
+      depthFromRoot: number
+      method: string
+      createdAt: string
+      directSources: ContextSourceStats
+      expandedSources: ContextSourceStats
+      expansionFitsTokenCap: boolean
+    }>
+  }
+  expansion: {
+    tool: "context_expand"
+    totalMessages: number
+    defaultPageSize: number
+    maxPageSize: number
+    estimatedPages: number
+    tokenCap: number
+  }
+}
+
 function recordOf(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? value as Record<string, unknown> : null
 }
@@ -240,6 +282,128 @@ function collectSummaryMessageIds(db: Database.Database, summaryId: string, seen
     select message_id from context_summary_messages where summary_id = ? order by ordinal
   `).all(summaryId) as Array<{ message_id: string }>
   return [...inherited, ...direct.map((row) => row.message_id)]
+}
+
+function contextSourceStats(db: Database.Database, messageIds: string[]): ContextSourceStats {
+  const getMessage = db.prepare(`
+    select role, content_text, first_seen_at from context_messages where id = ?
+  `)
+  const roleCounts: Record<string, number> = {}
+  let contentChars = 0
+  let earliestAt: string | null = null
+  let latestAt: string | null = null
+
+  for (const id of messageIds) {
+    const row = getMessage.get(id) as Pick<ContextMessageRow, "role" | "content_text" | "first_seen_at"> | undefined
+    if (!row) continue
+    roleCounts[row.role] = (roleCounts[row.role] ?? 0) + 1
+    contentChars += row.content_text.length
+    if (earliestAt === null || row.first_seen_at < earliestAt) earliestAt = row.first_seen_at
+    if (latestAt === null || row.first_seen_at > latestAt) latestAt = row.first_seen_at
+  }
+
+  return {
+    messageCount: Object.values(roleCounts).reduce((total, count) => total + count, 0),
+    estimatedTokens: Math.ceil(contentChars / 4),
+    roleCounts,
+    earliestAt,
+    latestAt,
+  }
+}
+
+function collectSummaryManifest(
+  db: Database.Database,
+  summaryId: string,
+  tokenCap: number,
+  depthFromRoot = 0,
+  parentSummaryId: string | null = null,
+  seen = new Set<string>(),
+): ContextSummaryDescription["summary"]["manifest"] {
+  if (seen.has(summaryId)) return []
+  seen.add(summaryId)
+  const summary = db.prepare(`
+    select id, method, created_at from context_summaries where id = ?
+  `).get(summaryId) as { id: string; method: string; created_at: string } | undefined
+  if (!summary) return []
+  const directIds = (db.prepare(`
+    select message_id from context_summary_messages where summary_id = ? order by ordinal
+  `).all(summaryId) as Array<{ message_id: string }>).map((row) => row.message_id)
+  const expandedIds = collectSummaryMessageIds(db, summaryId)
+  const directSources = contextSourceStats(db, directIds)
+  const expandedSources = contextSourceStats(db, expandedIds)
+  const node: ContextSummaryDescription["summary"]["manifest"][number] = {
+    summaryId: summary.id,
+    parentSummaryId,
+    depthFromRoot,
+    method: summary.method,
+    createdAt: summary.created_at,
+    directSources,
+    expandedSources,
+    expansionFitsTokenCap: expandedSources.estimatedTokens <= tokenCap,
+  }
+  const parents = db.prepare(`
+    select parent_id from context_summary_parents where summary_id = ? order by ordinal
+  `).all(summaryId) as Array<{ parent_id: string }>
+  return [
+    node,
+    ...parents.flatMap((parent) => collectSummaryManifest(
+      db,
+      parent.parent_id,
+      tokenCap,
+      depthFromRoot + 1,
+      summary.id,
+      seen,
+    )),
+  ]
+}
+
+/** Describe a known summary node before spending context on verbatim expansion. */
+export function describeContextSummary(summaryId: string, tokenCap?: number): ContextSummaryDescription | null {
+  const db = getDb()
+  const summary = db.prepare(`
+    select id, summary_text, method, created_at from context_summaries where id = ?
+  `).get(summaryId) as { id: string; summary_text: string; method: string; created_at: string } | undefined
+  if (!summary) return null
+
+  const resolvedTokenCap = Number.isFinite(tokenCap) && Number(tokenCap) > 0
+    ? Math.min(Math.floor(Number(tokenCap)), 1_000_000)
+    : 8_000
+  const parentIds = (db.prepare(`
+    select parent_id from context_summary_parents where summary_id = ? order by ordinal
+  `).all(summaryId) as Array<{ parent_id: string }>).map((row) => row.parent_id)
+  const childIds = (db.prepare(`
+    select summary_id from context_summary_parents where parent_id = ? order by summary_id
+  `).all(summaryId) as Array<{ summary_id: string }>).map((row) => row.summary_id)
+  const directIds = (db.prepare(`
+    select message_id from context_summary_messages where summary_id = ? order by ordinal
+  `).all(summaryId) as Array<{ message_id: string }>).map((row) => row.message_id)
+  const expandedIds = collectSummaryMessageIds(db, summaryId)
+  const manifest = collectSummaryManifest(db, summaryId, resolvedTokenCap)
+
+  return {
+    id: summary.id,
+    type: "summary",
+    summary: {
+      content: summary.summary_text,
+      method: summary.method,
+      createdAt: summary.created_at,
+      parentIds,
+      childIds,
+      provenanceDepth: Math.max(0, ...manifest.map((node) => node.depthFromRoot)),
+      provenanceNodeCount: manifest.length,
+      directSources: contextSourceStats(db, directIds),
+      expandedSources: contextSourceStats(db, expandedIds),
+      manifest,
+    },
+    expansion: {
+      tool: "context_expand",
+      totalMessages: expandedIds.length,
+      defaultPageSize: DEFAULT_EXPAND_LIMIT,
+      maxPageSize: MAX_EXPAND_LIMIT,
+      estimatedPages: Math.ceil(expandedIds.length / DEFAULT_EXPAND_LIMIT),
+      tokenCap: resolvedTokenCap,
+    },
+  }
 }
 
 export function expandContextSummary(summaryId: string, offset?: number, limit?: number): ContextExpansion | null {

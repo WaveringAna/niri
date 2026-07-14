@@ -6,6 +6,7 @@ import {
   archiveContextMessages,
   attachContextSummaryId,
   contextSummaryId,
+  describeContextSummary,
   expandContextSummary,
   grepContext,
   recordContextCompaction,
@@ -56,6 +57,40 @@ test("summary DAG expands parent provenance before newer direct messages", () =>
 
   const scoped = grepContext("first exact", 5, childId)
   assert.equal(scoped.length, 1)
+})
+
+test("lcm description exposes summary content, lineage, and bounded expansion costs", () => {
+  const parentMessage = { role: "user", content: "describe parent source" } as Message
+  const childMessage = { role: "assistant", content: "describe child source" } as Message
+  const parentId = recordContextCompaction({
+    summaryText: "describe parent summary",
+    compactedMessages: [parentMessage],
+    method: "test-describe-parent",
+  })
+  const parentContent = `[context summary v1]\n[segments]\n[context-summary-id ${parentId}]\ndescribe parent summary`
+  const childId = recordContextCompaction({
+    summaryText: "describe child summary",
+    compactedMessages: [childMessage],
+    priorSummaryContent: parentContent,
+    method: "test-describe-child",
+  })
+
+  const described = describeContextSummary(childId, 1)
+  assert.ok(described)
+  assert.equal(described.type, "summary")
+  assert.equal(described.summary.content, "describe child summary")
+  assert.deepEqual(described.summary.parentIds, [parentId])
+  assert.equal(described.summary.provenanceDepth, 1)
+  assert.equal(described.summary.provenanceNodeCount, 2)
+  assert.equal(described.summary.directSources.messageCount, 1)
+  assert.equal(described.summary.expandedSources.messageCount, 2)
+  assert.equal(described.summary.manifest[0]?.summaryId, childId)
+  assert.equal(described.summary.manifest[1]?.summaryId, parentId)
+  assert.equal(described.summary.manifest[0]?.expansionFitsTokenCap, false)
+  assert.equal(described.expansion.totalMessages, 2)
+  assert.equal(described.expansion.defaultPageSize, 12)
+  assert.equal(described.expansion.tokenCap, 1)
+  assert.equal(describeContextSummary("sum_missing"), null)
 })
 
 test("active summary messages carry a stable retrievable id", () => {

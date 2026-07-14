@@ -8,16 +8,18 @@ services:
         AGENT_GID: ${AGENT_GID:-1000}
     container_name: ${NIRI_CONTAINER:-niri}
     restart: unless-stopped
-    network_mode: host
+    ports:
+      - "3001:3001"
     user: "${AGENT_UID:-1000}:${AGENT_GID:-1000}"
+    working_dir: /workspace
     volumes:
       - ./home:/home/${NIRI_USER:-niri}
       - .:/workspace
-      - agent_usr:/usr/local
-      - agent_etc:/etc
+      - agent_node_modules:/workspace/node_modules
     environment:
       - TZ=${TZ:-UTC}
+    command: >-
+      bash -lc "npm install --package-lock=false && exec npm run start -- --host 0.0.0.0 --port 3001 --agents /workspace/agents"
 
 volumes:
-  agent_usr:
-  agent_etc:
+  agent_node_modules:

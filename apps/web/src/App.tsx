@@ -82,6 +82,27 @@ type Overview = {
   compactions: Compaction[]
 }
 
+type DiscordChannel = {
+  channel_id: string
+  guild_id: string | null
+  guild_name: string | null
+  channel_name: string | null
+  channel_type: number | null
+  is_dm: number
+  configured: number
+  topic: string | null
+  last_seen_at: string
+}
+
+type DiscordMessage = {
+  message_id: string
+  channel_id: string
+  author_username: string | null
+  content: string
+  created_at: string
+  is_from_bot: number
+}
+
 type ChatLine = {
   key: string
   seq: number
@@ -93,6 +114,19 @@ type ChatLine = {
 }
 
 const PANEL_COOKIE = "niri_control_panels"
+const NOTES_WIDTH_STORAGE_KEY = "niri_notes_width"
+const NOTES_WIDTH_MIN = 220
+const NOTES_WIDTH_MAX = 520
+
+function clampNotesWidth(value: number): number {
+  return Math.min(NOTES_WIDTH_MAX, Math.max(NOTES_WIDTH_MIN, value))
+}
+
+function readNotesWidth(): number {
+  const raw = window.localStorage.getItem(NOTES_WIDTH_STORAGE_KEY)
+  const value = raw ? Number(raw) : NaN
+  return Number.isFinite(value) ? clampNotesWidth(value) : 286
+}
 
 function cookieValue(name: string): string | null {
   const prefix = `${name}=`
@@ -221,6 +255,11 @@ function formatDuration(ms: number | undefined): string {
 function formatNumber(value: number | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "0"
   return new Intl.NumberFormat().format(value)
+}
+
+function discordChannelLabel(channel: DiscordChannel): string {
+  if (channel.is_dm) return channel.channel_name || channel.guild_name || "direct message"
+  return channel.channel_name ? `#${channel.channel_name}` : channel.channel_id
 }
 
 function jsonToolLabel(value: unknown): string | null {
@@ -661,7 +700,53 @@ export function App() {
   const [error, setError] = useState("")
   const [openCompaction, setOpenCompaction] = useState<string | null>(null)
   const [expandedTools, setExpandedTools] = useState<Set<string>>(() => new Set())
+  const [discordChannels, setDiscordChannels] = useState<DiscordChannel[]>([])
+  const [selectedDiscordChannel, setSelectedDiscordChannel] = useState<string | null>(null)
+  const [discordMessages, setDiscordMessages] = useState<DiscordMessage[]>([])
+  const [discordLoading, setDiscordLoading] = useState(false)
+  const [notesWidth, setNotesWidth] = useState(() => readNotesWidth())
+  const resizeStart = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null)
   const streamRef = useRef<AbortController | null>(null)
+
+  const startNotesResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    resizeStart.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: notesWidth }
+    document.body.classList.add("is-resizing-notes")
+  }, [notesWidth])
+
+  const moveNotesResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const start = resizeStart.current
+    if (!start || start.pointerId !== event.pointerId) return
+    setNotesWidth(clampNotesWidth(start.startWidth + start.startX - event.clientX))
+  }, [])
+
+  const endNotesResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const start = resizeStart.current
+    if (!start || start.pointerId !== event.pointerId) return
+    resizeStart.current = null
+    document.body.classList.remove("is-resizing-notes")
+    event.currentTarget.releasePointerCapture(event.pointerId)
+    setNotesWidth((width) => {
+      window.localStorage.setItem(NOTES_WIDTH_STORAGE_KEY, String(width))
+      return width
+    })
+  }, [])
+
+  const handleNotesResizeKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = event.shiftKey ? 40 : 16
+    if (event.key === "ArrowLeft") setNotesWidth((width) => clampNotesWidth(width + step))
+    else if (event.key === "ArrowRight") setNotesWidth((width) => clampNotesWidth(width - step))
+    else if (event.key === "Home") setNotesWidth(NOTES_WIDTH_MIN)
+    else if (event.key === "End") setNotesWidth(NOTES_WIDTH_MAX)
+    else return
+    event.preventDefault()
+    window.localStorage.setItem(NOTES_WIDTH_STORAGE_KEY, String(notesWidth))
+  }, [notesWidth])
+
+  useEffect(() => {
+    window.localStorage.setItem(NOTES_WIDTH_STORAGE_KEY, String(notesWidth))
+  }, [notesWidth])
 
   const selected = useMemo(() => {
     if (!selectedKey) return null
@@ -716,20 +801,49 @@ export function App() {
     if (!selected) return
     setError("")
     try {
-      const [overviewData, eventData] = await Promise.all([
+      const [overviewData, eventData, discordData] = await Promise.all([
         requestJson<Overview>(urlFor(selected.panel, `/agents/${encodeURIComponent(selected.agent.id)}/overview`)),
         requestJson<{ events: WorkerEvent[] }>(
           urlFor(selected.panel, `/agents/${encodeURIComponent(selected.agent.id)}/events?tail=1&limit=1000&view=chat`),
         ),
+        requestJson<{ channels: DiscordChannel[] }>(
+          urlFor(selected.panel, `/agents/${encodeURIComponent(selected.agent.id)}/discord/channels`),
+        ).catch(() => ({ channels: [] })),
       ])
       setOverview(overviewData)
       setEvents(eventData.events ?? [])
+      setDiscordChannels(discordData.channels ?? [])
+      setSelectedDiscordChannel((current) =>
+        current && (discordData.channels ?? []).some((channel) => channel.channel_id === current)
+          ? current
+          : discordData.channels?.[0]?.channel_id ?? null,
+      )
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setOverview(null)
       setEvents([])
+      setDiscordChannels([])
+      setSelectedDiscordChannel(null)
+      setDiscordMessages([])
     }
   }, [selected])
+
+  useEffect(() => {
+    if (!selected || !selectedDiscordChannel) {
+      setDiscordMessages([])
+      return
+    }
+    setDiscordLoading(true)
+    void requestJson<{ messages: DiscordMessage[] }>(
+      urlFor(
+        selected.panel,
+        `/agents/${encodeURIComponent(selected.agent.id)}/discord/channels/${encodeURIComponent(selectedDiscordChannel)}/messages?limit=100`,
+      ),
+    )
+      .then((data) => setDiscordMessages((data.messages ?? []).slice().reverse()))
+      .catch(() => setDiscordMessages([]))
+      .finally(() => setDiscordLoading(false))
+  }, [selected, selectedDiscordChannel])
 
   useEffect(() => {
     void loadAgents()
@@ -798,6 +912,9 @@ export function App() {
         setSelectedKey("")
         setEvents([])
         setOverview(null)
+        setDiscordChannels([])
+        setSelectedDiscordChannel(null)
+        setDiscordMessages([])
       }
     },
     [panels, persistPanels, selectedKey],
@@ -842,7 +959,7 @@ export function App() {
   const status = overview?.status ?? null
 
   return (
-    <main className="place">
+    <main className="place" style={{ "--notes-width": `${notesWidth}px` } as React.CSSProperties}>
       <aside className="connections" aria-label="control panels">
         <header>
           <h1>niri</h1>
@@ -953,6 +1070,21 @@ export function App() {
       </section>
 
       <aside className="notes" aria-label="agent notes">
+        <div
+          className="notes-resizer"
+          role="separator"
+          aria-label="resize right rail"
+          aria-orientation="vertical"
+          aria-valuemin={NOTES_WIDTH_MIN}
+          aria-valuemax={NOTES_WIDTH_MAX}
+          aria-valuenow={notesWidth}
+          tabIndex={0}
+          onPointerDown={startNotesResize}
+          onPointerMove={moveNotesResize}
+          onPointerUp={endNotesResize}
+          onPointerCancel={endNotesResize}
+          onKeyDown={handleNotesResizeKeyDown}
+        />
         <section>
           <h2>status</h2>
           <dl>
@@ -973,6 +1105,41 @@ export function App() {
               <dd>{formatDuration(status?.uptimeMs)}</dd>
             </div>
           </dl>
+        </section>
+
+        <section>
+          <h2>discord history</h2>
+          {discordChannels.length === 0 ? <p className="quiet">no channels mirrored yet</p> : null}
+          <div className="discord-history">
+            <div className="discord-channels">
+              {discordChannels.map((channel) => (
+                <button
+                  key={channel.channel_id}
+                  type="button"
+                  className={channel.channel_id === selectedDiscordChannel ? "discord-channel is-current" : "discord-channel"}
+                  onClick={() => setSelectedDiscordChannel(channel.channel_id)}
+                >
+                  <span>{discordChannelLabel(channel)}</span>
+                  <small>{channel.guild_name || "dm"}</small>
+                </button>
+              ))}
+            </div>
+            {selectedDiscordChannel ? (
+              <div className="discord-messages">
+                {discordLoading ? <p className="quiet">loading...</p> : null}
+                {!discordLoading && discordMessages.length === 0 ? <p className="quiet">no messages</p> : null}
+                {discordMessages.map((message) => (
+                  <article key={message.message_id}>
+                    <div>
+                      <strong>{message.author_username || "unknown"}</strong>
+                      <time>{formatTime(message.created_at)}</time>
+                    </div>
+                    <p>{message.content || "(attachment or empty message)"}</p>
+                  </article>
+                ))}
+              </div>
+            ) : null}
+          </div>
         </section>
 
         <section>

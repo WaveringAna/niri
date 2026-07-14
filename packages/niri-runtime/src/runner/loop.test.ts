@@ -80,10 +80,9 @@ test("applyDiscordSendNudge fires after a harness restart when the discord event
     },
   )
 
-  const turnStart = 1
   const turnMessages: Message[] = [state.conversation[1]!]
 
-  const nudged = __loopTest.applyDiscordSendNudge(state, turnMessages, turnStart)
+  const nudged = __loopTest.applyDiscordSendNudge(state, turnMessages)
 
   assert.equal(nudged, true)
   assert.equal(state.conversation.length, 3)
@@ -117,6 +116,76 @@ test("applyDiscordSendNudge does not fire when discord_send was already called",
 
   assert.equal(nudged, false)
   assert.equal(state.conversation.length, 0)
+})
+
+test("applyDiscordSendNudge keeps a wake DM active across a preliminary tool step", () => {
+  const state = makeState()
+  state.conversation.push(
+    {
+      role: "user",
+      content: "[wake] 7/14/2026, 3:22:59 AM — triggered by discord\n\n[discord/dm] @meowskullz\n\nboop",
+    },
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        {
+          id: "call_memory",
+          type: "function",
+          function: { name: "memory_read", arguments: '{"path":"wake.md"}' },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "call_memory",
+      content: "wake notes",
+    },
+    {
+      role: "assistant",
+      content: "hey you ^.^",
+    },
+  )
+
+  const nudged = __loopTest.applyDiscordSendNudge(state, [state.conversation[3]!])
+
+  assert.equal(nudged, true)
+  assert.match(String(state.conversation[4]?.content), /did not call discord_send/i)
+})
+
+test("applyDiscordSendNudge sees discord_send from an earlier tool step in the active user turn", () => {
+  const state = makeState()
+  state.conversation.push(
+    {
+      role: "user",
+      content: "[wake] 7/14/2026, 3:22:59 AM — triggered by discord\n\n[discord/dm] @meowskullz\n\nboop",
+    },
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        {
+          id: "call_send",
+          type: "function",
+          function: { name: "discord_send", arguments: '{"source_item_id":"1","content":"boop"}' },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "call_send",
+      content: "sent!",
+    },
+    {
+      role: "assistant",
+      content: "okay, delivered",
+    },
+  )
+
+  const nudged = __loopTest.applyDiscordSendNudge(state, [state.conversation[3]!])
+
+  assert.equal(nudged, false)
+  assert.equal(state.conversation.length, 4)
 })
 
 test("applyLoopGuardNudge appends an in-band user nudge and saves", async () => {

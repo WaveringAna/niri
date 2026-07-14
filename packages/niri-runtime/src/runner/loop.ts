@@ -96,39 +96,37 @@ function isDiscordInputMessage(message: Message): boolean {
   return message.role === "user" && typeof message.content === "string" && /\[discord(?:\/(?:dm|channel)| batch)\]/i.test(message.content)
 }
 
-function hasDiscordInputForTurn(
-  conversation: Message[],
-  turnMessages: Message[],
-  turnStart: number,
-): boolean {
-  if (turnMessages.some(isDiscordInputMessage)) return true
-
-  // After a harness restart, the triggering Discord event is appended before
-  // the first post-restart assistant turn. Look backward to the latest
-  // assistant boundary and treat intervening user messages as active context.
-  for (let i = turnStart - 1; i >= 0; i--) {
-    const message = conversation[i]
-    if (!message) continue
-    if (message.role === "assistant") break
-    if (isDiscordInputMessage(message)) return true
+function activeUserTurnMessages(conversation: Message[], turnMessages: Message[]): Message[] {
+  // Prefer a user event injected during this model/tool step. Otherwise walk
+  // back to the latest user message in the full conversation. This keeps the
+  // original input active across preliminary assistant/tool steps such as
+  // memory_read on a fresh wake.
+  for (let i = turnMessages.length - 1; i >= 0; i--) {
+    if (turnMessages[i]?.role === "user") return turnMessages.slice(i)
   }
+  for (let i = conversation.length - 1; i >= 0; i--) {
+    if (conversation[i]?.role === "user") return conversation.slice(i)
+  }
+  return turnMessages
+}
 
-  return false
+function hasDiscordInputForTurn(conversation: Message[], turnMessages: Message[]): boolean {
+  return activeUserTurnMessages(conversation, turnMessages).some(isDiscordInputMessage)
 }
 
 function applyDiscordSendNudge(
   state: LoopState,
   turnMessages: Message[],
-  turnStart = state.conversation.length,
 ): boolean {
-  // Check if the assistant is responding to active Discord input, including
-  // the post-restart case where the triggering user message is already in the
-  // conversation before the turn begins.
-  const hasDiscordInput = hasDiscordInputForTurn(state.conversation, turnMessages, turnStart)
+  // Check the whole active user turn, including preliminary tool calls made
+  // after a fresh wake and before the assistant writes its reply.
+  const activeTurnMessages = activeUserTurnMessages(state.conversation, turnMessages)
+  const hasDiscordInput = activeTurnMessages.some(isDiscordInputMessage)
   if (!hasDiscordInput) return false
 
-  // Check if the assistant called discord_send in this turn
-  const hasDiscordSend = turnMessages.some(
+  // A discord_send from an earlier assistant/tool step in the same user turn
+  // means the reply was already delivered.
+  const hasDiscordSend = activeTurnMessages.some(
     (m) =>
       m.role === "assistant" &&
       "tool_calls" in m &&
@@ -138,7 +136,7 @@ function applyDiscordSendNudge(
   if (hasDiscordSend) return false
 
   // Also check if a tool result from discord_send exists (edge case: tool result is separate message)
-  const hasDiscordSendResult = turnMessages.some(
+  const hasDiscordSendResult = activeTurnMessages.some(
     (m) =>
       m.role === "tool" &&
       typeof m.content === "string" &&
@@ -251,7 +249,7 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
     // then calls wait/rest, leaving the Discord user in silence.
     let discordSendNudged = false
     if (outcome !== CycleOutcome.Rest) {
-      discordSendNudged = applyDiscordSendNudge(state, turnMessages, turnStart)
+      discordSendNudged = applyDiscordSendNudge(state, turnMessages)
     }
 
     if (interruptedByUserEvent || !turnSignature) {

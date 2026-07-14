@@ -14,7 +14,7 @@ import { searchDiscordMessages } from "../discord/search"
 import { listAliases, removeAlias, searchMemories, setAlias } from "../memory"
 import { emit } from "../stream"
 import type { Message } from "../types"
-import { archiveContextMessages, expandContextSummary, grepContext, recordRestContextSnapshot } from "./context-store"
+import { archiveContextMessages, describeContextSummary, expandContextSummary, grepContext, recordRestContextSnapshot } from "./context-store"
 import type { ToolHandler } from "./loop-shared"
 import { pushToolMessage, recordToolResult, runStandardTool, toolError } from "./loop-tool-runtime"
 import { parseImageDetail, saveRestSnapshot } from "./util"
@@ -315,6 +315,21 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
           results: grepContext(String(query ?? ""), limit as number | undefined, summaryId as string | undefined),
         }, null, 2),
         emptyFallback: '{"query":"","results":[]}',
+      }),
+
+    lcm_describe: (ctx) =>
+      runStandardTool(ctx, {
+        name: "lcm_describe",
+        logArgKeys: ["id", "tokenCap"] as const,
+        runArgKeys: ["id", "tokenCap"] as const,
+        run: async (id, tokenCap) => {
+          const summaryId = String(id ?? "").trim()
+          const described = describeContextSummary(summaryId, tokenCap as number | undefined)
+          return JSON.stringify(described ?? {
+            error: `unknown context summary: ${summaryId}`,
+            hint: "Use context_grep to find archived evidence, or check the summary id from the active context marker.",
+          }, null, 2)
+        },
       }),
 
     context_expand: (ctx) =>

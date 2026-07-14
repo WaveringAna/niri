@@ -439,6 +439,32 @@ export function registerControlRoutes(
     }
   })
 
+  app.get("/agents/:id/discord/channels", async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const agent = findAgent(id)
+    if (!agent) return reply.code(404).send({ error: "agent not found" })
+    try {
+      return reply.send(await fetchWorkerJson(agent, "/discord/channels"))
+    } catch (err) {
+      return reply.code(502).send({ error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+
+  app.get("/agents/:id/discord/channels/:channelId/messages", async (req, reply) => {
+    const { id, channelId } = req.params as { id: string; channelId: string }
+    const agent = findAgent(id)
+    if (!agent) return reply.code(404).send({ error: "agent not found" })
+    const query = req.query as { before?: string; limit?: string }
+    const params = new URLSearchParams()
+    if (query.before) params.set("before", query.before)
+    if (query.limit) params.set("limit", query.limit)
+    try {
+      return reply.send(await fetchWorkerJson(agent, `/discord/channels/${encodeURIComponent(channelId)}/messages?${params}`))
+    } catch (err) {
+      return reply.code(502).send({ error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+
   app.get("/health", async () => ({ ok: true }))
 }
 

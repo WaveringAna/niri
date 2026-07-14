@@ -18,6 +18,8 @@ export type ToolArgs = {
   limit?: number
   offset?: number
   summary_id?: string
+  id?: string
+  tokenCap?: number
   status?: string
   item_id?: string
   action?: string

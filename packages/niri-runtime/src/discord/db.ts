@@ -641,14 +641,11 @@ export function queryChannels(configuredIds: string[]): unknown[] {
         last_seen_at
        from discord_channels
        where ${configuredClause}
-          or (
-            is_dm = 1
-            and exists (
-              select 1 from discord_messages m
-              where m.channel_id = discord_channels.channel_id
-            )
+          or exists (
+            select 1 from discord_messages m
+            where m.channel_id = discord_channels.channel_id
           )
-       order by configured desc, coalesce(guild_name, ''), coalesce(channel_name, channel_id)`,
+       order by last_seen_at desc, configured desc, coalesce(guild_name, ''), coalesce(channel_name, channel_id)`,
     )
     .all(...configuredIds)
 }
