@@ -21,6 +21,18 @@ type DiscordConfig = {
   wakeOnEvent?: boolean
 }
 
+export type McpServerConfig = {
+  url?: string
+  command?: string
+  args?: string[]
+  cwd?: string
+  env?: Record<string, string>
+  headers?: Record<string, string>
+  auth?:
+    | { type: "bearer"; token: string }
+    | { type: "basic"; username: string; password: string }
+}
+
 export type AgentFile = {
   id?: string
   name?: string
@@ -33,6 +45,7 @@ export type AgentFile = {
   embedding?: OpenAiProviderConfig & { dimensions?: number }
   summary?: OpenAiProviderConfig
   discord?: DiscordConfig
+  mcp?: Record<string, McpServerConfig>
   settings?: Record<string, string | number | boolean>
 }
 
@@ -59,6 +72,7 @@ const AGENT_KEYS = new Set([
   "embedding",
   "summary",
   "discord",
+  "mcp",
   "settings",
 ])
 
@@ -74,6 +88,7 @@ const RESERVED_SETTINGS = new Set([
   "NIRI_CONTROL_HOME",
   "NIRI_HOME",
   "NIRI_MANAGED_WORKER",
+  "NIRI_MCP_CONFIG",
   "NIRI_RESTART_COMMAND",
   "NIRI_RESTART_CWD",
   "NIRI_WORKER_HOST",
@@ -145,6 +160,91 @@ function parseDiscord(value: unknown, label: string): DiscordConfig | undefined 
   }
 }
 
+function stringRecord(value: unknown, label: string): Record<string, string> | undefined {
+  if (value === undefined) return undefined
+  const item = object(value, label)
+  const result: Record<string, string> = {}
+  for (const [key, raw] of Object.entries(item)) {
+    if (!key.trim()) throw new Error(`${label} keys must be non-empty strings`)
+    if (typeof raw !== "string") throw new Error(`${label}.${key} must be a string`)
+    result[key] = raw
+  }
+  return result
+}
+
+function parseMcpAuth(value: unknown, label: string): McpServerConfig["auth"] {
+  if (value === undefined) return undefined
+  const item = object(value, label)
+  const type = optionalString(item.type, `${label}.type`)
+  if (type === "bearer") {
+    const unknown = Object.keys(item).filter((key) => !["type", "token"].includes(key))
+    if (unknown.length > 0) throw new Error(`${label} has unknown keys: ${unknown.join(", ")}`)
+    const token = optionalString(item.token, `${label}.token`)
+    if (!token) throw new Error(`${label}.token is required for bearer auth`)
+    return { type, token }
+  }
+  if (type === "basic") {
+    const unknown = Object.keys(item).filter((key) => !["type", "username", "password"].includes(key))
+    if (unknown.length > 0) throw new Error(`${label} has unknown keys: ${unknown.join(", ")}`)
+    const username = optionalString(item.username, `${label}.username`)
+    const password = optionalString(item.password, `${label}.password`)
+    if (!username || !password) throw new Error(`${label}.username and ${label}.password are required for basic auth`)
+    return { type, username, password }
+  }
+  throw new Error(`${label}.type must be bearer or basic`)
+}
+
+function parseMcp(value: unknown, label: string): Record<string, McpServerConfig> | undefined {
+  if (value === undefined) return undefined
+  const servers = object(value, label)
+  const result: Record<string, McpServerConfig> = {}
+  for (const [name, raw] of Object.entries(servers)) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error(`${label}.${name} must use only letters, numbers, underscores, or hyphens`)
+    const item = object(raw, `${label}.${name}`)
+    const allowed = new Set(["url", "command", "args", "cwd", "env", "headers", "auth"])
+    const unknown = Object.keys(item).filter((key) => !allowed.has(key))
+    if (unknown.length > 0) throw new Error(`${label}.${name} has unknown keys: ${unknown.join(", ")}`)
+    const url = optionalString(item.url, `${label}.${name}.url`)
+    const command = optionalString(item.command, `${label}.${name}.command`)
+    if (Boolean(url) === Boolean(command)) throw new Error(`${label}.${name} must set exactly one of url or command`)
+    if (url) {
+      const parsed = new URL(url)
+      if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
+        throw new Error(`${label}.${name}.url must be an HTTP(S) URL without embedded credentials`)
+      }
+      if (item.args !== undefined || item.cwd !== undefined || item.env !== undefined) {
+        throw new Error(`${label}.${name} args, cwd, and env are only valid with command`)
+      }
+    }
+    if (command && (item.headers !== undefined || item.auth !== undefined)) {
+      throw new Error(`${label}.${name} headers and auth are only valid with url`)
+    }
+    if (item.auth !== undefined && item.headers !== undefined) {
+      const headers = object(item.headers, `${label}.${name}.headers`)
+      if (Object.keys(headers).some((key) => key.toLowerCase() === "authorization")) {
+        throw new Error(`${label}.${name} cannot set both auth and an Authorization header`)
+      }
+    }
+    let args: string[] | undefined
+    if (item.args !== undefined) {
+      if (!Array.isArray(item.args) || item.args.some((arg) => typeof arg !== "string")) {
+        throw new Error(`${label}.${name}.args must be an array of strings`)
+      }
+      args = item.args as string[]
+    }
+    result[name] = {
+      ...(url ? { url } : {}),
+      ...(command ? { command } : {}),
+      ...(args ? { args } : {}),
+      ...(optionalString(item.cwd, `${label}.${name}.cwd`) ? { cwd: String(item.cwd).trim() } : {}),
+      ...(item.env !== undefined ? { env: stringRecord(item.env, `${label}.${name}.env`) } : {}),
+      ...(item.headers !== undefined ? { headers: stringRecord(item.headers, `${label}.${name}.headers`) } : {}),
+      ...(item.auth !== undefined ? { auth: parseMcpAuth(item.auth, `${label}.${name}.auth`) } : {}),
+    }
+  }
+  return result
+}
+
 function parseSettings(value: unknown, label: string): Record<string, string | number | boolean> | undefined {
   if (value === undefined) return undefined
   const item = object(value, label)
@@ -201,6 +301,7 @@ export function parseAgentFile(filePath: string): AgentFile {
     ...(embedding ? { embedding } : {}),
     ...(item.summary !== undefined ? { summary: parseProvider(item.summary, `${filePath}.summary`, false) } : {}),
     ...(item.discord !== undefined ? { discord: parseDiscord(item.discord, `${filePath}.discord`) } : {}),
+    ...(item.mcp !== undefined ? { mcp: parseMcp(item.mcp, `${filePath}.mcp`) } : {}),
     ...(item.settings !== undefined ? { settings: parseSettings(item.settings, `${filePath}.settings`) } : {}),
   }
 }
@@ -255,6 +356,7 @@ function agentSettings(config: AgentFile): Record<string, string> {
   if (config.discord?.dmWhitelist) settings.DISCORD_DM_WHITELIST = config.discord.dmWhitelist
   if (config.discord?.scanChannelIds) settings.DISCORD_SCAN_CHANNEL_IDS = config.discord.scanChannelIds
   if (config.discord?.wakeOnEvent !== undefined) settings.DISCORD_WAKE_ON_EVENT = String(config.discord.wakeOnEvent)
+  if (config.mcp && Object.keys(config.mcp).length > 0) settings.NIRI_MCP_CONFIG = JSON.stringify(config.mcp)
   for (const [key, value] of Object.entries(config.settings ?? {})) settings[key] = String(value)
   return settings
 }

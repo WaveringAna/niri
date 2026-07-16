@@ -53,6 +53,7 @@ For routine maintenance, ask the agent to inspect, organize, or repair their own
 | `embedding` | object | no | — |
 | `summary` | object | no | — |
 | `discord` | object | no | — |
+| `mcp` | object keyed by MCP server name | no | `{}` |
 | `settings` | object | no | `{}` |
 
 Relative `home` and `workspace` paths resolve from the repository root.
@@ -94,6 +95,39 @@ Relative `home` and `workspace` paths resolve from the repository root.
 | `dmWhitelist` | comma-separated string |
 | `scanChannelIds` | comma-separated string |
 | `wakeOnEvent` | boolean |
+
+### `mcp`
+
+Each entry connects from that agent's server-side worker and registers the remote server's tools. Tools are namespaced as `<server>__<tool>` so independently configured MCP servers cannot overwrite native or client tools. A configured MCP connection must initialize and list its tools before the worker becomes healthy.
+
+HTTP/streamable-HTTP transport:
+
+```yaml
+mcp:
+  kagi:
+    url: https://mcp.example.com/mcp
+    auth:
+      type: bearer
+      token: replace-me
+    headers:
+      X-Client-Name: mira
+```
+
+`auth.type` may be `bearer` with `token`, or `basic` with `username` and `password`. Arbitrary string-valued request headers can also be set with `headers`. URLs must use HTTP(S) and cannot contain embedded credentials.
+
+Local stdio transport:
+
+```yaml
+mcp:
+  github:
+    command: docker
+    args: ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"]
+    cwd: /srv/niri
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: replace-me
+```
+
+Command entries run on the server, not on the attached client. `args` must be a string array; `env` is merged over a minimal safe process environment rather than inheriting the agent's model or Discord credentials; and `cwd` is optional. Each entry must set exactly one of `url` or `command`.
 
 ### `settings`
 

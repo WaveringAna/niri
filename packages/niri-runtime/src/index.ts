@@ -11,6 +11,7 @@ import { ensureSoulFilePlacement } from "./bootstrap"
 import { startAntigravityBridge, stopAntigravityBridge } from "./antigravity-bridge"
 import { startCodexBridge, stopCodexBridge } from "./codex-bridge"
 import { clientTools } from "./client"
+import { startMcpServers, stopMcpServers } from "./mcp"
 
 const PORT = Number.parseInt(process.env.PORT ?? "3000", 10)
 const WORKER_HOST = process.env.NIRI_WORKER_HOST?.trim() || "127.0.0.1"
@@ -35,6 +36,7 @@ async function main() {
   console.log("[niri] starting up...")
 
   await clientTools.start()
+  await startMcpServers()
 
   await ensureSoulFilePlacement()
   initDb()
@@ -99,6 +101,7 @@ async function main() {
       setDiscordToolsAvailable(false)
       await server.close()
       await clientTools.stop()
+      await stopMcpServers()
       await stopAntigravityBridge()
       await stopCodexBridge()
     }

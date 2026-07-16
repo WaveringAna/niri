@@ -38,6 +38,17 @@ fallback:
   baseUrl: http://server.local:1234/v1
 settings:
   RUNNER_MAX_TURNS: 80
+mcp:
+  search:
+    url: https://mcp.example.com/mcp
+    auth:
+      type: bearer
+      token: mcp-secret
+  local:
+    command: node
+    args: [server.mjs]
+    env:
+      SERVER_TOKEN: local-secret
 `,
   })
   const [agent] = resolveLocalAgents(loadAgentFiles(directory), options)
@@ -49,6 +60,17 @@ settings:
   assert.equal(agent?.settings.DISCORD_BOT_TOKEN, "discord-secret")
   assert.equal(agent?.settings.FALLBACK_MODEL, "local-model")
   assert.equal(agent?.settings.RUNNER_MAX_TURNS, "80")
+  assert.deepEqual(JSON.parse(agent?.settings.NIRI_MCP_CONFIG ?? ""), {
+    search: {
+      url: "https://mcp.example.com/mcp",
+      auth: { type: "bearer", token: "mcp-secret" },
+    },
+    local: {
+      command: "node",
+      args: ["server.mjs"],
+      env: { SERVER_TOKEN: "local-secret" },
+    },
+  })
 })
 
 test("local makes the server machine the client", (t) => {
@@ -84,6 +106,17 @@ test("unknown and reserved yaml settings fail startup", (t) => {
 
   const reserved = fixture(t, { "a.yaml": "client: local\nsettings:\n  NIRI_HOME: /tmp/escape\n" })
   assert.throws(() => loadAgentFiles(reserved), /NIRI_HOME is managed by the server/)
+})
+
+test("MCP transport configuration is strict", (t) => {
+  const both = fixture(t, { "a.yaml": "client: local\nmcp:\n  bad:\n    url: https://example.com/mcp\n    command: node\n" })
+  assert.throws(() => loadAgentFiles(both), /exactly one of url or command/)
+
+  const commandAuth = fixture(t, { "a.yaml": "client: local\nmcp:\n  bad:\n    command: node\n    auth:\n      type: bearer\n      token: secret\n" })
+  assert.throws(() => loadAgentFiles(commandAuth), /headers and auth are only valid with url/)
+
+  const duplicateAuth = fixture(t, { "a.yaml": "client: local\nmcp:\n  bad:\n    url: https:\/\/example.com\/mcp\n    headers:\n      Authorization: secret\n    auth:\n      type: bearer\n      token: secret\n" })
+  assert.throws(() => loadAgentFiles(duplicateAuth), /cannot set both auth and an Authorization header/)
 })
 
 test("Discord credentials and bridge ports cannot overlap", (t) => {

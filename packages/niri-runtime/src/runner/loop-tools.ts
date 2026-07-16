@@ -1,6 +1,7 @@
 import { emit } from "../stream"
+import { callMcpTool, getMcpToolDefinitions, hasMcpTool } from "../mcp"
 import { buildToolHandlers } from "./loop-tool-registry"
-import { executeToolCall, pushToolMessage } from "./loop-tool-runtime"
+import { executeToolCall, pushToolMessage, recordToolResult } from "./loop-tool-runtime"
 import type { FunctionToolCall } from "./loop-shared"
 import type { LoopHooks, LoopState } from "./types"
 
@@ -40,6 +41,17 @@ export async function processToolCalls(
   calls: readonly FunctionToolCall[],
 ): Promise<boolean> {
   const handlers = buildToolHandlers(hooks)
+  for (const tool of getMcpToolDefinitions()) {
+    const name = tool.function.name
+    handlers[name] = async (ctx) => {
+      if (!hasMcpTool(name)) throw new Error(`MCP tool ${name} is disconnected`)
+      console.log(`[mcp tool] ${name}`)
+      const result = await callMcpTool(name, ctx.args)
+      recordToolResult(ctx.convId, ctx.state, ctx.call, name, ctx.args, result)
+      emit({ type: "tool", name, args: ctx.args, result })
+      return {}
+    }
+  }
   const allowedTools = new Set(hooks.getTools().map((tool) => tool.function.name))
 
   for (let i = 0; i < calls.length; i++) {

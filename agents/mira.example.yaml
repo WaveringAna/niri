@@ -34,6 +34,22 @@ discord:
   enabled: true
   wakeOnEvent: true
 
+# MCP servers run beside this agent's worker on the server. Their tools are
+# exposed to the model as <server>__<tool> (for example, kagi__search).
+mcp:
+  kagi:
+    url: https://mcp.example.com/mcp
+    auth:
+      type: bearer
+      token: replace-me
+    headers:
+      X-Client-Name: mira
+  filesystem:
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/srv/shared"]
+    env:
+      LOG_LEVEL: warn
+
 # uncommon runtime knobs can use their existing names here. lifecycle and
 # topology values are managed by the server and rejected in this section.
 settings:

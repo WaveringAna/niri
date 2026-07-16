@@ -11,18 +11,22 @@ import { archiveContextMessages } from "./context-store"
 import type { RunnerStateInternal } from "./types"
 import { clearSession, loadRestSnapshot, loadSession, saveRestSnapshot, saveSession } from "./util"
 import type { UserMessage } from "../types"
+import { getMcpToolDefinitions } from "../mcp"
 
 let eventResolvers: Array<(event: UserMessage | null) => void> = []
 let shutdownResolvers: Array<() => void> = []
 const PROCESS_STARTED_AT = new Date().toISOString()
 
 function currentToolCatalog() {
-  return createNiriToolCatalog({
-    clientCapabilities: clientTools.getCapabilities(),
-    workspace: clientTools.getWorkspace(),
-    memory: true,
-    discord: areDiscordToolsAvailable(),
-  })
+  return [
+    ...createNiriToolCatalog({
+      clientCapabilities: clientTools.getCapabilities(),
+      workspace: clientTools.getWorkspace(),
+      memory: true,
+      discord: areDiscordToolsAvailable(),
+    }),
+    ...getMcpToolDefinitions(),
+  ]
 }
 
 const state: RunnerStateInternal = {

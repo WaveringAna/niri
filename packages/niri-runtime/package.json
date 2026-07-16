@@ -18,10 +18,11 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.100.1",
-    "@mira/harness-core": "*",
     "@mira/harness-client-node": "*",
+    "@mira/harness-core": "*",
     "@mira/harness-protocol": "*",
     "@mira/harness-server": "*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@niri/protocol": "*",
     "@openrouter/sdk": "^0.12.21",
     "better-sqlite3": "^12.8.0",
