@@ -12,6 +12,7 @@ import {
   PRIMARY_QUOTA_RETRY_MS,
   REST_SNAPSHOT_FILE,
   clearPrimaryFailover,
+  countConversationCompactionCandidates,
   isContentFilterError,
   isImageParseError,
   isQuotaExhaustedError,
@@ -27,6 +28,20 @@ import {
   shouldRetryProvider,
   summarizeConversationViaLLM,
 } from "./util"
+
+test("countConversationCompactionCandidates excludes the prior summary and preserved tail", () => {
+  const messages: Message[] = [
+    { role: "system", content: "bootstrap" },
+    { role: "user", content: "[context summary v1]\nold summary" },
+    ...Array.from({ length: 8 }, (_, index) => ({ role: "user" as const, content: `candidate ${index}` })),
+    ...Array.from({ length: 6 }, (_, index) => ({ role: "assistant" as const, content: `tail ${index}` })),
+  ]
+
+  assert.equal(
+    countConversationCompactionCandidates(messages, { recentMinKeep: 6, recentMaxKeep: 6 }),
+    8,
+  )
+})
 
 type AssistantMessageWithReasoning = OpenAI.Chat.ChatCompletionAssistantMessageParam & {
   reasoning_content?: string

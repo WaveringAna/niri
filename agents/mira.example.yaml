@@ -33,6 +33,35 @@ discord:
   token: replace-me
   enabled: true
   wakeOnEvent: true
+  gatewayTrace: false
+  gatewayRawFallback: true
+  batchIntervalMs: 60000
+  batchOnlyConfigured: true
+  pendingAutoSeenMinutes: 10
+  batchScan: true
+  batchMaxMessages: 40
+  cooldownChannels: "channelId,2000,0400"
+  cooldownTz: America/New_York
+
+runtime:
+  imageMaxBytes: 1000000
+  primaryToolChoice: required
+  fallbackToolChoice: required
+  fallbackEnforceContextLimit: false
+  contextCompactTriggerTokens: 90000
+  contextCompactHardTriggerTokens: 115000
+  contextCompactMinNewMessages: 24
+  migrateLegacyState: true
+  maxTurns: 120
+  antigravity:
+    enabled: false
+    port: 8000
+    binaryPath: /home/niri/.local/bin/agy
+  codex:
+    enabled: true
+    port: 8001
+    model: gpt-5.6-sol
+    reasoningEffort: low
 
 # MCP servers run beside this agent's worker on the server. Their tools are
 # exposed to the model as <server>__<tool> (for example, kagi__search).
@@ -52,7 +81,4 @@ mcp:
 
 # uncommon runtime knobs can use their existing names here. lifecycle and
 # topology values are managed by the server and rejected in this section.
-settings:
-  CONTEXT_COMPACT_TARGET_TOKENS: 65000
-  CONTEXT_COMPACT_TRIGGER_TOKENS: 90000
-  RUNNER_MAX_TURNS: 120
+settings: {}

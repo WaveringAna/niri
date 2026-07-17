@@ -1,9 +1,13 @@
 import { recordMetric } from "../metrics"
 import { emit } from "../stream"
 import type { Message } from "../types"
+import { AGENT_ID } from "../agent-config"
 import {
+  CONTEXT_COMPACT_HARD_TRIGGER_TOKENS,
+  CONTEXT_COMPACT_MIN_NEW_MESSAGES,
   CONTEXT_COMPACT_TRIGGER_TOKENS,
   ENABLE_THINKING,
+  countConversationCompactionCandidates,
   estimatePromptTokens,
   findSummaryMessageIndex,
   loadAgentSummaryContext,
@@ -163,10 +167,22 @@ async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-tu
   // used to fire compaction at ~22-31k real tokens and produce nonsense summaries.
   if (state.contextSize < CONTEXT_COMPACT_TRIGGER_TOKENS) return false
   const beforeEstimate = estimatePromptTokens(state.conversation)
+  const priorSummaryIndex = findSummaryMessageIndex(state.conversation)
+  const candidateCount = countConversationCompactionCandidates(state.conversation, {
+    recentMinKeep: LLM_RECENT_MIN_KEEP,
+    recentMaxKeep: LLM_RECENT_MAX_KEEP,
+    tailCharBudget: LLM_TAIL_CHAR_BUDGET,
+  })
+  if (shouldDeferSmallFollowUpCompaction(priorSummaryIndex >= 0, candidateCount, state.contextSize)) {
+    console.log(
+      `[context agent=${AGENT_ID}] ${phase}: deferring follow-up compaction with only ${candidateCount} new candidate message(s) at ${state.contextSize} observed tokens (hard trigger ${CONTEXT_COMPACT_HARD_TRIGGER_TOKENS})`,
+    )
+    return false
+  }
 
   const summaryProvider = await configuredSummaryProvider()
   if (!summaryProvider.client || !summaryProvider.model) {
-    console.warn(`[context] ${phase}: no summary client available; skipping llm compaction`)
+    console.warn(`[context agent=${AGENT_ID}] ${phase}: no summary client available; skipping llm compaction`)
     return false
   }
 
@@ -184,13 +200,13 @@ async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-tu
     },
   )
   if (!compaction) {
-    console.warn(`[context] ${phase}: llm summary unavailable; keeping raw conversation`)
+    console.warn(`[context agent=${AGENT_ID}] ${phase}: llm summary unavailable; keeping raw conversation`)
     return false
   }
 
   const afterEstimate = estimatePromptTokens(compaction.messages)
   if (afterEstimate >= beforeEstimate) {
-    console.warn(`[context] ${phase}: llm summary not smaller (${beforeEstimate} -> ${afterEstimate}); keeping raw conversation`)
+    console.warn(`[context agent=${AGENT_ID}] ${phase}: llm summary not smaller (${beforeEstimate} -> ${afterEstimate}); keeping raw conversation`)
     return false
   }
 
@@ -207,7 +223,7 @@ async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-tu
   const summary = summaryIdx >= 0 ? (state.conversation[summaryIdx]?.content as string) : undefined
 
   console.log(
-    `[context] ${phase}: llm-summarized conversation via ${summaryProvider.model} (${beforeCount} -> ${state.conversation.length} msgs, ${beforeEstimate} -> ${state.contextSize} tokens, ${summaryId})`,
+    `[context agent=${AGENT_ID}] ${phase}: llm-summarized conversation via ${summaryProvider.model} (${beforeCount} -> ${state.conversation.length} msgs, ${beforeEstimate} -> ${state.contextSize} tokens, ${summaryId})`,
   )
 
   recordMetric({
@@ -218,6 +234,18 @@ async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-tu
     summary,
   })
   return true
+}
+
+function shouldDeferSmallFollowUpCompaction(
+  hasPriorSummary: boolean,
+  candidateCount: number,
+  observedPromptTokens: number,
+): boolean {
+  return (
+    hasPriorSummary &&
+    candidateCount < CONTEXT_COMPACT_MIN_NEW_MESSAGES &&
+    observedPromptTokens < CONTEXT_COMPACT_HARD_TRIGGER_TOKENS
+  )
 }
 
 export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks): Promise<RunLoopExit> {
@@ -309,4 +337,5 @@ export const __loopTest = {
   applyDiscordSendNudge,
   hasDiscordInputForTurn,
   waitForNextEvent,
+  shouldDeferSmallFollowUpCompaction,
 }

@@ -252,3 +252,14 @@ test("waitForNextEvent waits for and injects the next external event", async () 
 
   assert.deepEqual(calls, ["wait", "inject:still here"])
 })
+
+test("small follow-up compactions wait for a meaningful batch", () => {
+  assert.equal(__loopTest.shouldDeferSmallFollowUpCompaction(true, 8, 90_000), true)
+  assert.equal(__loopTest.shouldDeferSmallFollowUpCompaction(true, 24, 90_000), false)
+  assert.equal(__loopTest.shouldDeferSmallFollowUpCompaction(false, 8, 90_000), false)
+})
+
+test("hard observed context pressure permits a small follow-up compaction", () => {
+  assert.equal(__loopTest.shouldDeferSmallFollowUpCompaction(true, 8, 114_999), true)
+  assert.equal(__loopTest.shouldDeferSmallFollowUpCompaction(true, 8, 115_000), false)
+})

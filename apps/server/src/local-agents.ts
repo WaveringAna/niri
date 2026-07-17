@@ -19,6 +19,29 @@ type DiscordConfig = {
   dmWhitelist?: string
   scanChannelIds?: string
   wakeOnEvent?: boolean
+  gatewayTrace?: boolean
+  gatewayRawFallback?: boolean
+  batchIntervalMs?: number
+  batchOnlyConfigured?: boolean
+  pendingAutoSeenMinutes?: number
+  batchScan?: boolean
+  batchMaxMessages?: number
+  cooldownChannels?: string
+  cooldownTz?: string
+}
+
+type RuntimeConfig = {
+  imageMaxBytes?: number
+  primaryToolChoice?: "required" | "auto" | "none"
+  fallbackToolChoice?: "required" | "auto" | "none"
+  fallbackEnforceContextLimit?: boolean
+  contextCompactTriggerTokens?: number
+  contextCompactHardTriggerTokens?: number
+  contextCompactMinNewMessages?: number
+  migrateLegacyState?: boolean
+  maxTurns?: number
+  antigravity?: { enabled?: boolean; port?: number; binaryPath?: string }
+  codex?: { enabled?: boolean; port?: number; model?: string; reasoningEffort?: string }
 }
 
 export type McpServerConfig = {
@@ -45,6 +68,7 @@ export type AgentFile = {
   embedding?: OpenAiProviderConfig & { dimensions?: number }
   summary?: OpenAiProviderConfig
   discord?: DiscordConfig
+  runtime?: RuntimeConfig
   mcp?: Record<string, McpServerConfig>
   settings?: Record<string, string | number | boolean>
 }
@@ -72,6 +96,7 @@ const AGENT_KEYS = new Set([
   "embedding",
   "summary",
   "discord",
+  "runtime",
   "mcp",
   "settings",
 ])
@@ -125,6 +150,19 @@ function optionalBoolean(value: unknown, label: string): boolean | undefined {
   return value
 }
 
+function optionalInteger(value: unknown, label: string, minimum = 1): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== "number" || !Number.isInteger(value) || value < minimum) throw new Error(`${label} must be an integer >= ${minimum}`)
+  return value
+}
+
+function optionalChoice(value: unknown, label: string): "required" | "auto" | "none" | undefined {
+  const choice = optionalString(value, label)
+  if (choice === undefined) return undefined
+  if (choice !== "required" && choice !== "auto" && choice !== "none") throw new Error(`${label} must be required, auto, or none`)
+  return choice
+}
+
 function parseProvider(value: unknown, label: string, allowProvider: boolean, extraKeys: string[] = []): ProviderConfig | undefined {
   if (value === undefined) return undefined
   const item = object(value, label)
@@ -147,7 +185,7 @@ function parseProvider(value: unknown, label: string, allowProvider: boolean, ex
 function parseDiscord(value: unknown, label: string): DiscordConfig | undefined {
   if (value === undefined) return undefined
   const item = object(value, label)
-  const allowed = new Set(["token", "enabled", "botUserId", "dmWhitelist", "scanChannelIds", "wakeOnEvent"])
+  const allowed = new Set(["token", "enabled", "botUserId", "dmWhitelist", "scanChannelIds", "wakeOnEvent", "gatewayTrace", "gatewayRawFallback", "batchIntervalMs", "batchOnlyConfigured", "pendingAutoSeenMinutes", "batchScan", "batchMaxMessages", "cooldownChannels", "cooldownTz"])
   const unknown = Object.keys(item).filter((key) => !allowed.has(key))
   if (unknown.length > 0) throw new Error(`${label} has unknown keys: ${unknown.join(", ")}`)
   return {
@@ -157,6 +195,45 @@ function parseDiscord(value: unknown, label: string): DiscordConfig | undefined 
     ...(optionalString(item.dmWhitelist, `${label}.dmWhitelist`) ? { dmWhitelist: String(item.dmWhitelist).trim() } : {}),
     ...(optionalString(item.scanChannelIds, `${label}.scanChannelIds`) ? { scanChannelIds: String(item.scanChannelIds).trim() } : {}),
     ...(item.wakeOnEvent !== undefined ? { wakeOnEvent: optionalBoolean(item.wakeOnEvent, `${label}.wakeOnEvent`) } : {}),
+    ...(item.gatewayTrace !== undefined ? { gatewayTrace: optionalBoolean(item.gatewayTrace, `${label}.gatewayTrace`) } : {}),
+    ...(item.gatewayRawFallback !== undefined ? { gatewayRawFallback: optionalBoolean(item.gatewayRawFallback, `${label}.gatewayRawFallback`) } : {}),
+    ...(item.batchIntervalMs !== undefined ? { batchIntervalMs: optionalInteger(item.batchIntervalMs, `${label}.batchIntervalMs`) } : {}),
+    ...(item.batchOnlyConfigured !== undefined ? { batchOnlyConfigured: optionalBoolean(item.batchOnlyConfigured, `${label}.batchOnlyConfigured`) } : {}),
+    ...(item.pendingAutoSeenMinutes !== undefined ? { pendingAutoSeenMinutes: optionalInteger(item.pendingAutoSeenMinutes, `${label}.pendingAutoSeenMinutes`) } : {}),
+    ...(item.batchScan !== undefined ? { batchScan: optionalBoolean(item.batchScan, `${label}.batchScan`) } : {}),
+    ...(item.batchMaxMessages !== undefined ? { batchMaxMessages: optionalInteger(item.batchMaxMessages, `${label}.batchMaxMessages`) } : {}),
+    ...(optionalString(item.cooldownChannels, `${label}.cooldownChannels`) ? { cooldownChannels: String(item.cooldownChannels).trim() } : {}),
+    ...(optionalString(item.cooldownTz, `${label}.cooldownTz`) ? { cooldownTz: String(item.cooldownTz).trim() } : {}),
+  }
+}
+
+function parseRuntime(value: unknown, label: string): RuntimeConfig | undefined {
+  if (value === undefined) return undefined
+  const item = object(value, label)
+  const allowed = new Set(["imageMaxBytes", "primaryToolChoice", "fallbackToolChoice", "fallbackEnforceContextLimit", "contextCompactTriggerTokens", "contextCompactHardTriggerTokens", "contextCompactMinNewMessages", "migrateLegacyState", "maxTurns", "antigravity", "codex"])
+  const unknown = Object.keys(item).filter((key) => !allowed.has(key))
+  if (unknown.length) throw new Error(`${label} has unknown keys: ${unknown.join(", ")}`)
+  const parseBridge = (raw: unknown, bridgeLabel: string, extra: string[]): Record<string, unknown> | undefined => {
+    if (raw === undefined) return undefined
+    const bridge = object(raw, bridgeLabel)
+    const bridgeUnknown = Object.keys(bridge).filter((key) => !["enabled", "port", ...extra].includes(key))
+    if (bridgeUnknown.length) throw new Error(`${bridgeLabel} has unknown keys: ${bridgeUnknown.join(", ")}`)
+    return bridge
+  }
+  const antigravity = parseBridge(item.antigravity, `${label}.antigravity`, ["binaryPath"])
+  const codex = parseBridge(item.codex, `${label}.codex`, ["model", "reasoningEffort"])
+  return {
+    ...(item.imageMaxBytes !== undefined ? { imageMaxBytes: optionalInteger(item.imageMaxBytes, `${label}.imageMaxBytes`) } : {}),
+    ...(item.primaryToolChoice !== undefined ? { primaryToolChoice: optionalChoice(item.primaryToolChoice, `${label}.primaryToolChoice`) } : {}),
+    ...(item.fallbackToolChoice !== undefined ? { fallbackToolChoice: optionalChoice(item.fallbackToolChoice, `${label}.fallbackToolChoice`) } : {}),
+    ...(item.fallbackEnforceContextLimit !== undefined ? { fallbackEnforceContextLimit: optionalBoolean(item.fallbackEnforceContextLimit, `${label}.fallbackEnforceContextLimit`) } : {}),
+    ...(item.contextCompactTriggerTokens !== undefined ? { contextCompactTriggerTokens: optionalInteger(item.contextCompactTriggerTokens, `${label}.contextCompactTriggerTokens`) } : {}),
+    ...(item.contextCompactHardTriggerTokens !== undefined ? { contextCompactHardTriggerTokens: optionalInteger(item.contextCompactHardTriggerTokens, `${label}.contextCompactHardTriggerTokens`) } : {}),
+    ...(item.contextCompactMinNewMessages !== undefined ? { contextCompactMinNewMessages: optionalInteger(item.contextCompactMinNewMessages, `${label}.contextCompactMinNewMessages`) } : {}),
+    ...(item.migrateLegacyState !== undefined ? { migrateLegacyState: optionalBoolean(item.migrateLegacyState, `${label}.migrateLegacyState`) } : {}),
+    ...(item.maxTurns !== undefined ? { maxTurns: optionalInteger(item.maxTurns, `${label}.maxTurns`) } : {}),
+    ...(antigravity ? { antigravity: { ...(antigravity.enabled !== undefined ? { enabled: optionalBoolean(antigravity.enabled, `${label}.antigravity.enabled`) } : {}), ...(antigravity.port !== undefined ? { port: optionalInteger(antigravity.port, `${label}.antigravity.port`) } : {}), ...(antigravity.binaryPath !== undefined ? { binaryPath: optionalString(antigravity.binaryPath, `${label}.antigravity.binaryPath`) } : {}) } } : {}),
+    ...(codex ? { codex: { ...(codex.enabled !== undefined ? { enabled: optionalBoolean(codex.enabled, `${label}.codex.enabled`) } : {}), ...(codex.port !== undefined ? { port: optionalInteger(codex.port, `${label}.codex.port`) } : {}), ...(codex.model !== undefined ? { model: optionalString(codex.model, `${label}.codex.model`) } : {}), ...(codex.reasoningEffort !== undefined ? { reasoningEffort: optionalString(codex.reasoningEffort, `${label}.codex.reasoningEffort`) } : {}) } } : {}),
   }
 }
 
@@ -301,6 +378,7 @@ export function parseAgentFile(filePath: string): AgentFile {
     ...(embedding ? { embedding } : {}),
     ...(item.summary !== undefined ? { summary: parseProvider(item.summary, `${filePath}.summary`, false) } : {}),
     ...(item.discord !== undefined ? { discord: parseDiscord(item.discord, `${filePath}.discord`) } : {}),
+    ...(item.runtime !== undefined ? { runtime: parseRuntime(item.runtime, `${filePath}.runtime`) } : {}),
     ...(item.mcp !== undefined ? { mcp: parseMcp(item.mcp, `${filePath}.mcp`) } : {}),
     ...(item.settings !== undefined ? { settings: parseSettings(item.settings, `${filePath}.settings`) } : {}),
   }
@@ -356,6 +434,33 @@ function agentSettings(config: AgentFile): Record<string, string> {
   if (config.discord?.dmWhitelist) settings.DISCORD_DM_WHITELIST = config.discord.dmWhitelist
   if (config.discord?.scanChannelIds) settings.DISCORD_SCAN_CHANNEL_IDS = config.discord.scanChannelIds
   if (config.discord?.wakeOnEvent !== undefined) settings.DISCORD_WAKE_ON_EVENT = String(config.discord.wakeOnEvent)
+  const discord = config.discord
+  if (discord?.gatewayTrace !== undefined) settings.DISCORD_GATEWAY_TRACE = String(discord.gatewayTrace)
+  if (discord?.gatewayRawFallback !== undefined) settings.DISCORD_GATEWAY_RAW_FALLBACK = String(discord.gatewayRawFallback)
+  if (discord?.batchIntervalMs !== undefined) settings.DISCORD_BATCH_INTERVAL_MS = String(discord.batchIntervalMs)
+  if (discord?.batchOnlyConfigured !== undefined) settings.DISCORD_BATCH_ONLY_CONFIGURED = String(discord.batchOnlyConfigured)
+  if (discord?.pendingAutoSeenMinutes !== undefined) settings.DISCORD_PENDING_AUTO_SEEN_MINUTES = String(discord.pendingAutoSeenMinutes)
+  if (discord?.batchScan !== undefined) settings.DISCORD_BATCH_SCAN = String(discord.batchScan)
+  if (discord?.batchMaxMessages !== undefined) settings.DISCORD_BATCH_MAX_MESSAGES = String(discord.batchMaxMessages)
+  if (discord?.cooldownChannels) settings.COOLDOWN_CHANNELS = discord.cooldownChannels
+  if (discord?.cooldownTz) settings.COOLDOWN_TZ = discord.cooldownTz
+  const runtime = config.runtime
+  if (runtime?.imageMaxBytes !== undefined) settings.IMAGE_TOOL_MAX_BYTES = String(runtime.imageMaxBytes)
+  if (runtime?.primaryToolChoice) settings.PRIMARY_TOOL_CHOICE = runtime.primaryToolChoice
+  if (runtime?.fallbackToolChoice) settings.FALLBACK_TOOL_CHOICE = runtime.fallbackToolChoice
+  if (runtime?.fallbackEnforceContextLimit !== undefined) settings.FALLBACK_ENFORCE_CONTEXT_LIMIT = String(runtime.fallbackEnforceContextLimit)
+  if (runtime?.contextCompactTriggerTokens !== undefined) settings.CONTEXT_COMPACT_TRIGGER_TOKENS = String(runtime.contextCompactTriggerTokens)
+  if (runtime?.contextCompactHardTriggerTokens !== undefined) settings.CONTEXT_COMPACT_HARD_TRIGGER_TOKENS = String(runtime.contextCompactHardTriggerTokens)
+  if (runtime?.contextCompactMinNewMessages !== undefined) settings.CONTEXT_COMPACT_MIN_NEW_MESSAGES = String(runtime.contextCompactMinNewMessages)
+  if (runtime?.migrateLegacyState !== undefined) settings.NIRI_MIGRATE_LEGACY_STATE = String(runtime.migrateLegacyState)
+  if (runtime?.maxTurns !== undefined) settings.RUNNER_MAX_TURNS = String(runtime.maxTurns)
+  if (runtime?.antigravity?.enabled !== undefined) settings.ANTIGRAVITY_BRIDGE_ENABLED = String(runtime.antigravity.enabled)
+  if (runtime?.antigravity?.port !== undefined) settings.ANTIGRAVITY_BRIDGE_PORT = String(runtime.antigravity.port)
+  if (runtime?.antigravity?.binaryPath) settings.ANTIGRAVITY_BINARY_PATH = runtime.antigravity.binaryPath
+  if (runtime?.codex?.enabled !== undefined) settings.CODEX_BRIDGE_ENABLED = String(runtime.codex.enabled)
+  if (runtime?.codex?.port !== undefined) settings.CODEX_BRIDGE_PORT = String(runtime.codex.port)
+  if (runtime?.codex?.model) settings.CODEX_BRIDGE_MODEL = runtime.codex.model
+  if (runtime?.codex?.reasoningEffort) settings.CODEX_BRIDGE_REASONING_EFFORT = runtime.codex.reasoningEffort
   if (config.mcp && Object.keys(config.mcp).length > 0) settings.NIRI_MCP_CONFIG = JSON.stringify(config.mcp)
   for (const [key, value] of Object.entries(config.settings ?? {})) settings[key] = String(value)
   return settings

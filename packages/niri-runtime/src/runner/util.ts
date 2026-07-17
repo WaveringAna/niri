@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 import path from "path"
 import { fileURLToPath } from "node:url"
 import OpenAI from "openai"
-import { NIRI_HOME } from "../agent-config"
+import { AGENT_ID, NIRI_HOME } from "../agent-config"
 import { openAIHeaders, openAIUserAgent } from "../openai-headers"
 import type { Message } from "../types"
 import type { ImageDetail } from "./types"
@@ -79,6 +79,14 @@ async function migrateLegacySnapshots(): Promise<void> {
 }
 
 export const CONTEXT_COMPACT_TRIGGER_TOKENS = parseInt(process.env.CONTEXT_COMPACT_TRIGGER_TOKENS ?? "90000")
+export const CONTEXT_COMPACT_HARD_TRIGGER_TOKENS = Math.max(
+  CONTEXT_COMPACT_TRIGGER_TOKENS + 1,
+  Number.parseInt(process.env.CONTEXT_COMPACT_HARD_TRIGGER_TOKENS ?? "115000", 10) || 115_000,
+)
+export const CONTEXT_COMPACT_MIN_NEW_MESSAGES = Math.max(
+  1,
+  Number.parseInt(process.env.CONTEXT_COMPACT_MIN_NEW_MESSAGES ?? "24", 10) || 24,
+)
 export const PRIMARY_QUOTA_RETRY_MS = Math.max(
   60_000,
   Number.parseInt(process.env.PRIMARY_QUOTA_RETRY_MS ?? `${24 * 60 * 60 * 1000}`, 10) || 24 * 60 * 60 * 1000,
@@ -1237,6 +1245,28 @@ function chooseTailStart(
   return start
 }
 
+/** Returns the raw messages a normal compaction would fold into its next summary node. */
+export function countConversationCompactionCandidates(
+  messages: Message[],
+  options: {
+    recentMinKeep?: number
+    recentMaxKeep?: number
+    tailCharBudget?: number
+  } = {},
+): number {
+  const recentMinKeep = Math.max(2, options.recentMinKeep ?? 6)
+  const recentMaxKeep = Math.max(recentMinKeep, options.recentMaxKeep ?? 40)
+  const tailCharBudget = Math.max(8_000, options.tailCharBudget ?? 60_000)
+  const middleStart = countLeadingSystemMessages(messages)
+  const tailStart = chooseTailStart(messages, middleStart, recentMinKeep, recentMaxKeep, tailCharBudget)
+  if (tailStart <= middleStart) return 0
+
+  const priorSummaryIndex = findSummaryMessageIndex(messages)
+  let count = tailStart - middleStart
+  if (priorSummaryIndex >= middleStart && priorSummaryIndex < tailStart) count -= 1
+  return Math.max(0, count)
+}
+
 const SUMMARY_MIN_TRANSCRIPT_CHARS = 1_200
 const SUMMARY_MIN_REDUCTION = 0.1
 const SUMMARY_META_REPLY_PATTERNS = [
@@ -1428,7 +1458,7 @@ export async function summarizeConversationViaLLMWithProvenance(
     const summaryText = typeof summary === "string" ? summary.trim() : ""
     if (!summaryText) return null
     if (summaryText.length < 80 || looksLikeMetaReply(summaryText)) {
-      console.warn(`[context] llm summarization rejected (looks like meta-reply): ${summaryText.slice(0, 200)}`)
+      console.warn(`[context agent=${AGENT_ID}] llm summarization rejected (looks like meta-reply): ${summaryText.slice(0, 200)}`)
       return null
     }
 
@@ -1436,7 +1466,7 @@ export async function summarizeConversationViaLLMWithProvenance(
       (priorSummaryText ? priorSummaryText.length : 0) +
       middle.reduce((acc, m) => acc + messageStringContent(m).length, 0)
     if (summaryText.length > replacedChars * (1 - SUMMARY_MIN_REDUCTION)) {
-      console.warn(`[context] llm summarization rejected: insufficient reduction (${summaryText.length} vs ${replacedChars} chars)`)
+      console.warn(`[context agent=${AGENT_ID}] llm summarization rejected: insufficient reduction (${summaryText.length} vs ${replacedChars} chars)`)
       return null
     }
 
@@ -1456,7 +1486,7 @@ export async function summarizeConversationViaLLMWithProvenance(
       priorSummaryContent: priorSummaryText,
     }
   } catch (err) {
-    console.warn(`[context] llm summarization failed: ${errorSummary(err)}`)
+    console.warn(`[context agent=${AGENT_ID}] llm summarization failed: ${errorSummary(err)}`)
     return null
   }
 }

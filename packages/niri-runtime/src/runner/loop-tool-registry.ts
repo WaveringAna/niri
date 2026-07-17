@@ -253,7 +253,7 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
       recordToolResult(convId, state, call, "rest", args, "Goodnight.")
       archiveContextMessages(state.conversation, "rest")
       const snapshot = recordRestContextSnapshot(state.conversation, args.note as string | undefined)
-      console.log(`[context] rest: archived ${snapshot.sourceCount} raw message(s) under ${snapshot.summaryId}`)
+      console.log(`[context agent=${AGENT_ID}] rest: archived ${snapshot.sourceCount} raw message(s) under ${snapshot.summaryId}`)
       await saveRestSnapshot([{ role: "user", content: snapshot.forest }], args.note as string | undefined)
       await hooks.clearSession()
       return { shouldRest: true }

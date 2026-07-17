@@ -712,23 +712,23 @@ async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Pro
 
   const summaryProvider = await configuredSummaryProvider()
   if (!summaryProvider.client || !summaryProvider.model) {
-    console.warn(`[context] recovery: no summary client available; cannot llm-summarize`)
+    console.warn(`[context agent=${AGENT_ID}] recovery: no summary client available; cannot llm-summarize`)
     return false
   }
 
-  console.warn(`[context] recovery: attempting llm summarization via ${summaryProvider.model} (attempt=${attempt + 1})`)
+  console.warn(`[context agent=${AGENT_ID}] recovery: attempting llm summarization via ${summaryProvider.model} (attempt=${attempt + 1})`)
   const agentContext = await loadAgentSummaryContext()
   const compaction = await summarizeConversationViaLLMWithProvenance(state.conversation, summaryProvider.client, summaryProvider.model, {
     agentContext,
   })
   if (!compaction) {
-    console.warn(`[context] recovery: llm summarization returned no changes`)
+    console.warn(`[context agent=${AGENT_ID}] recovery: llm summarization returned no changes`)
     return false
   }
 
   const afterEstimate = estimatePromptTokens(compaction.messages)
   if (afterEstimate >= beforeEstimate) {
-    console.warn(`[context] recovery: llm summary not smaller (${beforeEstimate} -> ${afterEstimate}); keeping original`)
+    console.warn(`[context agent=${AGENT_ID}] recovery: llm summary not smaller (${beforeEstimate} -> ${afterEstimate}); keeping original`)
     return false
   }
 
@@ -745,7 +745,7 @@ async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Pro
   const summary = summaryIdx >= 0 ? (state.conversation[summaryIdx]?.content as string) : undefined
 
   console.warn(
-    `[context] recovery: llm-summarized conversation (${beforeCount} -> ${state.conversation.length} msgs, ${beforeEstimate} -> ${state.contextSize} tokens, ${summaryId})`,
+    `[context agent=${AGENT_ID}] recovery: llm-summarized conversation (${beforeCount} -> ${state.conversation.length} msgs, ${beforeEstimate} -> ${state.contextSize} tokens, ${summaryId})`,
   )
 
   recordMetric({
