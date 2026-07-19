@@ -8,13 +8,14 @@
     "./server": "./src/server.ts"
   },
   "scripts": {
-    "predev": "npm run build --workspace @mira/harness-protocol && npm run build --workspace @mira/harness-core && npm run build --workspace @mira/harness-server && npm run build --workspace @mira/harness-client-node && npm run build --workspace @niri/protocol",
-    "prestart": "npm run build --workspace @mira/harness-protocol && npm run build --workspace @mira/harness-core && npm run build --workspace @mira/harness-server && npm run build --workspace @mira/harness-client-node && npm run build --workspace @niri/protocol",
+    "predev": "npm run build --workspace @mira/harness-protocol && npm run build --workspace @mira/harness-core && npm run build --workspace @mira/harness-server && npm run build --workspace @mira/harness-client-node && npm run build --workspace @niri/protocol && npm run build --workspace @niri/agent-config && npm run build --workspace @niri/iroh-transport",
+    "prestart": "npm run build --workspace @mira/harness-protocol && npm run build --workspace @mira/harness-core && npm run build --workspace @mira/harness-server && npm run build --workspace @mira/harness-client-node && npm run build --workspace @niri/protocol && npm run build --workspace @niri/agent-config && npm run build --workspace @niri/iroh-transport",
     "start": "tsx src/index.ts",
+    "start:standalone": "tsx src/standalone.ts",
     "dev": "tsx watch src/index.ts",
-    "pretest": "npm run build --workspace @mira/harness-protocol && npm run build --workspace @mira/harness-core && npm run build --workspace @mira/harness-server && npm run build --workspace @mira/harness-client-node && npm run build --workspace @niri/protocol",
-    "test": "NIRI_ENV=local NIRI_HOME=/tmp/niri-runtime-test/home NIRI_MIGRATE_LEGACY_STATE=false FALLBACK_OPENAI_API_KEY=test NIRI_AGENT_STATE_DIR=/tmp/niri-runtime-test/state node --import tsx --test 'src/**/*.test.ts'",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "pretest": "npm run build --workspace @mira/harness-protocol && npm run build --workspace @mira/harness-core && npm run build --workspace @mira/harness-server && npm run build --workspace @mira/harness-client-node && npm run build --workspace @niri/protocol && npm run build --workspace @niri/agent-config && npm run build --workspace @niri/iroh-transport",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test 'src/**/*.test.ts'"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.100.1",
@@ -23,13 +24,17 @@
     "@mira/harness-protocol": "*",
     "@mira/harness-server": "*",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@niri/agent-config": "*",
+    "@niri/iroh-transport": "*",
     "@niri/protocol": "*",
+    "@number0/iroh": "1.1.0",
     "@openrouter/sdk": "^0.12.21",
     "better-sqlite3": "^12.8.0",
     "discord.js": "^14.25.1",
     "fastify": "^5.8.4",
     "openai": "^6.33.0",
-    "sqlite-vec": "^0.1.9"
+    "sqlite-vec": "^0.1.9",
+    "undici": "^6.27.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

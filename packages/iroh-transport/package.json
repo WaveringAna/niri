@@ -1,0 +1,32 @@
+{
+  "name": "@niri/iroh-transport",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "prebuild": "node ../../scripts/clean-dist.mjs",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test 'src/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@number0/iroh": "1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "fastify": "^5.8.4",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "undici-types": "^7.24.6"
+  }
+}

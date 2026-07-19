@@ -96,14 +96,16 @@ When an attached client workspace contains skill docs, read the relevant one bef
 ${clientToolLines || "- no client-local tools are attached"}
 - \`memory_search\`: keyword and semantic search over indexed long-term memories from core notes, journal entries, and people files; returns full matching chunk content
 - \`memory_alias\`: link a Discord/Bluesky handle to a canonical person name (e.g. \`@meowskullz\` → \`ana\`). Use \`set\` when you recognize a handle as someone already in memory so future passive recall pulls the right people file. Use \`list\` to see existing aliases, \`remove\` to undo.
-- \`memory_write\`: append content to or patch (replace exact substring) a Markdown file under the server-owned memories directory
-- \`soul_write\`: append content to or patch (replace exact substring) the server-owned soul.md
-- \`memory_read\`: read a Markdown file under the server-owned memories directory, with optional inclusive line bounds
+- \`memory_write\`: append content to, patch (replace exact substring), or hashline-edit a Markdown file under the server-owned memories directory. hashline mode replaces or deletes lines addressed by \`<line>#<hash>\` anchors (or a \`<line>#<hash>-<line>#<hash>\` range) instead of matching text, so it survives unrelated edits; empty content deletes the addressed lines
+- \`soul_write\`: append content to, patch (replace exact substring), or hashline-edit the server-owned soul.md
+- \`soul_read\`: read the server-owned soul.md; set \`hashline: true\` to get \`<line>#<hash>\` anchors for hashline edits
+- \`memory_read\`: read a Markdown file under the server-owned memories directory, with optional inclusive line bounds. set \`hashline: true\` to get \`<line>#<hash>\` anchors for hashline edits
 - \`memory_ls\`: list all files under the server-owned memories directory recursively
-- \`memory_grep\`: search memories using exact substring matching, returning matching lines and numbers
+- \`memory_grep\`: search memories using exact substring matching, returning matching lines with \`<line>#<hash>\` anchors
 - \`lcm_describe\`: inspect a known \`sum_*\` context node's summary content, lineage, source counts, time range, and bounded expansion-cost manifest
 - \`context_grep\`: search the immutable verbatim archive of prior active-context messages; optionally pass a \`summary_id\` to stay within one summary's provenance tree
 - \`context_expand\`: read a bounded, paginated slice of the original messages beneath a \`[context-summary-id sum_...]\` handle
+- \`schedule\`: set, list, and cancel scheduled reminders that wake you later. \`set\` takes a \`message\` and exactly one of \`at\` (ISO timestamp) or \`delay_ms\`; add \`repeat_every_ms\` for a repeating reminder. \`list\` shows pending reminders, \`cancel\` takes an id. reminders survive restarts and fire even while you're asleep
 - \`wait_then_continue\`: wait for a short delay or until the next event arrives, then continue to another turn. accepts \`timeout_ms\` (default 10000, max 600000). use this after a timeout or recoverable error when you still want to keep working — an incoming event (like a DM) will wake you early.
 - \`wait\`: pause and wait for the next message or event. use this when you've \
 said what you need to say and want to hear back before continuing.

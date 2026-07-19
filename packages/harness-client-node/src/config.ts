@@ -2,6 +2,7 @@ import fs from "node:fs"
 import path from "node:path"
 
 const DEFAULT_IMAGE_MAX_BYTES = 1_000_000
+const DEFAULT_READ_BLOB_MAX_BYTES = 32 * 1024 * 1024
 const DEFAULT_MAX_LINES = 150
 const DEFAULT_MAX_LINE_LENGTH = 2_000
 const DEFAULT_MAX_RESULT_BYTES = 512_000
@@ -25,6 +26,7 @@ export type NodeToolRuntimeOptions = {
   imageMaxBytes?: number
   maxLineLength?: number
   maxResultBytes?: number
+  readBlobMaxBytes?: number
   containerName?: string
   containerUser?: string
   shellEnvironment?: Record<string, string | undefined>
@@ -40,6 +42,7 @@ export let IMAGE_ROOT = ""
 export let IMAGE_MAX_BYTES = DEFAULT_IMAGE_MAX_BYTES
 export let MAX_LINE_LENGTH = DEFAULT_MAX_LINE_LENGTH
 export let MAX_RESULT_BYTES = DEFAULT_MAX_RESULT_BYTES
+export let READ_BLOB_MAX_BYTES = DEFAULT_READ_BLOB_MAX_BYTES
 export let USE_DOCKER_SHELL = false
 export let CONTAINER_NAME = "harness"
 export let CONTAINER_USER = "harness"
@@ -108,6 +111,7 @@ function environmentOptions(): NodeToolRuntimeOptions {
     ...(home ? { home } : {}),
     ...(imageRoot ? { imageRoot } : {}),
     imageMaxBytes: Number(process.env.HARNESS_IMAGE_MAX_BYTES),
+    readBlobMaxBytes: Number(process.env.HARNESS_READ_BLOB_MAX_BYTES),
     maxLineLength: Number(process.env.HARNESS_MAX_LINE_LENGTH),
     maxResultBytes: Number(process.env.HARNESS_MAX_RESULT_BYTES),
     ...(containerName ? { containerName } : {}),
@@ -155,6 +159,7 @@ export function configureNodeToolRuntime(options: NodeToolRuntimeOptions = {}): 
   IMAGE_MAX_BYTES = positiveInteger(options.imageMaxBytes, positiveInteger(defaults.imageMaxBytes, DEFAULT_IMAGE_MAX_BYTES))
   MAX_LINE_LENGTH = positiveInteger(options.maxLineLength, positiveInteger(defaults.maxLineLength, DEFAULT_MAX_LINE_LENGTH))
   MAX_RESULT_BYTES = positiveInteger(options.maxResultBytes, positiveInteger(defaults.maxResultBytes, DEFAULT_MAX_RESULT_BYTES))
+  READ_BLOB_MAX_BYTES = positiveInteger(options.readBlobMaxBytes, positiveInteger(defaults.readBlobMaxBytes, DEFAULT_READ_BLOB_MAX_BYTES))
   SHELL_ENV = defaultShellEnvironment()
   for (const [key, value] of Object.entries(defaults.shellEnvironment ?? {})) {
     if (typeof value === "string") SHELL_ENV[key] = value

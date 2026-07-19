@@ -1,6 +1,8 @@
 import OpenAI from "openai"
 import { AGENT_ID } from "../agent-config"
-import { writeMemory, writeSoul, readMemory, listMemory, grepMemory } from "../agent-state-tools"
+import type { DiscordAttachmentInput } from "../discord/attachments"
+import { writeMemory, writeSoul, readSoul, readMemory, listMemory, grepMemory } from "../agent-state-tools"
+import { cancelSchedule, createSchedule, listSchedules } from "../scheduler"
 import { logMessage } from "../db"
 import {
   listDiscordBackread,
@@ -393,12 +395,22 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
         previewChars: 0,
       }),
 
+    soul_read: (ctx) =>
+      runStandardTool(ctx, {
+        name: "soul_read",
+        logArgKeys: [] as const,
+        runArgKeys: ["hashline"] as const,
+        run: (hashline) => readSoul(hashline),
+        emitArgKeys: [] as const,
+        previewChars: 0,
+      }),
+
     memory_read: (ctx) =>
       runStandardTool(ctx, {
         name: "memory_read",
         logArgKeys: ["path"] as const,
-        runArgKeys: ["path", "start_line", "end_line"] as const,
-        run: (filePath, startLine, endLine) => readMemory(filePath, startLine, endLine),
+        runArgKeys: ["path", "start_line", "end_line", "hashline"] as const,
+        run: (filePath, startLine, endLine, hashline) => readMemory(filePath, startLine, endLine, hashline),
         emitArgKeys: ["path"] as const,
         previewChars: 0,
       }),
@@ -419,6 +431,27 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
         runArgKeys: ["query", "case_insensitive"] as const,
         run: (query, caseInsensitive) => grepMemory(query, caseInsensitive),
         emitArgKeys: ["query"] as const,
+        previewChars: 0,
+      }),
+
+    schedule: (ctx) =>
+      runStandardTool(ctx, {
+        name: "schedule",
+        logArgKeys: ["action", "at", "delay_ms", "id"] as const,
+        runArgKeys: ["action", "message", "at", "delay_ms", "repeat_every_ms", "id"] as const,
+        run: async (action, message, at, delay_ms, repeat_every_ms, id) => {
+          switch (action) {
+            case "set":
+              return JSON.stringify(createSchedule({ message, at, delayMs: delay_ms, repeatEveryMs: repeat_every_ms }), null, 2)
+            case "list":
+              return JSON.stringify(listSchedules(), null, 2)
+            case "cancel":
+              return cancelSchedule(id) ? `cancelled ${id}` : `no pending schedule found with id ${id}`
+            default:
+              throw new Error("action must be set, list, or cancel")
+          }
+        },
+        emitArgKeys: ["action"] as const,
         previewChars: 0,
       }),
 
@@ -539,15 +572,16 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
 
       return runStandardTool(ctx, {
         name: "discord_send",
-        logArgKeys: ["channel_id", "source_item_id", "reply_mode"] as const,
-        runArgKeys: ["channel_id", "content", "source_item_id", "reply_mode", "reference_message"] as const,
-        run: async (channel_id, content, source_item_id, reply_mode, reference_message) => {
+        logArgKeys: ["channel_id", "source_item_id", "reply_mode", "attachments"] as const,
+        runArgKeys: ["channel_id", "content", "source_item_id", "reply_mode", "reference_message", "attachments"] as const,
+        run: async (channel_id, content, source_item_id, reply_mode, reference_message, attachments) => {
           const result = await sendDiscordMessage({
             channelId: channel_id as string,
             content: content as string,
             sourceItemId: source_item_id as string | undefined,
             replyMode: reply_mode as string | undefined,
             referenceMessage: reference_message as string | undefined,
+            attachments: attachments as DiscordAttachmentInput[] | undefined,
           })
           return formatDiscordSendResult(result)
         },

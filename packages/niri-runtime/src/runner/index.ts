@@ -53,6 +53,11 @@ export function isRunning(): boolean {
   return state.running
 }
 
+/** Returns whether the runner is persisting state for a process shutdown. */
+export function isShuttingDown(): boolean {
+  return state.shutdownRequested
+}
+
 /** Returns whether the runner is currently blocked in wait or wait_then_continue. */
 export function isWaitingForEvent(): boolean {
   return eventResolvers.length > 0

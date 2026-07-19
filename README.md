@@ -19,7 +19,36 @@ cd apps/client
 npm run start
 ```
 
-The client listens on `0.0.0.0:3002` and runs `shell`, `read_file`, `edit_file`, and `image_tool` from the client's home directory.
+The client listens on `0.0.0.0:3002` and runs `shell`, `read_file`, `edit_file`, and `image_tool` from the client's home directory. It also exposes a chunked `read_blob` operation, which the worker uses internally to attach client-side files to Discord messages.
+
+## Remote workers over iroh
+
+Workers do not have to run on the same host as the control plane. The server binds an [iroh](https://github.com/n0-computer/iroh) endpoint (QUIC with NAT traversal) on boot and prints an **EndpointTicket**; a worker anywhere can dial in over that ticket — no open ports, VPN, or port forwarding on either side.
+
+1. Start the server. On first boot it generates `data/control/iroh.secret` (endpoint identity) and `data/control/iroh.token` (shared dial-in token, mode `0600`) and logs the ticket; the token is printed once on first generation.
+2. In the server's `agents/<id>.yaml`, mark the agent as remote so the control plane awaits a dial-in instead of spawning a worker:
+
+   ```yaml
+   worker:
+     mode: remote
+   ```
+
+3. On the remote machine, put the ticket and token in the worker's own agent yaml and run the standalone worker:
+
+   ```yaml
+   server:
+     iroh:
+       ticket: <ticket printed by the server>
+       token: <token from data/control/iroh.token>
+   ```
+
+   ```sh
+   npm run start:worker:standalone -- --config /path/to/agent.yaml
+   ```
+
+The worker dials the server, authenticates with the token, and keeps the connection open (reconnecting with backoff). The control plane exposes each live connection as a loopback tunnel, so all worker traffic — including the event stream — is ordinary HTTP over the encrypted iroh connection. When a worker disconnects, its registration is removed so requests never route to a stale tunnel port.
+
+Local supervised workers keep using loopback HTTP and need no iroh configuration.
 
 ## Agent memory
 
@@ -54,6 +83,8 @@ For routine maintenance, ask the agent to inspect, organize, or repair their own
 | `summary` | object | no | — |
 | `discord` | object | no | — |
 | `mcp` | object keyed by MCP server name | no | `{}` |
+| `worker` | object | no | — |
+| `server` | object | no | — |
 | `settings` | object | no | `{}` |
 
 Relative `home` and `workspace` paths resolve from the repository root.
@@ -97,6 +128,19 @@ Relative `home` and `workspace` paths resolve from the repository root.
 | `wakeOnEvent` | boolean |
 
 Runtime tuning belongs under the first-party `runtime` section. It contains `imageMaxBytes`, tool-choice and fallback-limit options, context-compaction thresholds, state migration, loop limits, and `antigravity`/`codex` bridge settings. Discord batching, gateway tracing, and cooldowns are first-party fields under `discord`.
+
+### `worker`
+
+| Field | Type |
+| --- | --- |
+| `mode` | `local` (default) — the control plane spawns and supervises the worker; `remote` — the control plane waits for the worker to dial in over iroh |
+
+### `server`
+
+| Field | Type |
+| --- | --- |
+| `iroh.ticket` | EndpointTicket of the control plane, printed at server boot |
+| `iroh.token` | shared dial-in token from `data/control/iroh.token` |
 
 ### `mcp`
 

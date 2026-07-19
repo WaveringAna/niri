@@ -28,7 +28,7 @@ function parseJsonOrText(text: string): unknown {
   }
 }
 
-async function fetchWorkerJson(agent: { baseUrl: string }, path: string, init: RequestInit = {}): Promise<unknown> {
+async function fetchWorkerJson(agent: { baseUrl: string; id: string }, path: string, init: RequestInit = {}): Promise<unknown> {
   const res = await fetch(`${agent.baseUrl}${path}`, {
     ...init,
     headers: {

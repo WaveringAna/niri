@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import fs from "node:fs/promises"
 import path from "node:path"
 import type { ClientImageArtifact } from "@mira/harness-protocol"
@@ -9,6 +9,7 @@ import {
   IMAGE_ROOT,
   MAX_LINE_LENGTH,
   MAX_RESULT_BYTES,
+  READ_BLOB_MAX_BYTES,
   USE_DOCKER_SHELL,
   normalizeTimeoutMs,
   resolveMaxLines,
@@ -114,6 +115,52 @@ async function readBoundedLocalFile(filePath: string, timeoutMs: number): Promis
     const after = await withTimeout(handle.stat(), timeoutMs, "file stat")
     if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) throw new Error(`file changed while it was being read: ${filePath}`)
     return { content: buffer.subarray(0, bytesRead).toString("utf8"), mode: stat.mode & 0o777 }
+  } finally {
+    await handle.close()
+  }
+}
+
+/**
+ * Reads one chunk of a local file for binary transport to the worker.
+ * Returns a JSON string: `{ data, offset, size, mtime_ms, sha256, eof }` where
+ * `data` is base64 and `sha256` covers the raw chunk bytes. Chunk length is
+ * capped so the serialized result always fits within one tool result.
+ */
+export async function readBlobChunk(filePath: string, offset?: number, maxBytes?: number, timeoutMs?: number): Promise<string> {
+  if (USE_DOCKER_SHELL) throw new Error("read_blob is not supported in docker shell mode")
+  const opTimeoutMs = normalizeTimeoutMs(timeoutMs, DEFAULT_FILE_TIMEOUT_MS)
+  const resolvedPath = await resolveLocalPath(filePath, opTimeoutMs)
+
+  const handle = await withTimeout(fs.open(resolvedPath, "r"), opTimeoutMs, "file open")
+  try {
+    const stat = await withTimeout(handle.stat(), opTimeoutMs, "file stat")
+    if (!stat.isFile()) throw new Error(`not a regular file: ${filePath}`)
+    if (stat.size > READ_BLOB_MAX_BYTES) {
+      throw new Error(`file is too large for blob transport (${stat.size} > ${READ_BLOB_MAX_BYTES} bytes)`)
+    }
+    const start = Math.max(0, Math.trunc(Number(offset)) || 0)
+    if (start > stat.size) throw new Error(`offset ${start} is beyond end of file (${stat.size} bytes)`)
+    // The result is serialized as JSON inside one tool result, so the base64
+    // payload must stay well under the live result byte cap.
+    const chunkCap = Math.floor((MAX_RESULT_BYTES - 2048) * 3 / 4)
+    if (chunkCap < 64) {
+      throw new Error(`read_blob cannot operate: HARNESS_MAX_RESULT_BYTES (${MAX_RESULT_BYTES}) leaves only ${chunkCap} bytes per chunk; raise it above 2200`)
+    }
+    const requested = typeof maxBytes === "number" && Number.isFinite(maxBytes) && maxBytes > 0 ? Math.trunc(maxBytes) : chunkCap
+    const length = Math.min(chunkCap, requested, stat.size - start)
+    const buffer = Buffer.alloc(length)
+    const { bytesRead } = await withTimeout(handle.read(buffer, 0, length, start), opTimeoutMs, "file read")
+    const chunk = buffer.subarray(0, bytesRead)
+    const after = await withTimeout(handle.stat(), opTimeoutMs, "file stat")
+    if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) throw new Error(`file changed while it was being read: ${filePath}`)
+    return JSON.stringify({
+      data: chunk.toString("base64"),
+      offset: start,
+      size: stat.size,
+      mtime_ms: stat.mtimeMs,
+      sha256: createHash("sha256").update(chunk).digest("hex"),
+      eof: start + bytesRead >= stat.size,
+    })
   } finally {
     await handle.close()
   }

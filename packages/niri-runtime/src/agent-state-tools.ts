@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { constants } from "node:fs"
 import fs from "node:fs/promises"
 import path from "node:path"
@@ -6,6 +6,68 @@ import { NIRI_HOME } from "./agent-config"
 
 const MAX_STATE_WRITE_BYTES = 256_000
 const MEMORY_ROOT = path.join(NIRI_HOME, "memories")
+
+const HASHLINE_ANCHOR_RE = /^(\d+)#([0-9a-f]{6})$/
+
+/** Short content hash used for hashline anchors (6 hex chars of sha256). */
+export function memoryLineHash(line: string): string {
+  return createHash("sha256").update(line, "utf8").digest("hex").slice(0, 6)
+}
+
+function resolveHashlineAnchor(lines: string[], anchor: string, label: string): number {
+  const match = HASHLINE_ANCHOR_RE.exec(anchor.trim())
+  if (!match) {
+    throw new Error(`invalid ${label} anchor '${anchor}': expected the form <line>#<hash>, e.g. 12#a1b2c3 (re-read with hashline enabled)`)
+  }
+  const hintedLine = Number.parseInt(match[1]!, 10)
+  const hash = match[2]!
+
+  if (hintedLine >= 1 && hintedLine <= lines.length && memoryLineHash(lines[hintedLine - 1]!) === hash) {
+    return hintedLine
+  }
+
+  const matches: number[] = []
+  for (let i = 0; i < lines.length; i++) {
+    if (memoryLineHash(lines[i]!) === hash) matches.push(i + 1)
+  }
+  if (matches.length === 1) return matches[0]!
+  if (matches.length === 0) {
+    throw new Error(`hashline ${label} anchor '${anchor}' not found: the file changed since it was read; re-read with hashline enabled`)
+  }
+  throw new Error(`hashline ${label} anchor '${anchor}' is ambiguous (matches lines ${matches.join(", ")}); re-read with hashline enabled and use a range`)
+}
+
+/**
+ * Applies a hashline edit to file content. The target is `<line>#<hash>` for a
+ * single line or `<line>#<hash>-<line>#<hash>` for an inclusive range. Hashes
+ * are authoritative: a stale line number is corrected when the hash matches
+ * exactly one line. Empty content deletes the addressed lines.
+ *
+ * @returns The edited content and the 1-indexed inclusive range replaced.
+ */
+export function applyHashlineEdit(
+  existing: string,
+  target: string,
+  content: string,
+): { result: string; startLine: number; endLine: number } {
+  const trimmed = target.trim()
+  const dashIndex = trimmed.indexOf("-")
+  const startAnchor = dashIndex === -1 ? trimmed : trimmed.slice(0, dashIndex)
+  const endAnchor = dashIndex === -1 ? trimmed : trimmed.slice(dashIndex + 1)
+
+  const lines = existing.split("\n")
+  if (lines.at(-1) === "") lines.pop()
+
+  const start = resolveHashlineAnchor(lines, startAnchor, "start")
+  const end = resolveHashlineAnchor(lines, endAnchor, "end")
+  if (start > end) {
+    throw new Error(`hashline range is inverted after resolving anchors (start line ${start}, end line ${end})`)
+  }
+
+  const replacement = content.length > 0 ? content.split("\n") : []
+  lines.splice(start - 1, end - start + 1, ...replacement)
+  return { result: lines.join("\n") + "\n", startLine: start, endLine: end }
+}
 
 function validateMarkdown(content: string): void {
   const headerMatch = /^#{1,6}[^\s#\r\n]/m.test(content)
@@ -20,6 +82,17 @@ function validateMarkdown(content: string): void {
 
 function validateContent(content: unknown): string {
   if (typeof content !== "string" || !content.trim()) throw new Error("content is required")
+  if (Buffer.byteLength(content, "utf8") > MAX_STATE_WRITE_BYTES) {
+    throw new Error(`content exceeds ${MAX_STATE_WRITE_BYTES} bytes`)
+  }
+  validateMarkdown(content)
+  return content
+}
+
+/** Hashline content may be empty (line deletion); non-empty content still must be valid markdown. */
+function validateHashlineContent(content: unknown): string {
+  if (typeof content !== "string") throw new Error("content is required")
+  if (content.length === 0) return content
   if (Buffer.byteLength(content, "utf8") > MAX_STATE_WRITE_BYTES) {
     throw new Error(`content exceeds ${MAX_STATE_WRITE_BYTES} bytes`)
   }
@@ -101,9 +174,30 @@ async function prepareMemoryFile(filePath: string): Promise<void> {
   }
 }
 
+/**
+ * Reads the server-owned soul.md. When hashline is true, each line is prefixed
+ * with its `<line>#<hash>` anchor for soul_write hashline edits.
+ */
+export async function readSoul(hashline?: unknown): Promise<string> {
+  const filePath = path.join(NIRI_HOME, "soul.md")
+  let content: string
+  try {
+    content = await fs.readFile(filePath, "utf8")
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`soul file does not exist: ${filePath}`)
+    }
+    throw error
+  }
+  if (hashline !== true) return content
+  const lines = content.split("\n")
+  if (lines.at(-1) === "") lines.pop()
+  return lines.map((line, i) => `${i + 1}#${memoryLineHash(line)} ${line}`).join("\n")
+}
+
 export async function writeSoul(content: unknown, mode: unknown, target?: unknown): Promise<string> {
   const filePath = path.join(NIRI_HOME, "soul.md")
-  const value = validateContent(content)
+  const value = mode === "hashline" ? validateHashlineContent(content) : validateContent(content)
   await fs.mkdir(path.dirname(filePath), { recursive: true })
   await backupFile(filePath)
 
@@ -148,8 +242,26 @@ export async function writeSoul(content: unknown, mode: unknown, target?: unknow
     await replaceFile(filePath, newContent)
     const warning = await getWarningForFile(filePath)
     return `patched ${filePath}${warning}`
+  } else if (mode === "hashline") {
+    if (typeof target !== "string" || !target) {
+      throw new Error("target is required when mode is 'hashline' (use <line>#<hash> or <line>#<hash>-<line>#<hash> from a hashline-enabled read)")
+    }
+    let existing: string
+    try {
+      existing = await fs.readFile(filePath, "utf8")
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error(`cannot edit non-existent file: ${filePath}`)
+      }
+      throw error
+    }
+
+    const edit = applyHashlineEdit(existing, target, value)
+    await replaceFile(filePath, edit.result)
+    const warning = await getWarningForFile(filePath)
+    return `edited ${filePath} (replaced lines ${edit.startLine}\u2013${edit.endLine})${warning}`
   } else {
-    throw new Error("mode must be append or patch")
+    throw new Error("mode must be append, patch, or hashline")
   }
 }
 
@@ -160,7 +272,7 @@ export async function writeMemory(
   target?: unknown,
 ): Promise<string> {
   const filePath = memoryPath(relativePath)
-  const value = validateContent(content)
+  const value = mode === "hashline" ? validateHashlineContent(content) : validateContent(content)
   await prepareMemoryFile(filePath)
   if (filePath.endsWith("core.md")) {
     await backupFile(filePath)
@@ -207,8 +319,26 @@ export async function writeMemory(
     await replaceFile(filePath, newContent)
     const warning = await getWarningForFile(filePath)
     return `patched ${filePath}${warning}`
+  } else if (mode === "hashline") {
+    if (typeof target !== "string" || !target) {
+      throw new Error("target is required when mode is 'hashline' (use <line>#<hash> or <line>#<hash>-<line>#<hash> from a hashline-enabled read)")
+    }
+    let existing: string
+    try {
+      existing = await fs.readFile(filePath, "utf8")
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error(`cannot edit non-existent file: ${filePath}`)
+      }
+      throw error
+    }
+
+    const edit = applyHashlineEdit(existing, target, value)
+    await replaceFile(filePath, edit.result)
+    const warning = await getWarningForFile(filePath)
+    return `edited ${filePath} (replaced lines ${edit.startLine}\u2013${edit.endLine})${warning}`
   } else {
-    throw new Error("mode must be append or patch")
+    throw new Error("mode must be append, patch, or hashline")
   }
 }
 
@@ -247,7 +377,7 @@ async function getFilesRecursively(dir: string): Promise<string[]> {
   return files.flat()
 }
 
-export async function readMemory(relativePath: unknown, startLine?: unknown, endLine?: unknown): Promise<string> {
+export async function readMemory(relativePath: unknown, startLine?: unknown, endLine?: unknown, hashline?: unknown): Promise<string> {
   const filePath = memoryPath(relativePath)
   let content: string
   try {
@@ -285,7 +415,11 @@ export async function readMemory(relativePath: unknown, startLine?: unknown, end
     effectiveEnd = Math.min(searchStartIdx, totalLines)
   }
 
-  let selected = lines.slice(startIdx, effectiveEnd).join("\n")
+  const annotate = hashline === true
+  let selected = lines
+    .slice(startIdx, effectiveEnd)
+    .map((line, i) => (annotate ? `${startIdx + i + 1}#${memoryLineHash(line)} ${line}` : line))
+    .join("\n")
   if (effectiveEnd < totalLines) {
     if (foundHeaderIdx !== -1) {
       selected += `\n\n[Note: Content stopped before the next section header on line ${effectiveEnd + 1}. To read further, call 'memory_read' with start_line=${effectiveEnd + 1}.]`
@@ -336,7 +470,7 @@ export async function grepMemory(query: unknown, caseInsensitive?: unknown): Pro
       const line = lines[lineNum - 1]!
       const lineToSearch = isCaseInsensitive ? line.toLowerCase() : line
       if (lineToSearch.includes(searchQuery)) {
-        matches.push(`${relativePath}:${lineNum}: ${line}`)
+        matches.push(`${relativePath}:${lineNum}#${memoryLineHash(line)}: ${line}`)
       }
     }
   }

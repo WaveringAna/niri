@@ -19,7 +19,7 @@ import {
   type NodeToolRuntimeOptions,
 } from "./config.js"
 import { closeBash, openBash } from "./shell.js"
-import { editFile, readFile, readImageForModel, runCommand } from "./tools.js"
+import { editFile, readBlobChunk, readFile, readImageForModel, runCommand } from "./tools.js"
 
 export type NodeToolHostOptions = {
   capabilities?: Iterable<ToolCapability>
@@ -27,7 +27,7 @@ export type NodeToolHostOptions = {
   runtime?: NodeToolRuntimeOptions
 }
 
-const ALL_CAPABILITIES: ToolCapability[] = ["shell", "read_file", "edit_file", "image_tool"]
+const ALL_CAPABILITIES: ToolCapability[] = ["shell", "read_file", "edit_file", "image_tool", "read_blob"]
 
 export function parseToolCapabilities(value?: string): ToolCapability[] {
   const raw = value?.trim()
@@ -171,6 +171,14 @@ export class NodeToolHost implements ClientToolHost {
       case "image_tool": {
         return readImageForModel(
           String(args.path ?? ""),
+          typeof args.timeout_ms === "number" ? args.timeout_ms : undefined,
+        )
+      }
+      case "read_blob": {
+        return readBlobChunk(
+          String(args.path ?? ""),
+          typeof args.offset === "number" ? args.offset : undefined,
+          typeof args.max_bytes === "number" ? args.max_bytes : undefined,
           typeof args.timeout_ms === "number" ? args.timeout_ms : undefined,
         )
       }

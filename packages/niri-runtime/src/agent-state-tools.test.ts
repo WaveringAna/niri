@@ -4,7 +4,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
-import { __agentStateToolsTest } from "./agent-state-tools"
+import { __agentStateToolsTest, applyHashlineEdit, memoryLineHash } from "./agent-state-tools"
 
 test("memory paths stay inside the agent memory directory", () => {
   assert.match(__agentStateToolsTest.memoryPath("people/ana.md"), /memories[/\\]people[/\\]ana\.md$/)
@@ -186,11 +186,11 @@ test("memory read and list tools function correctly", async (t) => {
 
     // 8. Test memory_grep exact substring matching
     const grep1 = await grepMemory("Content 2")
-    assert.match(grep1, /journal\\/sectioned\\.md:4: Content 2/)
+    assert.match(grep1, /journal\\/sectioned\\.md:4#[0-9a-f]{6}: Content 2/)
 
     // 9. Test memory_grep case-insensitive matching
     const grep2 = await grepMemory("CONTENT 2", true)
-    assert.match(grep2, /journal\\/sectioned\\.md:4: Content 2/)
+    assert.match(grep2, /journal\\/sectioned\\.md:4#[0-9a-f]{6}: Content 2/)
 
     // 10. Test memory_grep empty result
     const grepEmpty = await grepMemory("somethinguniqueandmissing")
@@ -277,3 +277,79 @@ test("memory and soul validation, warning, and backup operations", async (t) => 
 
 
 
+
+test("hashline edits replace, delete, and resolve stale line numbers by hash", () => {
+  const doc = "alpha\nbeta\ngamma\ndelta\n"
+  const hash = (line: string) => memoryLineHash(line)
+
+  const single = applyHashlineEdit(doc, `2#${hash("beta")}`, "BETA")
+  assert.equal(single.result, "alpha\nBETA\ngamma\ndelta\n")
+  assert.deepEqual([single.startLine, single.endLine], [2, 2])
+
+  const range = applyHashlineEdit(doc, `2#${hash("beta")}-3#${hash("gamma")}`, "middle")
+  assert.equal(range.result, "alpha\nmiddle\ndelta\n")
+
+  const deletion = applyHashlineEdit(doc, `3#${hash("gamma")}`, "")
+  assert.equal(deletion.result, "alpha\nbeta\ndelta\n")
+
+  // Line number drifted (a line was inserted above) but the hash still resolves.
+  const drifted = "inserted\nalpha\nbeta\ngamma\ndelta\n"
+  const corrected = applyHashlineEdit(drifted, `2#${hash("beta")}`, "BETA")
+  assert.equal(corrected.result, "inserted\nalpha\nBETA\ngamma\ndelta\n")
+  assert.equal(corrected.startLine, 3)
+
+  assert.throws(() => applyHashlineEdit(doc, `2#${hash("missing")}`, "x"), /not found/)
+  assert.throws(() => applyHashlineEdit(doc, `1#${hash("beta")}-3#${hash("alpha")}`, "x"), /inverted/)
+  assert.throws(() => applyHashlineEdit(doc, "line two", "x"), /invalid start anchor/)
+
+  const dupes = "same\nother\nsame\n"
+  assert.throws(() => applyHashlineEdit(dupes, `9#${hash("same")}`, "x"), /ambiguous/)
+})
+
+test("memory hashline mode edits files end to end", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "niri-memory-hashline-"))
+  const home = path.join(root, "home")
+  const memoriesDir = path.join(home, "memories")
+  await fs.mkdir(memoriesDir, { recursive: true })
+  const testFile = path.join(memoriesDir, "journal.md")
+  await fs.writeFile(testFile, "# Journal\n\nfirst entry\nsecond entry\nthird entry\n", "utf8")
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+
+  const moduleUrl = new URL("./agent-state-tools.ts", import.meta.url).href
+  const script = `
+    import assert from "node:assert/strict"
+    const { writeMemory, readMemory, grepMemory, memoryLineHash } = await import(${JSON.stringify(moduleUrl)})
+
+    const annotated = await readMemory("journal.md", 1, 5, true)
+    assert.match(annotated, new RegExp("3#" + memoryLineHash("first entry") + " first entry"))
+
+    const edited = await writeMemory("journal.md", "updated entry", "hashline", "3#" + memoryLineHash("first entry"))
+    assert.match(edited, /replaced lines 3/)
+
+    const afterEdit = await readMemory("journal.md", 1, 10)
+    assert.match(afterEdit, /updated entry/)
+    assert.ok(!afterEdit.includes("first entry"))
+
+    const deleted = await writeMemory("journal.md", "", "hashline", "4#" + memoryLineHash("second entry") + "-5#" + memoryLineHash("third entry"))
+    assert.match(deleted, /replaced lines 4/)
+    const afterDelete = await readMemory("journal.md", 1, 10)
+    assert.ok(!afterDelete.includes("second entry"))
+    assert.ok(!afterDelete.includes("third entry"))
+
+    const grep = await grepMemory("updated", false)
+    assert.match(grep, new RegExp("journal.md:3#" + memoryLineHash("updated entry") + ": updated entry"))
+
+    await assert.rejects(() => writeMemory("journal.md", "x", "hashline", "1#000000"), /not found|ambiguous/)
+  `
+
+  const code = await new Promise<number | null>((resolve, reject) => {
+    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+      env: { ...process.env, NIRI_HOME: home },
+      stdio: "inherit",
+    })
+    child.on("error", reject)
+    child.on("close", resolve)
+  })
+
+  assert.equal(code, 0)
+})

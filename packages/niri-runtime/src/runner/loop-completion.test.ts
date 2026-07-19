@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import type { LoopState } from "./types"
 import { __completionTest } from "./loop-completion"
+import { AGENT_ID } from "../agent-config"
 
 test("consumeCompletionStream preserves reasoning_content on assistant messages", async () => {
   async function* stream() {
@@ -66,11 +67,11 @@ test("prompt cache keys are stable for official OpenAI and the local Codex bridg
   try {
     assert.deepEqual(
       __completionTest.promptCacheRequestExtras("https://api.openai.com/v1", "primary"),
-      { prompt_cache_key: "niri:primary" },
+      { prompt_cache_key: `${AGENT_ID}:primary` },
     )
     assert.deepEqual(
       __completionTest.promptCacheRequestExtras("http://127.0.0.1:8001/v1", "primary"),
-      { prompt_cache_key: "niri:primary" },
+      { prompt_cache_key: `${AGENT_ID}:primary` },
     )
     assert.deepEqual(__completionTest.promptCacheRequestExtras("https://openrouter.ai/api/v1", "fallback"), {})
   } finally {

@@ -53,36 +53,47 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
       ),
       functionTool(
         "memory_write",
-        "Append content to or patch (replace exact substring) within one Markdown file in this agent's server-owned memory directory.",
+        "Append content to, patch (replace exact substring), or hashline-edit (replace/delete lines addressed by <line>#<hash> anchors) within one Markdown file in this agent's server-owned memory directory.",
         {
           type: "object",
           additionalProperties: false,
           properties: {
             path: { type: "string", description: "Relative path such as journal/2026-07-09.md or core.md." },
-            content: { type: "string", description: "The content to append or use as replacement text." },
-            mode: { type: "string", enum: ["append", "patch"] },
-            target: { type: "string", description: "Only required when mode is 'patch'. The exact text sequence in the file to be replaced." },
+            content: { type: "string", description: "The content to append or use as replacement text. May be empty in hashline mode to delete the addressed lines." },
+            mode: { type: "string", enum: ["append", "patch", "hashline"] },
+            target: { type: "string", description: "For patch mode: the exact text to replace. For hashline mode: '<line>#<hash>' or '<line>#<hash>-<line>#<hash>' anchors from a hashline-enabled memory_read or memory_grep." },
           },
           required: ["path", "content", "mode"],
         },
       ),
       functionTool(
         "soul_write",
-        "Append content to or patch (replace exact substring) this agent's server-owned soul.md.",
+        "Append content to, patch (replace exact substring), or hashline-edit (replace/delete lines addressed by <line>#<hash> anchors) this agent's server-owned soul.md.",
         {
           type: "object",
           additionalProperties: false,
           properties: {
-            content: { type: "string", description: "The content to append or use as replacement text." },
-            mode: { type: "string", enum: ["append", "patch"] },
-            target: { type: "string", description: "Only required when mode is 'patch'. The exact text sequence in the file to be replaced." },
+            content: { type: "string", description: "The content to append or use as replacement text. May be empty in hashline mode to delete the addressed lines." },
+            mode: { type: "string", enum: ["append", "patch", "hashline"] },
+            target: { type: "string", description: "For patch mode: the exact text to replace. For hashline mode: '<line>#<hash>' or '<line>#<hash>-<line>#<hash>' anchors." },
           },
           required: ["content", "mode"],
         },
       ),
       functionTool(
+        "soul_read",
+        "Read this agent's server-owned soul.md. Set hashline to true to prefix each line with its <line>#<hash> edit anchor for soul_write hashline mode.",
+        {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            hashline: { type: "boolean", description: "Prefix each line with '<line>#<hash>' anchors for hashline edits. Default false." },
+          },
+        },
+      ),
+      functionTool(
         "memory_read",
-        "Read a Markdown file in this agent's server-owned memory directory, with optional inclusive line bounds.",
+        "Read a Markdown file in this agent's server-owned memory directory, with optional inclusive line bounds. Set hashline to true to prefix each line with its <line>#<hash> edit anchor for memory_write hashline mode.",
         {
           type: "object",
           additionalProperties: false,
@@ -90,6 +101,7 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
             path: { type: "string", description: "Relative path such as journal/2026-07-09.md or core.md." },
             start_line: { type: "integer", minimum: 1 },
             end_line: { type: "integer", minimum: 1 },
+            hashline: { type: "boolean", description: "Prefix each line with '<line>#<hash>' anchors for hashline edits. Default false." },
           },
           required: ["path"],
         },
@@ -214,7 +226,7 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
       ),
       functionTool(
         "discord_send",
-        "Send a text message through this agent worker's Discord connection.",
+        "Send a text message through this agent worker's Discord connection, optionally with file attachments.",
         {
           type: "object",
           additionalProperties: false,
@@ -224,6 +236,21 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
             source_item_id: { type: "string" },
             reference_message: { type: "string" },
             reply_mode: { type: "string", enum: ["auto", "plain", "explicit"] },
+            attachments: {
+              type: "array",
+              description: "Files to upload with the message. Each entry sets exactly one source: 'path' (a file on this worker, relative to your home directory), 'client_path' (a file on the attached client, e.g. something you created with shell), or 'url' (an http(s) address to download). Optional 'name' overrides the filename and 'description' sets alt text.",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  path: { type: "string" },
+                  client_path: { type: "string" },
+                  url: { type: "string" },
+                  name: { type: "string" },
+                  description: { type: "string" },
+                },
+              },
+            },
           },
           required: ["content"],
         },
@@ -246,6 +273,23 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
   }
 
   tools.push(
+    functionTool(
+      "schedule",
+      "Manage scheduled reminders that wake this agent later. 'set' creates a one-shot or repeating reminder (exactly one of 'at' or 'delay_ms'), 'list' shows pending reminders, 'cancel' removes one by id.",
+      {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          action: { type: "string", enum: ["set", "list", "cancel"] },
+          message: { type: "string", description: "The reminder text delivered to you when it fires. Required for 'set'." },
+          at: { type: "string", description: "ISO 8601 timestamp for one-shot reminders." },
+          delay_ms: { type: "integer", minimum: 1000, description: "Delay from now for one-shot reminders." },
+          repeat_every_ms: { type: "integer", minimum: 60000, description: "Optional repeat interval; the reminder re-fires until cancelled." },
+          id: { type: "string", description: "Schedule id (sch_...) to cancel." },
+        },
+        required: ["action"],
+      },
+    ),
     functionTool("wait", "Wait for the next incoming message or event.", emptyParameters),
     functionTool(
       "wait_then_continue",

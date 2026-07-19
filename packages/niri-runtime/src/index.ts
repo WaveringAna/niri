@@ -10,6 +10,8 @@ import { setDiscordToolsAvailable } from "./discord/availability"
 import { ensureSoulFilePlacement } from "./bootstrap"
 import { startAntigravityBridge, stopAntigravityBridge } from "./antigravity-bridge"
 import { startCodexBridge, stopCodexBridge } from "./codex-bridge"
+import { startIrohLink, stopIrohLink } from "./iroh-link"
+import { startScheduler } from "./scheduler"
 import { clientTools } from "./client"
 import { startMcpServers, stopMcpServers } from "./mcp"
 
@@ -61,6 +63,7 @@ async function main() {
   let shuttingDown = false
   let restartRequested = false
   let restartReason: string | undefined
+  let stopScheduler: () => void = () => {}
 
   function requestRestart(reason?: string): void {
     if (restartRequested || shuttingDown) return
@@ -83,9 +86,15 @@ async function main() {
   await server.listen({ port: PORT, host: WORKER_HOST })
   console.log(`[niri] listening on ${WORKER_HOST}:${PORT}`)
 
+  // Dial the control plane over iroh if NIRI_SERVER_IROH_TICKET is set; no-op otherwise.
+  await startIrohLink()
+
+  stopScheduler = startScheduler()
+
   async function gracefulShutdown(sig: string) {
     if (shuttingDown) return  // ignore duplicate signals
     shuttingDown = true
+    stopScheduler()
     const detail = restartRequested && restartReason ? ` (${restartReason})` : ""
     console.log(`\n[niri] ${sig} received${detail}, saving session snapshot...`)
 
@@ -99,11 +108,11 @@ async function main() {
       discordEmbeddingBackfill.stop()
       if (discordGateway) await discordGateway.stop()
       setDiscordToolsAvailable(false)
-      await server.close()
       await clientTools.stop()
       await stopMcpServers()
       await stopAntigravityBridge()
       await stopCodexBridge()
+      await stopIrohLink()
     }
     const cleanupTimeout = new Promise<void>((resolve) =>
       setTimeout(() => { console.log("[niri] cleanup timed out, exiting anyway"); resolve() }, 10_000)

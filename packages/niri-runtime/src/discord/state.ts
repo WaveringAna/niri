@@ -18,6 +18,7 @@ import {
   type DiscordObject,
 } from "./parse"
 import { inactiveCooldownChannelIds } from "./cooldown"
+import { resolveDiscordAttachments, type DiscordAttachmentInput, type ResolvedDiscordAttachment } from "./attachments"
 import {
   autoDemoteStalePendingItems,
   buildReplyTargetContextMap,
@@ -549,6 +550,47 @@ function normalizeReplyMode(value: unknown): ReplyMode {
 }
 
 /**
+ * Builds the REST options for a channel message post, including multipart
+ * file uploads and their `body.attachments` metadata. Kept pure so tests can
+ * assert exactly what reaches Discord.
+ */
+export function buildDiscordSendRequest(options: {
+  content: string
+  referenceMessageId?: string | null
+  channelId: string
+  attachments?: ResolvedDiscordAttachment[]
+}): { body: Record<string, unknown>; files?: Array<{ name: string; data: Buffer }> } {
+  const { content, referenceMessageId, channelId, attachments } = options
+  return {
+    body: {
+      content,
+      ...(referenceMessageId
+        ? {
+            message_reference: {
+              message_id: referenceMessageId,
+              channel_id: channelId,
+              fail_if_not_exists: false,
+            },
+            allowed_mentions: { replied_user: false },
+          }
+        : {}),
+      ...(attachments?.length
+        ? {
+            attachments: attachments.map((attachment, index) => ({
+              id: index,
+              filename: attachment.name,
+              ...(attachment.description ? { description: attachment.description } : {}),
+            })),
+          }
+        : {}),
+    },
+    ...(attachments?.length
+      ? { files: attachments.map((attachment) => ({ name: attachment.name, data: attachment.data })) }
+      : {}),
+  }
+}
+
+/**
  * Sends a Discord message with optional reply reference resolution.
  *
  * @param params - Send parameters including channel, content, and reply options.
@@ -560,6 +602,7 @@ export async function sendDiscordMessage(params: {
   sourceItemId?: string
   replyMode?: string
   referenceMessage?: string
+  attachments?: DiscordAttachmentInput[]
 }): Promise<Record<string, unknown>> {
   let channelId = String(params.channelId ?? "").trim()
   if (!channelId && params.sourceItemId?.trim()) {
@@ -585,22 +628,15 @@ export async function sendDiscordMessage(params: {
   const rest = makeRestClient()
   const botUserId = await getBotUserId(rest)
 
+  const resolvedAttachments = params.attachments?.length
+    ? await resolveDiscordAttachments(params.attachments)
+    : undefined
+
   const message = (await withDiscordRestRetry(`send message ${channelId}`, () =>
-    rest.post(Routes.channelMessages(channelId), {
-      body: {
-        content,
-        ...(referenceMessageId
-          ? {
-              message_reference: {
-                message_id: referenceMessageId,
-                channel_id: channelId,
-                fail_if_not_exists: false,
-              },
-              allowed_mentions: { replied_user: false },
-            }
-          : {}),
-      },
-    }),
+    rest.post(
+      Routes.channelMessages(channelId),
+      buildDiscordSendRequest({ content, referenceMessageId, channelId, attachments: resolvedAttachments }),
+    ),
   )) as DiscordObject
 
   const ingest = ingestDiscordEvent(

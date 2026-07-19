@@ -107,7 +107,6 @@ export function upsertAgent(input: {
 }): AgentRecord {
   const id = input.id.trim()
   const baseUrl = input.baseUrl.trim().replace(/\/+$/, "")
-  if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error("agent id must contain only letters, numbers, underscores, or hyphens")
   if (!baseUrl) throw new Error("agent baseUrl is required")
   const parsedUrl = new URL(baseUrl)
   if (!["http:", "https:"].includes(parsedUrl.protocol) || parsedUrl.username || parsedUrl.password) {
@@ -139,6 +138,16 @@ export function getAgent(id: string): AgentRecord | null {
     .prepare("select id, name, base_url, status, last_seen_at, last_seq from agents where id = ?")
     .get(id) as AgentRow | undefined
   return row ? agentFromRow(row) : null
+}
+
+/**
+ * Removes an agent registration. Used when a remote worker disconnects so the
+ * control plane never routes requests to a stale loopback tunnel port, which
+ * the OS may later hand to an unrelated process. Returns true if a row was
+ * deleted.
+ */
+export function deleteAgent(id: string): boolean {
+  return db.prepare("delete from agents where id = ?").run(id).changes > 0
 }
 
 export function updateAgentStatus(id: string, status: string, lastSeq?: number): void {
