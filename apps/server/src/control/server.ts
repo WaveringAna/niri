@@ -1,5 +1,6 @@
 import Fastify from "fastify"
 import type { FastifyInstance, FastifyReply } from "fastify"
+import { createHmac, timingSafeEqual } from "node:crypto"
 import fastifyStatic from "@fastify/static"
 import { existsSync } from "node:fs"
 import { dirname, join } from "node:path"
@@ -14,6 +15,7 @@ import {
   updateAgentStatus,
 } from "./db"
 import type { ControlCommand, UserMessage, WorkerEvent } from "@niri/protocol"
+import type { WebhookConfig } from "../local-agents"
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url))
 const WEB_DIST_DIR = join(SRC_DIR, "..", "..", "..", "web", "dist")
@@ -42,6 +44,16 @@ async function fetchWorkerJson(agent: { baseUrl: string }, path: string, init: R
     throw new Error(detail || `${res.status} ${res.statusText}`)
   }
   return data
+}
+
+export function verifyWebhookSignature(rawBody: Buffer, signature: string | undefined, config: WebhookConfig): boolean {
+  const prefix = config.signaturePrefix ?? "sha256="
+  if (!signature?.startsWith(prefix)) return false
+  const suppliedHex = signature.slice(prefix.length)
+  if (!/^[0-9a-fA-F]{64}$/.test(suppliedHex)) return false
+  const expected = createHmac("sha256", config.secret).update(rawBody).digest()
+  const supplied = Buffer.from(suppliedHex, "hex")
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected)
 }
 
 function looksLikeWorkerEvent(value: unknown): value is WorkerEvent {
@@ -234,6 +246,7 @@ export function registerControlRoutes(
     staticUi?: boolean
     configuredAgentIds?: ReadonlySet<string>
     stopLocalAgent?: (id: string) => Promise<boolean>
+    webhooks?: ReadonlyMap<string, Readonly<Record<string, WebhookConfig>>>
   } = {},
 ) {
   const findAgent = (id: string) => options.configuredAgentIds && !options.configuredAgentIds.has(id) ? null : getAgent(id)
@@ -378,6 +391,51 @@ export function registerControlRoutes(
     }
   })
 
+  app.register(async (webhookRoutes) => {
+    webhookRoutes.removeContentTypeParser("application/json")
+    webhookRoutes.addContentTypeParser("application/json", { parseAs: "buffer" }, (_req, body, done) => {
+      try {
+        done(null, { rawBody: body, payload: JSON.parse(body.toString("utf8")) })
+      } catch (error) {
+        done(error as Error, undefined)
+      }
+    })
+
+    webhookRoutes.post("/agents/:id/trigger/webhook/:name", async (req, reply) => {
+      const { id, name } = req.params as { id: string; name: string }
+      const agent = findAgent(id)
+      if (!agent) return reply.code(404).send({ error: "agent not found" })
+      const config = options.webhooks?.get(id)?.[name]
+      if (!config) return reply.code(404).send({ error: "webhook not found" })
+
+      const body = req.body as { rawBody: Buffer; payload: unknown }
+      const header = config.signatureHeader ?? "x-niri-signature"
+      const headerValue = req.headers[header]
+      const signature = Array.isArray(headerValue) ? headerValue[0] : headerValue
+      if (!verifyWebhookSignature(body.rawBody, signature, config)) {
+        return reply.code(401).send({ error: "invalid webhook signature" })
+      }
+
+      const event: UserMessage = {
+        source: "webhook",
+        triggeredAt: new Date().toISOString(),
+        content: `[webhook triggered: ${name}]`,
+        raw: { webhook: { name }, payload: body.payload },
+      }
+      try {
+        const result = await fetchWorkerJson(agent, "/awp/events", {
+          method: "POST",
+          body: JSON.stringify({ type: "event.enqueue", event } satisfies ControlCommand),
+        })
+        updateAgentStatus(id, "online")
+        return reply.send(result)
+      } catch (error) {
+        updateAgentStatus(id, "offline")
+        return reply.code(502).send({ error: error instanceof Error ? error.message : String(error) })
+      }
+    })
+  })
+
   app.get("/agents/:id/events", async (req, reply) => {
     const { id } = req.params as { id: string }
     const agent = findAgent(id)
@@ -471,6 +529,7 @@ export function registerControlRoutes(
 export function createControlServer(options: {
   configuredAgentIds?: ReadonlySet<string>
   stopLocalAgent?: (id: string) => Promise<boolean>
+  webhooks?: ReadonlyMap<string, Readonly<Record<string, WebhookConfig>>>
 } = {}) {
   const app = Fastify({ logger: false, bodyLimit: 2_000_000 })
 
@@ -479,6 +538,7 @@ export function createControlServer(options: {
   registerControlRoutes(app, {
     configuredAgentIds: options.configuredAgentIds,
     stopLocalAgent: options.stopLocalAgent,
+    webhooks: options.webhooks,
   })
 
   return app

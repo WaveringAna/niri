@@ -43,6 +43,19 @@ discord:
   cooldownChannels: "channelId,2000,0400"
   cooldownTz: America/New_York
 
+# Named webhook endpoints live on the server at
+# POST /agents/<agent-id>/trigger/webhook/<name>. HMAC-SHA256 is calculated
+# over the exact request body bytes.
+webhooks:
+  github:
+    secret: replace-me
+    signatureHeader: x-hub-signature-256
+    signaturePrefix: sha256=
+  deploy:
+    secret: replace-me-too
+    # Defaults: signatureHeader: x-niri-signature
+    #           signaturePrefix: sha256=
+
 runtime:
   imageMaxBytes: 1000000
   primaryToolChoice: required

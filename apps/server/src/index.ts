@@ -52,6 +52,7 @@ async function main(): Promise<void> {
 
   const server = createControlServer({
     configuredAgentIds: new Set(agents.map((agent) => agent.id)),
+    webhooks: new Map(agents.map((agent) => [agent.id, agent.webhooks])),
     stopLocalAgent: async (id) => {
       const supervisor = supervisors.get(id)
       if (!supervisor) return false

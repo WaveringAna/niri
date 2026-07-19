@@ -30,6 +30,12 @@ type DiscordConfig = {
   cooldownTz?: string
 }
 
+export type WebhookConfig = {
+  secret: string
+  signatureHeader?: string
+  signaturePrefix?: string
+}
+
 type RuntimeConfig = {
   imageMaxBytes?: number
   primaryToolChoice?: "required" | "auto" | "none"
@@ -68,6 +74,7 @@ export type AgentFile = {
   embedding?: OpenAiProviderConfig & { dimensions?: number }
   summary?: OpenAiProviderConfig
   discord?: DiscordConfig
+  webhooks?: Record<string, WebhookConfig>
   runtime?: RuntimeConfig
   mcp?: Record<string, McpServerConfig>
   settings?: Record<string, string | number | boolean>
@@ -81,6 +88,7 @@ export type ResolvedLocalAgent = {
   client: string
   workspace?: string
   settings: Record<string, string>
+  webhooks: Record<string, WebhookConfig>
   source: string
 }
 
@@ -96,6 +104,7 @@ const AGENT_KEYS = new Set([
   "embedding",
   "summary",
   "discord",
+  "webhooks",
   "runtime",
   "mcp",
   "settings",
@@ -205,6 +214,33 @@ function parseDiscord(value: unknown, label: string): DiscordConfig | undefined 
     ...(optionalString(item.cooldownChannels, `${label}.cooldownChannels`) ? { cooldownChannels: String(item.cooldownChannels).trim() } : {}),
     ...(optionalString(item.cooldownTz, `${label}.cooldownTz`) ? { cooldownTz: String(item.cooldownTz).trim() } : {}),
   }
+}
+
+function parseWebhooks(value: unknown, label: string): Record<string, WebhookConfig> | undefined {
+  if (value === undefined) return undefined
+  const entries = object(value, label)
+  const result: Record<string, WebhookConfig> = {}
+  for (const [name, raw] of Object.entries(entries)) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error(`${label}.${name} has an invalid webhook name`)
+    const item = object(raw, `${label}.${name}`)
+    const unknown = Object.keys(item).filter((key) => !["secret", "signatureHeader", "signaturePrefix"].includes(key))
+    if (unknown.length > 0) throw new Error(`${label}.${name} has unknown keys: ${unknown.join(", ")}`)
+    const secret = optionalString(item.secret, `${label}.${name}.secret`)
+    if (!secret) throw new Error(`${label}.${name}.secret is required`)
+    const signatureHeader = optionalString(item.signatureHeader, `${label}.${name}.signatureHeader`)
+    if (signatureHeader && !/^[!#$%&'*+.^_`|~0-9a-zA-Z-]+$/.test(signatureHeader)) {
+      throw new Error(`${label}.${name}.signatureHeader must be an HTTP header name`)
+    }
+    if (item.signaturePrefix !== undefined && typeof item.signaturePrefix !== "string") {
+      throw new Error(`${label}.${name}.signaturePrefix must be a string`)
+    }
+    result[name] = {
+      secret,
+      ...(signatureHeader ? { signatureHeader: signatureHeader.toLowerCase() } : {}),
+      ...(typeof item.signaturePrefix === "string" ? { signaturePrefix: item.signaturePrefix } : {}),
+    }
+  }
+  return result
 }
 
 function parseRuntime(value: unknown, label: string): RuntimeConfig | undefined {
@@ -378,6 +414,7 @@ export function parseAgentFile(filePath: string): AgentFile {
     ...(embedding ? { embedding } : {}),
     ...(item.summary !== undefined ? { summary: parseProvider(item.summary, `${filePath}.summary`, false) } : {}),
     ...(item.discord !== undefined ? { discord: parseDiscord(item.discord, `${filePath}.discord`) } : {}),
+    ...(item.webhooks !== undefined ? { webhooks: parseWebhooks(item.webhooks, `${filePath}.webhooks`) } : {}),
     ...(item.runtime !== undefined ? { runtime: parseRuntime(item.runtime, `${filePath}.runtime`) } : {}),
     ...(item.mcp !== undefined ? { mcp: parseMcp(item.mcp, `${filePath}.mcp`) } : {}),
     ...(item.settings !== undefined ? { settings: parseSettings(item.settings, `${filePath}.settings`) } : {}),
@@ -499,6 +536,7 @@ export function resolveLocalAgents(
       client,
       ...(workspace ? { workspace } : {}),
       settings: agentSettings(config),
+      webhooks: config.webhooks ?? {},
       source,
     }
   })

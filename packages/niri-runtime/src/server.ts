@@ -7,7 +7,6 @@ import { wake, isRunning, isWaitingForEvent, enqueueEvent, getRunnerStatus } fro
 import { buildDiscordBatchDigest, scanDiscordChannels } from "./discord/state"
 import { handleDiscordIngress } from "./discord/pipeline"
 import { fromBsky } from "./triggers/bsky"
-import { fromWebhook } from "./triggers/webhook"
 import { fromCron } from "./triggers/cron"
 import { fromChat } from "./triggers/chat"
 import { subscribe } from "./stream"
@@ -306,12 +305,6 @@ export function createServer(options: { requestRestart?: (reason?: string) => vo
 
   app.post("/trigger/bsky", async (req, reply) => {
     const event = fromBsky(req.body)
-    isRunning() ? enqueueEvent(event) : wake(event)
-    return reply.send({ ok: true })
-  })
-
-  app.post("/trigger/webhook", async (req, reply) => {
-    const event = fromWebhook(req.body)
     isRunning() ? enqueueEvent(event) : wake(event)
     return reply.send({ ok: true })
   })

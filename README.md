@@ -139,6 +139,22 @@ Agent ids, worker ports, canonical home paths, Discord tokens, and enabled bridg
 
 Agent YAML files contain credentials and should use mode `0600`. Tool-client endpoints should stay on loopback or a trusted private network.
 
+### Named webhooks
+
+Webhooks are server endpoints configured per agent. Each named entry has its own HMAC-SHA256 secret:
+
+```yaml
+webhooks:
+  github:
+    secret: replace-me
+    signatureHeader: x-hub-signature-256
+    signaturePrefix: sha256=
+  deploy:
+    secret: replace-me-too
+```
+
+Send the exact JSON body to `POST /agents/<agent-id>/trigger/webhook/<name>`. The signature header defaults to `x-niri-signature`, and its value defaults to the form `sha256=<hex digest>`. A verified request enqueues `[webhook triggered: <name>]` for the agent and preserves the decoded request body under `raw.payload`.
+
 ## Check the repository
 
 ```sh

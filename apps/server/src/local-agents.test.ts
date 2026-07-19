@@ -33,6 +33,10 @@ model:
 discord:
   token: discord-secret
   enabled: true
+webhooks:
+  github:
+    secret: github-secret
+    signatureHeader: x-hub-signature-256
 fallback:
   name: local-model
   baseUrl: http://server.local:1234/v1
@@ -58,6 +62,9 @@ mcp:
   assert.equal(agent?.settings.MODEL, "openai/gpt-5")
   assert.equal(agent?.settings.OPENAI_API_KEY, "model-secret")
   assert.equal(agent?.settings.DISCORD_BOT_TOKEN, "discord-secret")
+  assert.deepEqual(agent?.webhooks, {
+    github: { secret: "github-secret", signatureHeader: "x-hub-signature-256" },
+  })
   assert.equal(agent?.settings.FALLBACK_MODEL, "local-model")
   assert.equal(agent?.settings.RUNNER_MAX_TURNS, "80")
   assert.deepEqual(JSON.parse(agent?.settings.NIRI_MCP_CONFIG ?? ""), {
