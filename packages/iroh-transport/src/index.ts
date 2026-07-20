@@ -336,6 +336,9 @@ export async function startConnectionTunnel(
     port: address.port,
     url: `http://${host}:${address.port}`,
     setConnection(next: Connection | null): void {
+      // Destroy in-flight sockets before swapping: keep-alive clients must
+      // reconnect onto the new connection, not keep talking to the old one.
+      for (const socket of sockets) socket.destroy()
       current = next
     },
     close: async () => {

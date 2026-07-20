@@ -7,6 +7,7 @@ import Fastify from "fastify"
 import {
   AWP_ALPN,
   bindEndpoint,
+  deferred,
   loadOrCreateSecretKey,
   openSocketStream,
   pipeBiStreamToSocket,
@@ -169,4 +170,97 @@ test("connection tunnel carries plain HTTP (GET, POST, SSE) over iroh", async (t
   stopWorker.abort()
   workerConn.close(0n, [])
   serverConn.close(0n, [])
+})
+
+test("setConnection drains keep-alive sockets so they re-dial the replacement", async (t) => {
+  const serverEp = await bindMinimal(SecretKey.generate().toBytes())
+  const workerEpA = await bindMinimal(SecretKey.generate().toBytes())
+  const workerEpB = await bindMinimal(SecretKey.generate().toBytes())
+  t.after(async () => {
+    await serverEp.close().catch(() => {})
+    await workerEpA.close().catch(() => {})
+    await workerEpB.close().catch(() => {})
+  })
+  const ticket = EndpointTicket.fromAddr(serverEp.addr())
+
+  // Two backends with distinct responses, one per worker connection.
+  const backends: net.Server[] = []
+  async function backend(body: string): Promise<number> {
+    const app = net.createServer((socket) => {
+      socket.on("data", () => {
+        socket.end(`HTTP/1.1 200 OK\r\ncontent-length: ${body.length}\r\nconnection: close\r\n\r\n${body}`)
+      })
+    })
+    backends.push(app)
+    const { promise, resolve } = deferred<void>()
+    app.listen(0, "127.0.0.1", resolve)
+    await promise
+    return (app.address() as net.AddressInfo).port
+  }
+  t.after(() => backends.forEach((app) => app.close()))
+  const portA = await backend("backend-A")
+  const portB = await backend("backend-B")
+
+  const acceptedA = acceptOne(serverEp)
+  const connWorkerA = await workerEpA.connect(ticket.endpointAddr(), AWP_ALPN)
+  const connServerA = await acceptedA
+  const stopA = new AbortController()
+  const loopA = (async () => {
+    while (!stopA.signal.aborted) {
+      try {
+        await openSocketStream(connWorkerA, portA)
+      } catch {
+        return
+      }
+    }
+  })()
+  t.after(() => {
+    stopA.abort()
+    void loopA
+  })
+
+  const tunnel = await startConnectionTunnel(connServerA)
+  t.after(() => tunnel.close())
+
+  // A keep-alive TCP socket held open through the swap.
+  const heldSocket = net.connect(tunnel.port, "127.0.0.1")
+  const { promise: heldClosed, resolve: markHeldClosed } = deferred<void>()
+  heldSocket.once("close", () => markHeldClosed())
+  const { promise: heldConnected, resolve: markHeldConnected } = deferred<void>()
+  heldSocket.once("connect", () => markHeldConnected())
+  await heldConnected
+
+  // Swap to a different connection: the held socket must die.
+  const acceptedB = acceptOne(serverEp)
+  const connWorkerB = await workerEpB.connect(ticket.endpointAddr(), AWP_ALPN)
+  const connServerB = await acceptedB
+  const stopB = new AbortController()
+  const loopB = (async () => {
+    while (!stopB.signal.aborted) {
+      try {
+        await openSocketStream(connWorkerB, portB)
+      } catch {
+        return
+      }
+    }
+  })()
+  t.after(() => {
+    stopB.abort()
+    void loopB
+  })
+
+  tunnel.setConnection(connServerB)
+  await heldClosed
+  assert.equal(heldSocket.destroyed, true)
+
+  // New requests reach the replacement backend.
+  const { promise: body, resolve: resolveBody, reject: rejectBody } = deferred<Buffer>()
+  const req = net.connect(tunnel.port, "127.0.0.1", () => {
+    req.write("GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n")
+  })
+  const chunks: Buffer[] = []
+  req.on("data", (chunk) => chunks.push(chunk))
+  req.on("end", () => resolveBody(Buffer.concat(chunks)))
+  req.on("error", rejectBody)
+  assert.match((await body).toString("utf8"), /backend-B/)
 })
