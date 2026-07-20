@@ -60,7 +60,7 @@ export interface IrohAcceptorOptions {
   /** Invoked after a tool client completes the handshake with a valid token. */
   onClient?: (dialIn: IrohClientDialIn) => void | Promise<void>
   /** Invoked when a previously-connected tool client's connection closes. */
-  onClientGone?: (agentId: string, instanceId: string) => void | Promise<void>
+  onClientGone?: (agentId: string, instanceId: string, connection: Connection) => void | Promise<void>
   /** Optional gate: return false to reject a client dial-in's claimed agent id. */
   allowClient?: (agentId: string) => boolean
   /** Endpoint preset; defaults to "n0". Tests pass "minimal" to avoid relay hang. */
@@ -347,7 +347,7 @@ async function handleConnection(
       }
       console.log(`[iroh] tool client for ${agentId} (instance ${instanceId}) disconnected`)
       try {
-        await opts.onClientGone?.(agentId, instanceId)
+        await opts.onClientGone?.(agentId, instanceId, connection)
       } catch (err) {
         console.warn(`[iroh] onClientGone failed for ${agentId}: ${err instanceof Error ? err.message : String(err)}`)
       }

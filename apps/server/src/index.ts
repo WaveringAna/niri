@@ -100,9 +100,17 @@ async function main(): Promise<void> {
     })
   }
 
+  // Track each agent's live client connection so a stale disconnect cannot
+  // detach its replacement (same race as worker reconnects).
+  const clientConnections = new Map<string, IrohClientDialIn["connection"]>()
   const handleClientDialIn = (dialIn: IrohClientDialIn) => {
     const tunnel = clientTunnels.get(dialIn.agentId)
     if (!tunnel) throw new Error(`no iroh client tunnel for agent ${dialIn.agentId}`)
+    const prior = clientConnections.get(dialIn.agentId)
+    if (prior && prior !== dialIn.connection) {
+      prior.close(0n, Array.from(Buffer.from("replaced", "utf8")))
+    }
+    clientConnections.set(dialIn.agentId, dialIn.connection)
     tunnel.setConnection(dialIn.connection)
     console.log(`[iroh] client tunnel for ${dialIn.agentId} attached at ${tunnel.url}`)
   }
@@ -120,7 +128,9 @@ async function main(): Promise<void> {
       },
       allowAgent: (agentId) => remoteAgentIds.has(agentId),
       onClient: handleClientDialIn,
-      onClientGone: (agentId) => {
+      onClientGone: (agentId, _instanceId, connection) => {
+        if (clientConnections.get(agentId) !== connection) return
+        clientConnections.delete(agentId)
         clientTunnels.get(agentId)?.setConnection(null)
       },
       allowClient: (agentId) => clientTunnels.has(agentId),

@@ -374,3 +374,82 @@ test("tool client dial-in attaches to the agent tunnel and serves tool calls", a
   assert.deepEqual(gone, ["lyra"])
   await assert.rejects(() => fetch(`${tunnel.url}/health`))
 })
+
+test("a same-instance client reconnect keeps the tunnel attached", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "niri-iroh-client-reconnect-"))
+  t.after(() => fs.rm(dir, { recursive: true, force: true }))
+
+  const tunnel = await startConnectionTunnel(null)
+  t.after(() => tunnel.close())
+
+  // Mirror index.ts: track the live connection per agent; close the prior on
+  // replacement; only detach when the closing connection is still current.
+  const clientConnections = new Map<string, Connection>()
+  const handle = await startIrohAcceptor({
+    secretFile: path.join(dir, "iroh.secret"),
+    tokenFile: path.join(dir, "iroh.token"),
+    preset: "minimal",
+    allowClient: () => true,
+    onClient: (dialIn) => {
+      const prior = clientConnections.get(dialIn.agentId)
+      if (prior && prior !== dialIn.connection) prior.close(0n, Array.from(Buffer.from("replaced", "utf8")))
+      clientConnections.set(dialIn.agentId, dialIn.connection)
+      tunnel.setConnection(dialIn.connection)
+    },
+    onClientGone: (agentId, _instanceId, connection) => {
+      if (clientConnections.get(agentId) !== connection) return
+      clientConnections.delete(agentId)
+      tunnel.setConnection(null)
+    },
+    onAgent: () => {},
+  })
+  t.after(() => handle.close())
+  const token = (await fs.readFile(path.join(dir, "iroh.token"), "utf8")).trim()
+
+  // The client's own HTTP server, pumped over whichever connection is current.
+  const app = Fastify({ logger: false })
+  app.get("/health", async () => ({ ok: true }))
+  await app.listen({ port: 0, host: "127.0.0.1" })
+  t.after(() => app.close())
+  const port = (app.server.address() as AddressInfo).port
+
+  const pump = (connection: Connection, stop: AbortController) => {
+    const loop = (async () => {
+      while (!stop.signal.aborted) {
+        try {
+          await openSocketStream(connection, port)
+        } catch {
+          return
+        }
+      }
+    })()
+    t.after(() => {
+      stop.abort()
+      void loop
+    })
+  }
+
+  const first = await dialWorker(handle.ticket, { agentId: "lyra", instanceId: "same", name: "lyra", token }, "client")
+  t.after(() => first.endpoint.close())
+  const stopFirst = new AbortController()
+  pump(first.connection, stopFirst)
+
+  const res1 = await fetch(`${tunnel.url}/health`)
+  assert.equal(res1.status, 200)
+
+  // Reconnect with the same instance id: the replacement attaches and the old
+  // connection's teardown must not detach it.
+  const second = await dialWorker(handle.ticket, { agentId: "lyra", instanceId: "same", name: "lyra", token }, "client")
+  t.after(() => second.endpoint.close())
+  t.after(() => second.connection.close(0n, []))
+  const stopSecond = new AbortController()
+  pump(second.connection, stopSecond)
+
+  await first.connection.closed().catch(() => {})
+  const { promise: settled, resolve: markSettled } = deferred<void>()
+  setTimeout(markSettled, 100)
+  await settled
+
+  const res2 = await fetch(`${tunnel.url}/health`)
+  assert.equal(res2.status, 200)
+})
