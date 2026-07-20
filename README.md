@@ -1,5 +1,7 @@
 # Niri
 
+System architecture: [docs/architecture.md](docs/architecture.md)
+
 ## Run the server
 
 ```sh
