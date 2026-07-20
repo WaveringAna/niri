@@ -15,7 +15,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import net from "node:net"
-import { Endpoint, SecretKey, type BiStream, type Connection } from "@number0/iroh"
+import { Endpoint, EndpointTicket, SecretKey, type BiStream, type Connection } from "@number0/iroh"
 
 const AWP_ALPN_STRING = "niri/awp/0"
 
@@ -216,36 +216,108 @@ export async function openSocketStream(connection: Connection, port: number): Pr
   void pipeBiStreamToSocket(stream, socket)
 }
 
+export interface DialIdentity {
+  agentId: string
+  instanceId: string
+  name: string
+  /** "worker" (default) registers an agent worker; "client" attaches a tool client. */
+  role?: "worker" | "client"
+}
+
+/**
+ * Dial the control plane's iroh endpoint and complete the JSON-line
+ * handshake: identity + token out, ack in. Throws with the server's reason
+ * when the dial-in is rejected (bad token, unknown agent, registration
+ * failure), or when the transport closes before the ack arrives.
+ */
+export async function dialControlPlane(opts: {
+  endpoint: Endpoint
+  ticket: string
+  token: string
+  identity: DialIdentity
+}): Promise<Connection> {
+  const ticket = EndpointTicket.fromString(opts.ticket)
+  const connection = await opts.endpoint.connect(ticket.endpointAddr(), AWP_ALPN)
+  try {
+    const stream = await connection.openBi()
+    const handshake = JSON.stringify({
+      agentId: opts.identity.agentId,
+      instanceId: opts.identity.instanceId,
+      name: opts.identity.name,
+      token: opts.token,
+      ...(opts.identity.role ? { role: opts.identity.role } : {}),
+    })
+    await stream.send.writeAll(Array.from(Buffer.from(`${handshake}\n`, "utf8")))
+    await stream.send.finish()
+
+    // Read the server's JSON-line ack; a rejection carries the reason, and a
+    // rejected dial-in may also arrive as a transport close racing the ack.
+    let ackBuffer = Buffer.alloc(0)
+    try {
+      for (;;) {
+        const chunk = await stream.recv.read(1024)
+        if (chunk.length === 0) break
+        ackBuffer = Buffer.concat([ackBuffer, Buffer.from(chunk)])
+        if (ackBuffer.indexOf("\n") >= 0 || ackBuffer.length > 4096) break
+      }
+    } catch (err) {
+      throw new Error(`dial-in rejected: transport closed before ack (${err instanceof Error ? err.message : String(err)})`)
+    }
+    const newlineIndex = ackBuffer.indexOf("\n")
+    const ackLine = ackBuffer.subarray(0, newlineIndex >= 0 ? newlineIndex : ackBuffer.length).toString("utf8").trim()
+    const ack: unknown = ackLine ? JSON.parse(ackLine) : null
+    const ackOk = ack && typeof ack === "object" && "ok" in ack && ack.ok === true
+    if (!ackOk) {
+      const reason = ack && typeof ack === "object" && "error" in ack ? String(ack.error) : ackLine || "no ack"
+      throw new Error(`dial-in rejected: ${reason}`)
+    }
+    return connection
+  } catch (err) {
+    connection.close(0n, [])
+    throw err
+  }
+}
+
 export interface ConnectionTunnel {
   /** Loopback port the tunnel listens on. */
   port: number
   /** Loopback HTTP origin (`http://127.0.0.1:<port>`) to register as the worker's base URL. */
   url: string
+  /**
+   * Swap the connection new sockets will be opened on. Pass `null` to make
+   * the tunnel refuse connections until a peer attaches again (e.g. a tool
+   * client that dials in and out).
+   */
+  setConnection(connection: Connection | null): void
   /** Stop accepting, destroy in-flight sockets, and close the listener. */
   close(): Promise<void>
 }
 
 /**
  * Expose an iroh connection as a loopback TCP tunnel: every accepted socket
- * opens one BiStream on `connection` and pumps it end to end. The peer is
- * expected to pump those streams to its own loopback HTTP server, so plain
- * HTTP clients (undici, Fastify, SSE consumers) need no iroh awareness.
+ * opens one BiStream on the current connection and pumps it end to end. The
+ * peer is expected to pump those streams to its own loopback HTTP server, so
+ * plain HTTP clients (undici, Fastify, SSE consumers) need no iroh awareness.
+ * Pass `null` to create a tunnel with no peer yet, and attach one later with
+ * `setConnection`.
  */
 export async function startConnectionTunnel(
-  connection: Connection,
-  opts: { host?: string } = {},
+  connection: Connection | null,
+  opts: { host?: string; port?: number } = {},
 ): Promise<ConnectionTunnel> {
   const host = opts.host ?? "127.0.0.1"
   const sockets = new Set<net.Socket>()
   let closed = false
+  let current: Connection | null = connection
   const server = net.createServer((socket) => {
     sockets.add(socket)
     socket.once("close", () => sockets.delete(socket))
-    if (closed) {
+    const conn = current
+    if (closed || !conn) {
       socket.destroy()
       return
     }
-    connection
+    conn
       .openBi()
       .then((stream) => pipeBiStreamToSocket(stream, socket))
       .catch(() => {
@@ -254,7 +326,7 @@ export async function startConnectionTunnel(
   })
   const { promise: listening, resolve: listeningResolve, reject: listeningReject } = deferred<void>()
   server.once("error", listeningReject)
-  server.listen(0, host, () => {
+  server.listen(opts.port ?? 0, host, () => {
     server.off("error", listeningReject)
     listeningResolve()
   })
@@ -263,6 +335,9 @@ export async function startConnectionTunnel(
   return {
     port: address.port,
     url: `http://${host}:${address.port}`,
+    setConnection(next: Connection | null): void {
+      current = next
+    },
     close: async () => {
       closed = true
       for (const socket of sockets) socket.destroy()

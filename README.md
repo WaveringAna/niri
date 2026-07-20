@@ -52,6 +52,27 @@ The worker dials the server, authenticates with the token, and keeps the connect
 
 Local supervised workers keep using loopback HTTP and need no iroh configuration.
 
+## Remote tool clients over iroh
+
+The same link works for tool clients — this is how a client on a laptop or another network connects without listening on a public port. On the server, set the agent's client to iroh:
+
+```yaml
+client: iroh
+```
+
+The control plane then keeps an always-on loopback tunnel for that agent and points the worker's client URL at it; until the client dials in, the worker sees an unreachable endpoint (identical to an offline client box).
+
+On the client machine:
+
+```sh
+cd apps/client
+npm run start -- --agent <agent-id> \
+  --iroh-ticket <ticket printed by the server> \
+  --iroh-token <token from data/control/iroh.token>
+```
+
+(Equivalently `NIRI_SERVER_IROH_TICKET`, `NIRI_SERVER_IROH_TOKEN`, and `NIRI_AGENT_ID` in the environment.) The client binds loopback only, dials out, and keeps the connection open with backoff. All tool traffic is encrypted and token-authenticated; `client: http://...` remains available for trusted networks, and `client: local` for same-host workers.
+
 ## Agent memory
 
 Memory lives on the server under the agent's `home`, separate from any attached client:
@@ -77,7 +98,7 @@ For routine maintenance, ask the agent to inspect, organize, or repair their own
 | `name` | string | no | `id` |
 | `port` | integer `1..65535` | no | control port plus the file's sorted position |
 | `home` | path | no | `data/agents/<id>` |
-| `client` | `local` or an HTTP(S) URL | yes | — |
+| `client` | `local`, `iroh`, or an HTTP(S) URL | yes | — |
 | `workspace` | path | no | repository root; applies to `client: local` |
 | `model` | object | no | — |
 | `fallback` | object | no | — |

@@ -7,7 +7,9 @@ import path from "node:path"
 import test from "node:test"
 import Fastify from "fastify"
 import { EndpointTicket, SecretKey, type Connection, type Endpoint } from "@number0/iroh"
-import { AWP_ALPN, bindEndpoint, deferred, openSocketStream } from "@niri/iroh-transport"
+import { AWP_ALPN, bindEndpoint, deferred, openSocketStream, startConnectionTunnel } from "@niri/iroh-transport"
+import { NodeToolHost, ToolClientHttpServer } from "@mira/harness-client-node"
+import { HttpToolClient } from "@mira/harness-server"
 import { startIrohAcceptor, type IrohAgentDialIn } from "./iroh.js"
 
 type WorkerDial = {
@@ -18,13 +20,16 @@ type WorkerDial = {
 async function dialWorker(
   ticket: string,
   handshake: Record<string, unknown>,
+  role: "worker" | "client" = "worker",
 ): Promise<WorkerDial> {
   const endpoint = await bindEndpoint(SecretKey.generate().toBytes(), { preset: "minimal" })
   let connection: Connection | null = null
   try {
     connection = await endpoint.connect(EndpointTicket.fromString(ticket).endpointAddr(), AWP_ALPN)
     const stream = await connection.openBi()
-    await stream.send.writeAll(Array.from(Buffer.from(`${JSON.stringify(handshake)}\n`, "utf8")))
+    await stream.send.writeAll(
+      Array.from(Buffer.from(`${JSON.stringify({ ...handshake, role })}\n`, "utf8")),
+    )
     await stream.send.finish()
     // Mirror the worker link: read the server's JSON-line ack and throw on rejection.
     // A rejected dial-in may also arrive as a transport close racing the ack.
@@ -282,4 +287,90 @@ test("a failing re-registration leaves the prior registration usable", async (t)
   const res = await fetch(`${dialIns[0]!.baseUrl}/health`)
   assert.equal(res.status, 200)
   stopPump.abort()
+})
+
+test("tool client dial-in attaches to the agent tunnel and serves tool calls", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "niri-iroh-client-link-"))
+  t.after(() => fs.rm(dir, { recursive: true, force: true }))
+  const gone: string[] = []
+
+  // Mirror index.ts: an always-on tunnel waiting for a client connection.
+  const tunnel = await startConnectionTunnel(null)
+  t.after(() => tunnel.close())
+
+  const handle = await startIrohAcceptor({
+    secretFile: path.join(dir, "iroh.secret"),
+    tokenFile: path.join(dir, "iroh.token"),
+    preset: "minimal",
+    allowClient: (agentId) => agentId === "lyra",
+    onClient: (dialIn) => {
+      tunnel.setConnection(dialIn.connection)
+    },
+    onClientGone: (agentId) => {
+      gone.push(agentId)
+      tunnel.setConnection(null)
+    },
+    onAgent: () => {},
+  })
+  t.after(() => handle.close())
+  const token = (await fs.readFile(path.join(dir, "iroh.token"), "utf8")).trim()
+
+  // The "client box": a real tool-client HTTP server on loopback.
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "niri-iroh-client-ws-"))
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }))
+  await fs.writeFile(path.join(workspace, "hello.txt"), "hello through iroh\n")
+  const toolHost = new NodeToolHost({ workspace: { id: "test", root: workspace } })
+  const toolServer = new ToolClientHttpServer({ host: toolHost, listenHost: "127.0.0.1", port: 0 })
+  const toolAddress = await toolServer.start()
+  t.after(async () => {
+    await toolServer.stop()
+    await toolHost.stop()
+  })
+
+  // Before the client dials in, the tunnel refuses connections.
+  await assert.rejects(() => fetch(`${tunnel.url}/health`))
+
+  // The client dials out and pumps streams to its loopback tool server.
+  const client = await dialWorker(handle.ticket, { agentId: "lyra", instanceId: "c1", name: "lyra", token }, "client")
+  t.after(() => client.endpoint.close())
+  t.after(() => client.connection.close(0n, []))
+  const stopPump = new AbortController()
+  const pumpLoop = (async () => {
+    while (!stopPump.signal.aborted) {
+      try {
+        await openSocketStream(client.connection, toolAddress.port)
+      } catch {
+        return
+      }
+    }
+  })()
+  t.after(() => {
+    stopPump.abort()
+    void pumpLoop
+  })
+
+  // The worker's view: an ordinary HttpToolClient against the tunnel URL.
+  const toolClient = new HttpToolClient({ agentId: "lyra", endpoint: tunnel.url })
+  await toolClient.start()
+  const status = toolClient.status()
+  assert.equal(status.connected, true)
+  assert.ok(status.capabilities.includes("read_blob"))
+
+  const result = await toolClient.execute({
+    agentId: "lyra",
+    tool: "read_file",
+    args: { path: path.join(workspace, "hello.txt") },
+  })
+  assert.equal(result.status, "ok")
+  assert.match(result.output ?? "", /hello through iroh/)
+
+  // Disconnect detaches the tunnel; it refuses again.
+  stopPump.abort()
+  client.connection.close(0n, [])
+  await client.connection.closed().catch(() => {})
+  const { promise: settled, resolve: markSettled } = deferred<void>()
+  setTimeout(markSettled, 100)
+  await settled
+  assert.deepEqual(gone, ["lyra"])
+  await assert.rejects(() => fetch(`${tunnel.url}/health`))
 })

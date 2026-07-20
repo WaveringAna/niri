@@ -16,6 +16,8 @@ export type ResolvedLocalAgent = {
   port: number
   home: string
   client: string
+  /** Loopback port of the iroh client tunnel (only when `client: iroh`). */
+  clientTunnelPort?: number
   workspace?: string
   /** Whether the control plane spawns this worker (`local`) or waits for an iroh dial-in (`remote`). */
   workerMode: "local" | "remote"
@@ -70,12 +72,15 @@ export function resolveLocalAgents(
       : path.join(options.repoRoot, "data", "agents", id))
     const client = config.client?.trim()
     if (!client) throw new Error(`${source}: client is required`)
-    if (client !== "local") {
+    if (client !== "local" && client !== "iroh") {
       const url = new URL(client)
       if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
-        throw new Error(`${source}: client must be local or an HTTP(S) URL without credentials`)
+        throw new Error(`${source}: client must be local, iroh, or an HTTP(S) URL without credentials`)
       }
     }
+    // An iroh client dials the control plane; its tunnel gets a deterministic
+    // loopback port placed right after the worker port range.
+    const clientTunnelPort = client === "iroh" ? options.controlPort + files.length + index + 1 : undefined
     const workspace = config.workspace
       ? canonicalPath(path.isAbsolute(config.workspace) ? config.workspace : path.join(options.repoRoot, config.workspace))
       : undefined
@@ -86,6 +91,7 @@ export function resolveLocalAgents(
       port,
       home,
       client,
+      ...(clientTunnelPort !== undefined ? { clientTunnelPort } : {}),
       ...(workspace ? { workspace } : {}),
       settings: agentSettings(config),
       webhooks: config.webhooks ?? {},
@@ -94,7 +100,21 @@ export function resolveLocalAgents(
   })
 
   assertUnique(resolved, "id", (agent) => agent.id)
-  assertUnique(resolved, "port", (agent) => String(agent.port))
+  assertUnique(
+    resolved,
+    "port",
+    (agent) => String(agent.port),
+  )
+  assertUnique(
+    resolved.filter((agent) => agent.clientTunnelPort !== undefined),
+    "client tunnel port",
+    (agent) => String(agent.clientTunnelPort),
+  )
+  for (const agent of resolved) {
+    if (agent.clientTunnelPort !== undefined && resolved.some((other) => other.port === agent.clientTunnelPort)) {
+      throw new Error(`${agent.source}: client tunnel port ${agent.clientTunnelPort} conflicts with a worker port`)
+    }
+  }
   assertUnique(resolved, "home", (agent) => agent.home)
   return resolved
 }
@@ -179,7 +199,7 @@ export function buildWorkerEnvironment(parentEnv: NodeJS.ProcessEnv, agent: Reso
     NIRI_AGENT_ID: agent.id,
     AGENT_NAME: agent.name,
     NIRI_HOME: agent.home,
-    NIRI_CLIENT: agent.client,
+    NIRI_CLIENT: agent.client === "iroh" ? `http://127.0.0.1:${agent.clientTunnelPort}` : agent.client,
     ...(agent.workspace ? { NIRI_CLIENT_WORKSPACE: agent.workspace } : {}),
     PORT: String(agent.port),
     NIRI_WORKER_HOST: "127.0.0.1",

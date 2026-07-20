@@ -30,6 +30,16 @@ export interface IrohAgentDialIn {
   baseUrl: string
 }
 
+/** A tool client that dialed in over iroh on behalf of an agent. */
+export interface IrohClientDialIn {
+  /** Agent id the client serves (must be an agent configured with `client: iroh`). */
+  agentId: string
+  /** Per-process client instance id. */
+  instanceId: string
+  /** Live iroh Connection the client is reachable over. */
+  connection: Connection
+}
+
 export interface IrohAcceptorOptions {
   /**
    * Path to the 32-byte hex secret for this endpoint. Generated with mode 0o600
@@ -47,6 +57,12 @@ export interface IrohAcceptorOptions {
   onAgentGone?: (agentId: string, instanceId: string) => void | Promise<void>
   /** Optional gate: return false to reject a dial-in's claimed agent id before registration. */
   allowAgent?: (agentId: string) => boolean
+  /** Invoked after a tool client completes the handshake with a valid token. */
+  onClient?: (dialIn: IrohClientDialIn) => void | Promise<void>
+  /** Invoked when a previously-connected tool client's connection closes. */
+  onClientGone?: (agentId: string, instanceId: string) => void | Promise<void>
+  /** Optional gate: return false to reject a client dial-in's claimed agent id. */
+  allowClient?: (agentId: string) => boolean
   /** Endpoint preset; defaults to "n0". Tests pass "minimal" to avoid relay hang. */
   preset?: "n0" | "minimal"
 }
@@ -84,7 +100,7 @@ function safeEqual(a: string, b: string): boolean {
  * or throws on timeout, EOF, oversize, or invalid JSON.
  */
 async function readHandshake(connection: Connection): Promise<{
-  handshake: { agentId: unknown; instanceId: unknown; name: unknown; token: unknown }
+  handshake: { agentId: unknown; instanceId: unknown; name: unknown; token: unknown; role: unknown }
   stream: BiStream
 }> {
   const stream = await connection.acceptBi()
@@ -142,7 +158,7 @@ async function readHandshake(connection: Connection): Promise<{
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("handshake must be a JSON object")
   return {
-    handshake: parsed as { agentId: unknown; instanceId: unknown; name: unknown; token: unknown },
+    handshake: parsed as { agentId: unknown; instanceId: unknown; name: unknown; token: unknown; role: unknown },
     stream,
   }
 }
@@ -275,7 +291,7 @@ async function handleConnection(
   let agentId = "unknown"
   let instanceId = "unknown"
   try {
-    let handshake: { agentId: unknown; instanceId: unknown; name: unknown; token: unknown }
+    let handshake: { agentId: unknown; instanceId: unknown; name: unknown; token: unknown; role: unknown }
     let stream: BiStream
     try {
       const read = await readHandshake(connection)
@@ -303,6 +319,42 @@ async function handleConnection(
     }
     agentId = id
     instanceId = inst
+
+    const role = handshake.role === "client" ? "client" : "worker"
+    if (role === "client") {
+      if (!opts.onClient || (opts.allowClient && !opts.allowClient(agentId))) {
+        console.warn(`[iroh] rejected client dial-in: agent ${agentId} has no iroh client configured`)
+        await ackHandshake(stream, false, "unknown client")
+        connection.close(6n, Array.from(Buffer.from("unknown client", "utf8")))
+        agentId = "unknown"
+        return
+      }
+      try {
+        await opts.onClient({ agentId, instanceId, connection })
+      } catch (err) {
+        console.warn(`[iroh] client registration failed for ${agentId}: ${err instanceof Error ? err.message : String(err)}`)
+        await ackHandshake(stream, false, "registration failed")
+        connection.close(5n, Array.from(Buffer.from("registration failed", "utf8")))
+        agentId = "unknown"
+        return
+      }
+      await ackHandshake(stream, true)
+      console.log(`[iroh] tool client for ${agentId} (instance ${instanceId}) connected`)
+      try {
+        await connection.closed()
+      } catch {
+        // transport error on close is fine
+      }
+      console.log(`[iroh] tool client for ${agentId} (instance ${instanceId}) disconnected`)
+      try {
+        await opts.onClientGone?.(agentId, instanceId)
+      } catch (err) {
+        console.warn(`[iroh] onClientGone failed for ${agentId}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      agentId = "unknown"
+      return
+    }
+
     if (opts.allowAgent && !opts.allowAgent(agentId)) {
       console.warn(`[iroh] rejected dial-in: agent ${agentId} is not a configured remote agent`)
       await ackHandshake(stream, false, "unknown agent")

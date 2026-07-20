@@ -11,7 +11,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@mira/harness-client-node": "*"
+    "@mira/harness-client-node": "*",
+    "@niri/iroh-transport": "*",
+    "@number0/iroh": "1.1.0"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

@@ -10,7 +10,8 @@ import {
   resolveLocalAgents,
 } from "./local-agents"
 import { LocalAgentSupervisor } from "./supervisor"
-import { startIrohAcceptor, type IrohAgentDialIn } from "./iroh"
+import { startIrohAcceptor, type IrohAgentDialIn, type IrohClientDialIn } from "./iroh"
+import { startConnectionTunnel, type ConnectionTunnel } from "@niri/iroh-transport"
 
 function argument(name: string): string | undefined {
   const index = process.argv.indexOf(name)
@@ -41,6 +42,17 @@ async function main(): Promise<void> {
   const remoteAgentIds = new Set(agents.filter((agent) => agent.workerMode === "remote").map((agent) => agent.id))
   const localAgents = agents.filter((agent) => agent.workerMode === "local")
   const remoteAgents = agents.filter((agent) => agent.workerMode === "remote")
+
+  // Tool clients configured with `client: iroh` get an always-on loopback
+  // tunnel; the worker's NIRI_CLIENT points at it, and a client dial-in
+  // attaches its connection. Until then the worker sees an unreachable
+  // endpoint, exactly like an offline client box.
+  const clientTunnels = new Map<string, ConnectionTunnel>()
+  for (const agent of agents) {
+    if (agent.client !== "iroh" || agent.clientTunnelPort === undefined) continue
+    const tunnel = await startConnectionTunnel(null, { host: "127.0.0.1", port: agent.clientTunnelPort })
+    clientTunnels.set(agent.id, tunnel)
+  }
 
   const supervisors = new Map<string, LocalAgentSupervisor>()
   for (const agent of localAgents) {
@@ -88,6 +100,13 @@ async function main(): Promise<void> {
     })
   }
 
+  const handleClientDialIn = (dialIn: IrohClientDialIn) => {
+    const tunnel = clientTunnels.get(dialIn.agentId)
+    if (!tunnel) throw new Error(`no iroh client tunnel for agent ${dialIn.agentId}`)
+    tunnel.setConnection(dialIn.connection)
+    console.log(`[iroh] client tunnel for ${dialIn.agentId} attached at ${tunnel.url}`)
+  }
+
   // Iroh acceptor: never fatal — failure to bind is a warning, not a crash.
   let irohAcceptor: { close: () => Promise<void> } | null = null
   try {
@@ -100,6 +119,11 @@ async function main(): Promise<void> {
         deleteAgent(agentId)
       },
       allowAgent: (agentId) => remoteAgentIds.has(agentId),
+      onClient: handleClientDialIn,
+      onClientGone: (agentId) => {
+        clientTunnels.get(agentId)?.setConnection(null)
+      },
+      allowClient: (agentId) => clientTunnels.has(agentId),
     })
   } catch (err) {
     console.warn(`[iroh] acceptor failed to start (continuing without iroh): ${err instanceof Error ? err.message : String(err)}`)
@@ -113,6 +137,7 @@ async function main(): Promise<void> {
     await server.close()
     await Promise.all([...supervisors.values()].map((supervisor) => supervisor.stop()))
     if (irohAcceptor) await irohAcceptor.close().catch(() => {})
+    await Promise.all([...clientTunnels.values()].map((tunnel) => tunnel.close().catch(() => {})))
     process.exit(0)
   }
   process.on("SIGINT", () => void shutdown("SIGINT"))

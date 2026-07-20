@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto"
 import path from "node:path"
-import { EndpointTicket, type Connection, type Endpoint } from "@number0/iroh"
+import { setTimeout as sleep } from "node:timers/promises"
+import { type Connection, type Endpoint } from "@number0/iroh"
 import {
-  AWP_ALPN,
   bindEndpoint,
+  dialControlPlane,
   loadOrCreateSecretKey,
   openSocketStream,
 } from "@niri/iroh-transport"
@@ -32,27 +33,6 @@ const state: LinkState = {
 
 let linkStarted = false
 
-function secretFilePath(): string {
-  return path.join(NIRI_HOME, "state", "iroh.secret")
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const t = setTimeout(resolve, ms)
-    t.unref?.()
-  })
-}
-
-function encodeHandshake(): number[] {
-  const payload = JSON.stringify({
-    agentId: AGENT_ID,
-    instanceId: INSTANCE_ID,
-    name: AGENT_NAME,
-    token: SERVER_IROH_TOKEN,
-  }) + "\n"
-  return Array.from(Buffer.from(payload, "utf8"))
-}
-
 /**
  * Connect to the control-plane iroh endpoint named by `NIRI_SERVER_IROH_TICKET`,
  * send the JSON-line handshake on the first BiStream, then forever accept
@@ -70,7 +50,7 @@ export async function startIrohLink(): Promise<void> {
 
   const abort = new AbortController()
   state.abort = abort
-  const secret = await loadOrCreateSecretKey(secretFilePath())
+  const secret = await loadOrCreateSecretKey(path.join(NIRI_HOME, "state", "iroh.secret"))
   const endpoint = await bindEndpoint(secret)
   state.endpoint = endpoint
   void runConnectLoop(endpoint, abort.signal).catch((err) => {
@@ -84,31 +64,12 @@ async function runConnectLoop(endpoint: Endpoint, signal: AbortSignal): Promise<
   while (!signal.aborted) {
     let connection: Connection | null = null
     try {
-      const ticket = EndpointTicket.fromString(SERVER_IROH_TICKET!)
-      connection = await endpoint.connect(ticket.endpointAddr(), AWP_ALPN)
-      const handshakeStream = await connection.openBi()
-      await handshakeStream.send.writeAll(encodeHandshake())
-      await handshakeStream.send.finish()
-      // Read the server's JSON-line ack; a rejection carries the reason, and a
-      // rejected dial-in may also arrive as a transport close racing the ack.
-      let ackBuffer = Buffer.alloc(0)
-      try {
-        for (;;) {
-          const chunk = await handshakeStream.recv.read(1024)
-          if (chunk.length === 0) break
-          ackBuffer = Buffer.concat([ackBuffer, Buffer.from(chunk)])
-          if (ackBuffer.indexOf("\n") >= 0 || ackBuffer.length > 4096) break
-        }
-      } catch (err) {
-        throw new Error(`dial-in rejected: transport closed before ack (${err instanceof Error ? err.message : String(err)})`)
-      }
-      const ackLine = ackBuffer.subarray(0, ackBuffer.indexOf("\n") >= 0 ? ackBuffer.indexOf("\n") : ackBuffer.length).toString("utf8").trim()
-      const ack: unknown = ackLine ? JSON.parse(ackLine) : null
-      const ackOk = ack && typeof ack === "object" && "ok" in ack && ack.ok === true
-      if (!ackOk) {
-        const reason = ack && typeof ack === "object" && "error" in ack ? String(ack.error) : ackLine || "no ack"
-        throw new Error(`dial-in rejected: ${reason}`)
-      }
+      connection = await dialControlPlane({
+        endpoint,
+        ticket: SERVER_IROH_TICKET!,
+        token: SERVER_IROH_TOKEN!,
+        identity: { agentId: AGENT_ID, instanceId: INSTANCE_ID, name: AGENT_NAME, role: "worker" },
+      })
       state.connection = connection
       if (firstSuccess) {
         console.log(`[iroh-link] connected to control plane as ${AGENT_ID} (instance ${INSTANCE_ID})`)
