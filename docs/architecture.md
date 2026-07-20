@@ -43,7 +43,7 @@ Everything durable about the agent lives in its home directory (`soul.md`, `memo
 
 ### Tool client (`apps/client`, `packages/harness-client-node`)
 
-The box. Answers tool calls from its agent; never initiates anything. Runs `shell`, `read_file`, `edit_file`, `image_tool`, and the internal `read_blob` (chunked, hash-verified binary reads used for Discord attachments). With the docker execution backend enabled, shell commands run inside a container rather than on the client host.
+The box. Answers tool calls from its agent; it never initiates agent work — though in iroh mode it *does* initiate the transport connection, dialing out to the control plane. Runs `shell`, `read_file`, `edit_file`, `image_tool`, and the internal `read_blob` (chunked, hash-verified binary reads used for Discord attachments). With the docker execution backend enabled, shell commands run inside a container rather than on the client host.
 
 ### How an agent reaches its box
 
