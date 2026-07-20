@@ -135,3 +135,29 @@ test("Discord credentials and bridge ports cannot overlap", (t) => {
   assert.throws(() => assertNoDuplicateDiscordTokens(agents), /share DISCORD_BOT_TOKEN/)
   assert.throws(() => assertNoDuplicateBridgePorts(agents, 4300), /bridges share port 4400/)
 })
+
+test("client: iroh gets a deterministic tunnel port but requires a local worker", (t) => {
+  const directory = fixture(t, {
+    "lyra.yaml": `
+client: iroh
+`,
+  })
+  const agents = resolveLocalAgents(loadAgentFiles(directory), options)
+  assert.equal(agents.length, 1)
+  assert.equal(agents[0]!.client, "iroh")
+  assert.equal(agents[0]!.clientTunnelPort, options.controlPort + 1 + 0 + 1)
+  const env = buildWorkerEnvironment({}, agents[0]!)
+  assert.equal(env.NIRI_CLIENT, `http://127.0.0.1:${agents[0]!.clientTunnelPort}`)
+
+  const remoteDirectory = fixture(t, {
+    "lyra.yaml": `
+client: iroh
+worker:
+  mode: remote
+`,
+  })
+  assert.throws(
+    () => resolveLocalAgents(loadAgentFiles(remoteDirectory), options),
+    /client: iroh requires worker\.mode: local/,
+  )
+})

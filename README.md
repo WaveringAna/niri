@@ -60,7 +60,7 @@ The same link works for tool clients — this is how a client on a laptop or ano
 client: iroh
 ```
 
-The control plane then keeps an always-on loopback tunnel for that agent and points the worker's client URL at it; until the client dials in, the worker sees an unreachable endpoint (identical to an offline client box).
+The control plane then keeps an always-on loopback tunnel for that agent and points the worker's client URL at it; until the client dials in, the worker sees an unreachable endpoint (identical to an offline client box). `client: iroh` requires a local worker — the tunnel lives on the control-plane host's loopback, which a remote worker cannot reach.
 
 On the client machine:
 

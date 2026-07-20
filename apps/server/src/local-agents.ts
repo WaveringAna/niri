@@ -81,13 +81,19 @@ export function resolveLocalAgents(
     // An iroh client dials the control plane; its tunnel gets a deterministic
     // loopback port placed right after the worker port range.
     const clientTunnelPort = client === "iroh" ? options.controlPort + files.length + index + 1 : undefined
+    const workerMode = (config.worker?.mode === "remote" ? "remote" : "local") as "local" | "remote"
+    if (client === "iroh" && workerMode === "remote") {
+      // The client tunnel lives on the control-plane host's loopback, which a
+      // remote worker cannot reach. Remote workers need a local client or URL.
+      throw new Error(`${source}: client: iroh requires worker.mode: local (the client tunnel is loopback on the control-plane host)`)
+    }
     const workspace = config.workspace
       ? canonicalPath(path.isAbsolute(config.workspace) ? config.workspace : path.join(options.repoRoot, config.workspace))
       : undefined
     return {
       id,
       name: config.name ?? id,
-      workerMode: (config.worker?.mode === "remote" ? "remote" : "local") as "local" | "remote",
+      workerMode,
       port,
       home,
       client,
