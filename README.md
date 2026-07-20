@@ -24,34 +24,21 @@ npm run start:tool-host
 
 The tool host listens on `0.0.0.0:3002` and runs `shell`, `read_file`, `edit_file`, and `image_tool` from its workspace root. It also exposes a chunked `read_blob` operation, which the agent runtime uses internally to attach tool-host files to Discord messages.
 
-## Standalone agents over iroh
+## Recommended topology
 
-Agent runtimes do not have to run on the same machine as the niri server. The niri server binds an [iroh](https://github.com/n0-computer/iroh) endpoint (QUIC with NAT traversal) on boot and prints an **EndpointTicket**; a standalone agent anywhere can dial in over that ticket — no open ports, VPN, or port forwarding on either side.
+The normal setup is one niri server managing several agents. Each agent has its own durable home and should have its own tool sandbox:
 
-1. Start the niri server. On first boot it generates `data/control/iroh.secret` (endpoint identity) and `data/control/iroh.token` (shared dial-in token, mode `0600`) and logs the ticket; the token is printed once on first generation.
-2. In the niri server's `agents/<id>.yaml`, configure the agent as standalone so the server awaits a dial-in instead of starting it. The YAML section and value are still named `worker.mode: remote` for compatibility:
+```text
+one niri machine
+  └─ niri server
+       ├─ agent 1 ─ tool host 1 ─ sandbox 1
+       ├─ agent 2 ─ tool host 2 ─ sandbox 2
+       ├─ agent 3 ─ tool host 3 ─ sandbox 3
+       ├─ agent 4 ─ tool host 4 ─ sandbox 4
+       └─ agent 5 ─ tool host 5 ─ sandbox 5
+```
 
-   ```yaml
-   worker:
-     mode: remote
-   ```
-
-3. On the other machine, put the ticket and token in the standalone agent's own YAML and start it:
-
-   ```yaml
-   server:
-     iroh:
-       ticket: <ticket printed by the server>
-       token: <token from data/control/iroh.token>
-   ```
-
-   ```sh
-   npm run start:agent:standalone -- --config /path/to/agent.yaml
-   ```
-
-The standalone agent dials the niri server, authenticates with the token, and keeps the connection open (reconnecting with backoff). The niri server exposes the live connection as a loopback tunnel, so all agent traffic — including the event stream — is ordinary HTTP over the encrypted iroh connection. When the agent disconnects, its registration is removed so requests never route to a stale tunnel port.
-
-Managed agents started by the niri server keep using loopback HTTP and need no iroh configuration.
+All five managed agent runtimes may run on the niri server machine. Each agent's tool host lives in a user-provided environment chosen for that agent's isolation and persistence needs: a disposable microVM, a persistent VM, a container, or a dedicated physical machine. Niri enforces a unique durable `home` for every agent, but it does not provision these sandboxes, and `workspace` is only an initial working directory rather than a filesystem security boundary.
 
 ## Remote tool hosts over iroh
 
@@ -87,6 +74,35 @@ Memory lives with the agent runtime under the agent's `home`, separate from any 
 For example, an agent with `home: /home/niri` keeps long-term memories in `/home/niri/memories`.
 
 For routine maintenance, ask the agent to inspect, organize, or repair their own memories using the memory tools. Treat `soul.md` and `memories/` like a private diary: do not read or change them unless the agent asks; it's weird if you do. For backup or recovery, stop the agent runtime and preserve the entire agent home rather than copying only the Markdown files.
+
+## Standalone agents over iroh
+
+Most installations should let the niri server start and supervise their agents. When an agent runtime itself must live on another machine, it can run standalone and dial the niri server over iroh — no open ports, VPN, or port forwarding on either side.
+
+1. Start the niri server. On first boot it generates `data/control/iroh.secret` (endpoint identity) and `data/control/iroh.token` (shared dial-in token, mode `0600`) and logs the ticket; the token is printed once on first generation.
+2. In the niri server's `agents/<id>.yaml`, configure the agent as standalone so the server awaits a dial-in instead of starting it. The YAML section and value are still named `worker.mode: remote` for compatibility:
+
+   ```yaml
+   worker:
+     mode: remote
+   ```
+
+3. On the other machine, put the ticket and token in the standalone agent's own YAML and start it:
+
+   ```yaml
+   server:
+     iroh:
+       ticket: <ticket printed by the server>
+       token: <token from data/control/iroh.token>
+   ```
+
+   ```sh
+   npm run start:agent:standalone -- --config /path/to/agent.yaml
+   ```
+
+The standalone agent dials the niri server, authenticates with the token, and keeps the connection open (reconnecting with backoff). The niri server exposes the live connection as a loopback tunnel, so all agent traffic — including the event stream — is ordinary HTTP over the encrypted iroh connection. When the agent disconnects, its registration is removed so requests never route to a stale tunnel port.
+
+Managed agents started by the niri server keep using loopback HTTP and need no iroh configuration.
 
 ## Agent YAML specification
 

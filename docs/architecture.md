@@ -5,14 +5,18 @@
 **niri runs agents.** The niri server reads `agents/*.yaml` and starts one **agent runtime** for each configured agent. Each runtime is the agent's living process: it owns the model loop, memory, soul, Discord connection, and triggers. Each agent is attached to one **tool host**, where shell and file operations run.
 
 ```
-niri server
-  ├─ agent: mira
-  │    ├─ home: durable memory and state
-  │    └─ tool host: mira's macbook
-  └─ agent: nova
-       ├─ home: durable memory and state
-       └─ tool host: embedded
+one niri machine
+  └─ niri server
+       ├─ agent 1 ─ tool host 1 ─ sandbox 1
+       ├─ agent 2 ─ tool host 2 ─ sandbox 2
+       ├─ agent 3 ─ tool host 3 ─ sandbox 3
+       ├─ agent 4 ─ tool host 4 ─ sandbox 4
+       └─ agent 5 ─ tool host 5 ─ sandbox 5
 ```
+
+This is the recommended topology: one niri server manages several agent runtimes, while every agent keeps its own durable home and dedicated tool environment. The agents can all run on the server machine; each tool host can live in a disposable microVM, a persistent VM, a container, or a dedicated physical machine according to that agent's isolation and persistence needs.
+
+Niri enforces unique agent homes and gives each agent one configured tool-host connection. It does not provision sandboxes or treat `workspace` as a filesystem security boundary: an embedded host tool can still reach paths outside its starting directory. Isolation and persistence belong to the environment where the user runs that agent's tool host.
 
 The three canonical component names are:
 
@@ -25,9 +29,9 @@ Keep these independent from placement and transport:
 - An agent is **managed** when the niri server starts and supervises it, or **standalone** when it starts elsewhere and dials in. The current YAML values are `worker.mode: local` and `worker.mode: remote`.
 - A tool host is **embedded** when it runs inside the agent runtime (`client: local`), or separate when reached through HTTP or iroh.
 - A separate tool host may run on the niri server machine or another machine.
-- Docker is an **execution backend** inside a tool host, not another kind of connection or component.
+- A microVM, VM, container, or physical machine is the tool host's **execution environment**, not another niri component.
 
-Example live setup: the niri server starts the managed agents `lyra` and `mira`. Mira uses an embedded tool host. Lyra's tool host runs on a laptop and connects over iroh. A standalone agent would have the same internal responsibilities; only its placement and supervision differ.
+For example, the niri server may start the managed agents `lyra` and `mira`. Mira's tool host can run in a disposable microVM, while Lyra's can run on a persistent laptop and connect over iroh. A standalone agent has the same internal responsibilities; only its placement and supervision differ.
 
 ---
 
