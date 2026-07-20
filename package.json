@@ -16,10 +16,14 @@
   "scripts": {
     "start": "npm run start --workspace @niri/server --",
     "start:server": "npm run start --workspace @niri/server --",
+    "start:agent": "npm run start --workspace @niri/runtime --",
     "start:worker": "npm run start --workspace @niri/runtime --",
+    "start:tool-host": "npm run start --workspace @niri/tool-client --",
     "start:client": "npm run start --workspace @niri/tool-client --",
     "dev": "npm run dev --workspace @niri/server",
+    "dev:agent": "npm run dev --workspace @niri/runtime",
     "dev:worker": "npm run dev --workspace @niri/runtime",
+    "dev:tool-host": "npm run dev --workspace @niri/tool-client",
     "dev:client": "npm run dev --workspace @niri/tool-client",
     "pretest": "npm run build:packages",
     "test": "npm run test --workspace @mira/harness-protocol && npm run test --workspace @mira/harness-core && npm run test --workspace @mira/harness-server && npm run test --workspace @niri/chat-client && npm run test --workspace @niri/runtime && npm run test --workspace @mira/harness-client-node && npm run test --workspace @niri/server && npm run test --workspace @niri/agent-config && npm run test --workspace @niri/iroh-transport",
@@ -40,6 +44,7 @@
     "postinstall": "node packages/harness-client-node/postinstall.mjs",
     "build:agent-config": "npm run build --workspace @niri/agent-config",
     "build:iroh-transport": "npm run build --workspace @niri/iroh-transport",
+    "start:agent:standalone": "npm run start:standalone --workspace @niri/runtime --",
     "start:worker:standalone": "npm run start:standalone --workspace @niri/runtime --"
   },
   "keywords": [],

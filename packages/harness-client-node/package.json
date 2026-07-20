@@ -9,6 +9,7 @@
     "postinstall.mjs"
   ],
   "bin": {
+    "harness-tool-host": "./dist/cli.js",
     "harness-tool-client": "./dist/cli.js"
   },
   "exports": {

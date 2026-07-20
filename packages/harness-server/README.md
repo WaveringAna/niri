@@ -1,6 +1,6 @@
 # @mira/harness-server
 
-Direct HTTP caller for a remote harness tool client.
+Direct HTTP caller for a remote harness tool host. The exported `HttpToolClient` name is retained for API compatibility.
 
 ```ts
 import { HttpToolClient } from "@mira/harness-server"

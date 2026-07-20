@@ -79,6 +79,7 @@
       "name": "@mira/harness-client-node",
       "version": "0.1.0",
       "bin": {
+        "harness-tool-host": "./dist/cli.js",
         "harness-tool-client": "./dist/cli.js",
       },
       "dependencies": {

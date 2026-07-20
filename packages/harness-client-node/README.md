@@ -1,14 +1,16 @@
 # @mira/harness-client-node
 
-A persistent Bash plus local read, edit, and image tools behind a tiny HTTP server.
+A Node.js tool host providing persistent Bash plus local read, edit, and image tools behind a tiny HTTP server. Package, binary, and type names retain their original `client` wording for compatibility.
 
 Start the bundled executable:
 
 ```sh
-harness-tool-client
+harness-tool-host
 ```
 
-It listens on `0.0.0.0:3002` and uses the client's home directory as its workspace. Optional flags are `--host`, `--port`, `--workspace`, and `--capabilities`.
+The previous `harness-tool-client` binary remains as an alias.
+
+It listens on `0.0.0.0:3002` and uses the tool-host user's home directory as its workspace. Optional flags are `--host`, `--port`, `--workspace`, and `--capabilities`.
 
 ```ts
 import { NodeToolHost, ToolClientHttpServer } from "@mira/harness-client-node"

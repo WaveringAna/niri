@@ -1,6 +1,6 @@
 # Niri
 
-**niri is a harness.** It reads `agents/*.yaml` and spawns a worker for each agent that handles model loop, memory, soul, and Discord. Each agent operates one **box** (a tool client) which can be the server itself, another machine, or shell-inside-docker on either.
+**niri runs agents.** The niri server reads `agents/*.yaml` and starts one agent runtime for each configured agent. Each agent runtime owns the agent's model loop, memory, soul, Discord connection, and triggers. Shell and file operations run through the agent's attached **tool host**, which may be embedded in the runtime or connected as a separate process.
 
 System architecture: [docs/architecture.md](docs/architecture.md)
 
@@ -14,30 +14,29 @@ chmod 600 agents/mira.yaml
 npm start
 ```
 
-The server reads every `.yaml` and `.yml` file in `agents/`. Files ending in `.example.yaml` or `.example.yml` are skipped.
+The niri server reads every `.yaml` and `.yml` file in `agents/`. Files ending in `.example.yaml` or `.example.yml` are skipped.
 
-## Run a client
+## Run a tool host
 
 ```sh
-cd apps/client
-npm run start
+npm run start:tool-host
 ```
 
-The client listens on `0.0.0.0:3002` and runs `shell`, `read_file`, `edit_file`, and `image_tool` from the client's home directory. It also exposes a chunked `read_blob` operation, which the worker uses internally to attach client-side files to Discord messages.
+The tool host listens on `0.0.0.0:3002` and runs `shell`, `read_file`, `edit_file`, and `image_tool` from its workspace root. It also exposes a chunked `read_blob` operation, which the agent runtime uses internally to attach tool-host files to Discord messages.
 
-## Remote workers over iroh
+## Standalone agents over iroh
 
-Workers do not have to run on the same host as the control plane. The server binds an [iroh](https://github.com/n0-computer/iroh) endpoint (QUIC with NAT traversal) on boot and prints an **EndpointTicket**; a worker anywhere can dial in over that ticket — no open ports, VPN, or port forwarding on either side.
+Agent runtimes do not have to run on the same machine as the niri server. The niri server binds an [iroh](https://github.com/n0-computer/iroh) endpoint (QUIC with NAT traversal) on boot and prints an **EndpointTicket**; a standalone agent anywhere can dial in over that ticket — no open ports, VPN, or port forwarding on either side.
 
-1. Start the server. On first boot it generates `data/control/iroh.secret` (endpoint identity) and `data/control/iroh.token` (shared dial-in token, mode `0600`) and logs the ticket; the token is printed once on first generation.
-2. In the server's `agents/<id>.yaml`, mark the agent as remote so the control plane awaits a dial-in instead of spawning a worker:
+1. Start the niri server. On first boot it generates `data/control/iroh.secret` (endpoint identity) and `data/control/iroh.token` (shared dial-in token, mode `0600`) and logs the ticket; the token is printed once on first generation.
+2. In the niri server's `agents/<id>.yaml`, configure the agent as standalone so the server awaits a dial-in instead of starting it. The YAML section and value are still named `worker.mode: remote` for compatibility:
 
    ```yaml
    worker:
      mode: remote
    ```
 
-3. On the remote machine, put the ticket and token in the worker's own agent yaml and run the standalone worker:
+3. On the other machine, put the ticket and token in the standalone agent's own YAML and start it:
 
    ```yaml
    server:
@@ -47,37 +46,36 @@ Workers do not have to run on the same host as the control plane. The server bin
    ```
 
    ```sh
-   npm run start:worker:standalone -- --config /path/to/agent.yaml
+   npm run start:agent:standalone -- --config /path/to/agent.yaml
    ```
 
-The worker dials the server, authenticates with the token, and keeps the connection open (reconnecting with backoff). The control plane exposes each live connection as a loopback tunnel, so all worker traffic — including the event stream — is ordinary HTTP over the encrypted iroh connection. When a worker disconnects, its registration is removed so requests never route to a stale tunnel port.
+The standalone agent dials the niri server, authenticates with the token, and keeps the connection open (reconnecting with backoff). The niri server exposes the live connection as a loopback tunnel, so all agent traffic — including the event stream — is ordinary HTTP over the encrypted iroh connection. When the agent disconnects, its registration is removed so requests never route to a stale tunnel port.
 
-Local supervised workers keep using loopback HTTP and need no iroh configuration.
+Managed agents started by the niri server keep using loopback HTTP and need no iroh configuration.
 
-## Remote tool clients over iroh
+## Remote tool hosts over iroh
 
-The same link works for tool clients — this is how a client on a laptop or another network connects without listening on a public port. On the server, set the agent's client to iroh:
+The same transport works for tool hosts — this is how a laptop or another machine connects without listening on a public port. The YAML field is still named `client` for compatibility; set it to `iroh`:
 
 ```yaml
 client: iroh
 ```
 
-The control plane then keeps an always-on loopback tunnel for that agent and points the worker's client URL at it; until the client dials in, the worker sees an unreachable endpoint (identical to an offline client box). `client: iroh` requires a local worker — the tunnel lives on the control-plane host's loopback, which a remote worker cannot reach.
+The niri server then keeps an always-on loopback tunnel for that agent and points the agent runtime at it. Until the tool host dials in, tool calls are unavailable. `client: iroh` requires a managed agent runtime because the tunnel lives on the niri server machine's loopback; a standalone agent must use an embedded tool host or an HTTP URL it can reach.
 
-On the client machine:
+On the tool-host machine:
 
 ```sh
-cd apps/client
-npm run start -- --agent <agent-id> \
+npm run start:tool-host -- --agent <agent-id> \
   --iroh-ticket <ticket printed by the server> \
   --iroh-token <token from data/control/iroh.token>
 ```
 
-(Equivalently `NIRI_SERVER_IROH_TICKET`, `NIRI_SERVER_IROH_TOKEN`, and `NIRI_AGENT_ID` in the environment.) The client binds loopback only, dials out, and keeps the connection open with backoff. All tool traffic is encrypted and token-authenticated; `client: http://...` remains available for trusted networks, and `client: local` for same-host workers.
+(Equivalently `NIRI_SERVER_IROH_TICKET`, `NIRI_SERVER_IROH_TOKEN`, and `NIRI_AGENT_ID` in the environment.) The tool host binds loopback only, dials out, and keeps the connection open with backoff. All tool traffic is encrypted and token-authenticated. `client: http://...` remains available for trusted networks, while `client: local` embeds the tool host inside the agent runtime.
 
 ## Agent memory
 
-Memory lives on the server under the agent's `home`, separate from any attached client:
+Memory lives with the agent runtime under the agent's `home`, separate from any attached tool host:
 
 | Path | Contents |
 | --- | --- |
@@ -88,7 +86,7 @@ Memory lives on the server under the agent's `home`, separate from any attached 
 
 For example, an agent with `home: /home/niri` keeps long-term memories in `/home/niri/memories`.
 
-For routine maintenance, ask the agent to inspect, organize, or repair their own memories using the memory tools. Treat `soul.md` and `memories/` like a private diary: do not read or change them unless the agent asks; it's weird if you do. For backup or recovery, stop the worker and preserve the entire agent home rather than copying only the Markdown files.
+For routine maintenance, ask the agent to inspect, organize, or repair their own memories using the memory tools. Treat `soul.md` and `memories/` like a private diary: do not read or change them unless the agent asks; it's weird if you do. For backup or recovery, stop the agent runtime and preserve the entire agent home rather than copying only the Markdown files.
 
 ## Agent YAML specification
 
@@ -100,16 +98,16 @@ For routine maintenance, ask the agent to inspect, organize, or repair their own
 | `name` | string | no | `id` |
 | `port` | integer `1..65535` | no | control port plus the file's sorted position |
 | `home` | path | no | `data/agents/<id>` |
-| `client` | `local`, `iroh`, or an HTTP(S) URL | yes | — |
-| `workspace` | path | no | repository root; applies to `client: local` |
+| `client` | `local`, `iroh`, or an HTTP(S) URL | yes | —; compatibility name for the tool-host connection |
+| `workspace` | path | no | repository root; applies to an embedded tool host (`client: local`) |
 | `model` | object | no | — |
 | `fallback` | object | no | — |
 | `embedding` | object | no | — |
 | `summary` | object | no | — |
 | `discord` | object | no | — |
 | `mcp` | object keyed by MCP server name | no | `{}` |
-| `worker` | object | no | — |
-| `server` | object | no | — |
+| `worker` | object | no | —; compatibility name for agent-runtime placement |
+| `server` | object | no | —; niri-server connection for a standalone agent |
 | `settings` | object | no | `{}` |
 
 Relative `home` and `workspace` paths resolve from the repository root.
@@ -154,22 +152,22 @@ Relative `home` and `workspace` paths resolve from the repository root.
 
 Runtime tuning belongs under the first-party `runtime` section. It contains `imageMaxBytes`, tool-choice and fallback-limit options, context-compaction thresholds, state migration, loop limits, and `antigravity`/`codex` bridge settings. Discord batching, gateway tracing, and cooldowns are first-party fields under `discord`.
 
-### `worker`
+### `worker` (agent-runtime placement)
 
 | Field | Type |
 | --- | --- |
-| `mode` | `local` (default) — the control plane spawns and supervises the worker; `remote` — the control plane waits for the worker to dial in over iroh |
+| `mode` | `local` (default) — the niri server starts and supervises the agent; `remote` — a standalone agent starts elsewhere and dials into the niri server over iroh |
 
 ### `server`
 
 | Field | Type |
 | --- | --- |
-| `iroh.ticket` | EndpointTicket of the control plane, printed at server boot |
+| `iroh.ticket` | EndpointTicket of the niri server, printed at server boot |
 | `iroh.token` | shared dial-in token from `data/control/iroh.token` |
 
 ### `mcp`
 
-Each entry connects from that agent's server-side worker and registers the remote server's tools. Tools are namespaced as `<server>__<tool>` so independently configured MCP servers cannot overwrite native or client tools. A configured MCP connection must initialize and list its tools before the worker becomes healthy.
+Each entry connects from the agent runtime and registers the MCP server's tools. Tools are namespaced as `<server>__<tool>` so independently configured MCP servers cannot overwrite native or tool-host tools. A configured MCP connection must initialize and list its tools before the agent becomes healthy.
 
 HTTP/streamable-HTTP transport:
 
@@ -198,15 +196,15 @@ mcp:
       GITHUB_PERSONAL_ACCESS_TOKEN: replace-me
 ```
 
-Command entries run on the server, not on the attached client. `args` must be a string array; `env` is merged over a minimal safe process environment rather than inheriting the agent's model or Discord credentials; and `cwd` is optional. Each entry must set exactly one of `url` or `command`.
+Command entries run alongside the agent runtime, not on the attached tool host. `args` must be a string array; `env` is merged over a minimal safe process environment rather than inheriting the agent's model or Discord credentials; and `cwd` is optional. Each entry must set exactly one of `url` or `command`.
 
 ### `settings`
 
 `settings` accepts string, number, and boolean values keyed by uppercase runtime setting names for uncategorized compatibility overrides. New configuration should use the first-party fields above.
 
-Agent ids, worker ports, canonical home paths, Discord tokens, and enabled bridge ports must be unique.
+Agent ids, agent-runtime ports, canonical home paths, Discord tokens, and enabled bridge ports must be unique.
 
-Agent YAML files contain credentials and should use mode `0600`. Tool-client endpoints should stay on loopback or a trusted private network.
+Agent YAML files contain credentials and should use mode `0600`. Tool-host endpoints should stay on loopback or a trusted private network.
 
 ### Named webhooks
 
