@@ -1,5 +1,7 @@
 # Niri
 
+**niri is a harness.** It reads `agents/*.yaml` and **spawns one agent process per agent** — each agent process *is* the agent (model loop, memory, soul, Discord). Each agent operates one **box** (a tool client): the server itself, another machine, or shell-inside-docker on either.
+
 System architecture: [docs/architecture.md](docs/architecture.md)
 
 ## Run the server

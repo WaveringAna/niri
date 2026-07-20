@@ -1,77 +1,73 @@
 # Niri architecture
 
-Niri runs long-lived personal agents. Each agent has a soul (`soul.md`), a Markdown long-term memory, a Discord presence, and a set of tools. The system is split into three kinds of processes so the heavy/unsafe parts can live on different machines.
+## The mental model
 
-## Processes
+**niri is a harness.** It reads `agents/*.yaml` and **spawns one agent process per agent**. Each agent process *is* the agent — its model loop, memory, soul, and Discord connection. Each agent operates one **box**: the place its tools run.
 
 ```
-                ┌─────────────────────────────────────────────────┐
-                │ control plane  (apps/server)                    │
-                │  - supervisor: spawns local agent workers       │
-                │  - control REST API + SSE + web UI              │
-                │  - webhook ingress (HMAC)                       │
-                │  - iroh acceptor (remote workers + tool clients)│
-                └───────▲───────────────────────▲─────────────────┘
-        loopback HTTP   │                       │   iroh (QUIC, NAT-traversing)
-   or iroh tunnel       │                       │   dial-out + token handshake
-                ┌───────┴────────┐      ┌───────┴────────┐
-                │ agent worker   │      │ tool client    │
-                │ (niri-runtime) │      │ (apps/client)  │
-                │  - agent loop  │      │  - shell       │
-                │  - memory/soul │      │  - read_file   │
-                │  - discord gw  │      │  - edit_file   │
-                │  - MCP, bridges│      │  - image_tool  │
-                │  - scheduler   │      │  - read_blob   │
-                └───────▲────────┘      └────────────────┘
-                        │  HTTP tool calls (loopback or iroh tunnel)
-                        └────────────────────────────────
+niri harness
+  └─ spawns one agent process per agent
+       └─ each agent talks to one box (tool client)
 ```
+
+A **box** is the tool-execution boundary — where `shell`, `read_file`, `edit_file`, `image_tool`, and `read_blob` actually run. Three forms:
+
+- **the same server** (`client: local`) — tools run inside the agent's own process
+- **another machine** (`client: http://…` or `client: iroh`) — a tool client on your laptop or any other host
+- **a docker container** — not a separate location, but an *execution backend inside the tool client*: wherever the client runs (including the harness host), it can run shell commands inside a container instead of directly on the host
+
+Example live setup: the harness on a server spawns `lyra` and `mira`; mira's box is the server itself, lyra's box is a laptop on the LAN connected over iroh.
+
+Agents can also live off the harness host: `worker.mode: remote` makes the harness wait for the agent process to **dial in** over iroh instead of spawning it. Same model — the agent process just boots somewhere else.
+
+---
+
+## Implementation details
 
 ### Control plane (`apps/server`)
 
-One process. Loads `agents/*.yaml`, spawns a worker per `worker.mode: local` agent (via the supervisor, with health checks and restarts), and exposes the control API (`/agents/*`, `/ui`, webhooks). Worker registrations live in a SQLite control DB (`data/control/control.db`), which also mirrors worker events for the UI.
+One process. Spawns and supervises the agent processes (health checks, restarts), keeps the agent registry in `data/control/control.db`, mirrors agent events for the web UI, verifies webhook signatures, and runs the iroh acceptor. It never talks to a model; it only coordinates.
 
-### Agent worker (`packages/niri-runtime`)
+### Agent process (`packages/niri-runtime`)
 
-One process per agent. Owns everything identity-shaped: the model loop, compaction (LCM summaries with provenance), memory (`<home>/memories/` + `niri.db` FTS/vector index), `soul.md`, the Discord gateway connection, MCP servers, the codex/antigravity bridges, and the schedule dispatcher. The worker listens on loopback HTTP (`/awp/*`, `/trigger/*`, `/discord/*`, `/metrics*`); the control plane talks to it there (or over an iroh tunnel for remote workers).
+One process per agent — the agent itself. Owns:
+
+- the **model loop**: turns, tools, compaction (LCM summaries with provenance)
+- **memory and soul**: `<home>/memories/`, `<home>/soul.md`, the `niri.db` search index
+- **Discord**: gateway connection, inbox, batching, cooldowns
+- **triggers**: cron heartbeat, `schedule` reminders, bsky, webhooks, chat
+- **MCP servers** and the codex/antigravity bridges
+- its **box link**: how it reaches the tool client
+
+Everything durable about the agent lives in its home directory (`soul.md`, `memories/`, `state/`, `niri.db`, `metrics.db`).
 
 ### Tool client (`apps/client`, `packages/harness-client-node`)
 
-Runs on any machine the agent should touch. Executes `shell`, `read_file`, `edit_file`, `image_tool`, and the internal `read_blob` (chunked, hash-verified binary reads used for Discord attachments). The **worker** initiates tool calls; the client only answers them.
+The box. Answers tool calls from its agent; never initiates anything. Runs `shell`, `read_file`, `edit_file`, `image_tool`, and the internal `read_blob` (chunked, hash-verified binary reads used for Discord attachments). With the docker execution backend enabled, shell commands run inside a container rather than on the client host.
 
-## Links
+### How an agent reaches its box
 
-### Control plane ↔ worker
+| `client:` in the agent yaml | how it connects | when to use |
+| --- | --- | --- |
+| `local` | in-process, no socket | the agent operates the harness host itself |
+| `http://host:port` | the box listens; the agent dials it | trusted networks only — unauthenticated plain HTTP |
+| `iroh` | the box **dials out** to the control plane; the agent talks to a loopback tunnel port | the default for real machines — NAT-proof, encrypted, token-authenticated |
 
-- **Local workers** (default): supervisor spawns the worker on the same host; control plane reaches it on `http://127.0.0.1:<port>`.
-- **Remote workers** (`worker.mode: remote` + worker-side `server.iroh.{ticket,token}`): the worker dials the control plane's iroh endpoint. The acceptor verifies a token handshake, then exposes the connection as a loopback TCP tunnel (one BiStream per socket, pumped to the worker's loopback Fastify). The control plane keeps using plain HTTP — including SSE — through the tunnel. Disconnects remove the registration so nothing routes to a stale port.
+With `client: iroh`, the control plane keeps an always-on loopback tunnel for the agent (`127.0.0.1:<port>` on the harness host). When the box dials in and proves the shared token, its connection is attached to that tunnel. Until then the agent sees an unreachable box, exactly like a powered-off machine. `client: iroh` requires a local agent process — the tunnel lives on the harness host's loopback, which a remote agent process cannot reach (a remote agent should use a box on its own machine or a URL it can reach).
 
-### Worker ↔ tool client
+### iroh, the shared transport
 
-The worker calls the client over HTTP (`NIRI_CLIENT`):
+The control plane binds one iroh endpoint (QUIC with NAT traversal) and accepts two dial-in roles over the same ticket + token:
 
-- **`client: local`** — in-process `NodeToolHost`, no socket at all.
-- **`client: http://host:port`** — the client listens; the worker dials it. Simple, but needs the client machine to be reachable (open port, routable address) and the traffic is unauthenticated HTTP — keep it to trusted networks.
-- **`client: iroh`** — the client dials **out** to the control plane with the same ticket/token handshake (`role: "client"`). The control plane keeps an always-on loopback tunnel at a deterministic port per agent and attaches the client's connection when it arrives; the worker's `NIRI_CLIENT` simply points at that loopback port. Until the client connects, the worker sees an unreachable endpoint — identical to an offline client box. This is the NAT-proof, encrypted, token-authenticated path and the recommended way to run a client on a laptop or another network. Requires a **local worker** (`worker.mode: local`): the tunnel lives on the control-plane host's loopback, which a remote worker cannot reach.
+- `role: "client"` — a tool client (box) dialing out. The control plane attaches the connection to that agent's pre-created tunnel.
+- `role: "worker"` — a remote agent process. The control plane exposes the connection as a loopback tunnel; all control traffic (status, events/SSE, triggers) is ordinary HTTP over it.
 
-Both iroh links share one acceptor on the control plane (ALPN `niri/awp/0`), one endpoint identity (`data/control/iroh.secret`), and one dial-in token (`data/control/iroh.token`). The handshake distinguishes `role: "worker"` from `role: "client"`; the success ack is sent only after registration completes, so a connected peer is immediately usable.
+Tunnels are raw byte pipes: each accepted loopback TCP socket opens one QUIC BiStream, pumped end to end. Handshakes carry `{role, agentId, instanceId, token}` and are acked only after registration completes, so a connected peer is immediately usable. Reconnects replace connections identity-safely; disconnects remove registrations and drain sockets so nothing routes to a stale or replaced peer. Identity files: `data/control/iroh.secret` (endpoint) and `data/control/iroh.token` (shared dial-in token, printed once on first boot).
 
-## Agent home
-
-Everything durable about an agent lives in its home directory (server-side for managed workers):
-
-| Path | Contents |
-| --- | --- |
-| `soul.md` | the agent's self-authored identity |
-| `memories/` | long-term Markdown memories (core notes, journals, people) |
-| `state/` | session snapshots, rest snapshots, iroh identity |
-| `niri.db` | memory index, discord store, schedules, worker events |
-| `metrics.db` | token usage, latencies, compaction metrics |
-
-## Turn flow
+### Turn flow
 
 1. A trigger arrives: discord gateway event, cron heartbeat, a fired `schedule` reminder, bsky, webhook, chat, or the control API.
-2. The worker's loop wakes (or enqueues into the running session), builds context (bootstrap + LCM summaries + passive memory recall), and runs model turns.
-3. The model calls exactly one tool per turn: memory/soul tools, discord tools, client tools, MCP tools, `schedule`, or loop control (`wait`, `wait_then_continue`, `rest`).
-4. Events stream to the outbox (`worker_events` in `niri.db`), mirrored by the control plane for the UI.
+2. The agent process wakes (or enqueues into its running session), builds context (bootstrap + LCM summaries + passive memory recall), and runs model turns.
+3. The model calls exactly one tool per turn: memory/soul tools, discord tools, box tools, MCP tools, `schedule`, or loop control (`wait`, `wait_then_continue`, `rest`).
+4. Events stream to the agent's outbox (`worker_events` in `niri.db`), mirrored by the control plane for the UI.
 5. `rest` ends the session with a durable snapshot; the next trigger starts a fresh one with a rest summary.
