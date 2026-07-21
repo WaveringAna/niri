@@ -259,7 +259,7 @@ test("setConnection drains keep-alive sockets so they re-dial the replacement", 
     req.write("GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n")
   })
   const chunks: Buffer[] = []
-  req.on("data", (chunk) => chunks.push(chunk))
+  req.on("data", (chunk: Buffer) => chunks.push(chunk))
   req.on("end", () => resolveBody(Buffer.concat(chunks).toString("utf8")))
   req.on("error", rejectBody)
   assert.match(await body, /backend-B/)
