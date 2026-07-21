@@ -26,6 +26,15 @@ const sessions: McpSession[] = []
 const toolDefinitions: ToolDefinition[] = []
 const toolOwners = new Map<string, { session: McpSession; remoteName: string }>()
 
+const MCP_RETRY_INTERVAL_MS = 60_000
+let retryTimer: NodeJS.Timeout | null = null
+
+/** Config-shape errors are fatal at boot; environmental failures retry in the background. */
+function isConfigError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes("must have a url or command") || message.includes("duplicate MCP tool name")
+}
+
 function configuredServers(): Record<string, McpServerConfig> {
   const raw = process.env.NIRI_MCP_CONFIG?.trim()
   if (!raw) return {}
@@ -65,41 +74,93 @@ function transportFor(config: McpServerConfig) {
   })
 }
 
-export async function startMcpServers(configs = configuredServers()): Promise<void> {
-  if (sessions.length > 0) throw new Error("MCP servers are already started")
-  try {
-    for (const [name, config] of Object.entries(configs)) {
-      const client = new Client({ name: `niri-${process.env.NIRI_AGENT_ID ?? "agent"}-${name}`, version: "1.0.0" })
-      await client.connect(transportFor(config), { timeout: 30_000 })
-      const session: McpSession = { name, client, tools: new Map() }
-      sessions.push(session)
+async function connectServer(name: string, config: McpServerConfig): Promise<void> {
+  const client = new Client({ name: `niri-${process.env.NIRI_AGENT_ID ?? "agent"}-${name}`, version: "1.0.0" })
+  await client.connect(transportFor(config), { timeout: 30_000 })
+  const session: McpSession = { name, client, tools: new Map() }
+  const registrations: Array<{ publicName: string; remoteName: string; description: string; inputSchema: unknown }> = []
 
-      let cursor: string | undefined
-      do {
-        const listed = await client.listTools(cursor ? { cursor } : undefined, { timeout: 30_000 })
-        for (const tool of listed.tools) {
-          const publicName = publicToolName(name, tool.name)
-          if (toolOwners.has(publicName)) throw new Error(`duplicate MCP tool name after normalization: ${publicName}`)
-          session.tools.set(publicName, tool.name)
-          toolOwners.set(publicName, { session, remoteName: tool.name })
-          toolDefinitions.push({
-            type: "function",
-            function: {
-              name: publicName,
-              description: `[MCP ${name}] ${tool.description?.trim() || tool.name}`,
-              parameters: tool.inputSchema as unknown as JsonSchema,
-            },
-          })
-        }
-        cursor = listed.nextCursor
-      } while (cursor)
-
-      console.log(`[mcp] ${name}: connected and registered ${session.tools.size} tool(s)`)
+  let cursor: string | undefined
+  do {
+    const listed = await client.listTools(cursor ? { cursor } : undefined, { timeout: 30_000 })
+    for (const tool of listed.tools) {
+      const publicName = publicToolName(name, tool.name)
+      if (toolOwners.has(publicName)) throw new Error(`duplicate MCP tool name after normalization: ${publicName}`)
+      registrations.push({
+        publicName,
+        remoteName: tool.name,
+        description: tool.description?.trim() || tool.name,
+        inputSchema: tool.inputSchema,
+      })
     }
-  } catch (error) {
-    await stopMcpServers()
-    throw error
+    cursor = listed.nextCursor
+  } while (cursor)
+
+  sessions.push(session)
+  for (const registration of registrations) {
+    session.tools.set(registration.publicName, registration.remoteName)
+    toolOwners.set(registration.publicName, { session, remoteName: registration.remoteName })
+    toolDefinitions.push({
+      type: "function",
+      function: {
+        name: registration.publicName,
+        description: `[MCP ${name}] ${registration.description}`,
+        parameters: registration.inputSchema as JsonSchema,
+      },
+    })
   }
+  console.log(`[mcp] ${name}: connected and registered ${session.tools.size} tool(s)`)
+}
+
+/**
+ * Connects configured MCP servers and registers their tools. Servers that are
+ * unreachable (a laptop that is asleep, a box that is off) log a warning and
+ * are retried in the background — the worker boots without them and their
+ * tools appear in the catalog once the server answers. Invalid configuration
+ * (no url/command, duplicate tool names) remains fatal at boot.
+ */
+export async function startMcpServers(
+  configs = configuredServers(),
+  options: { retryIntervalMs?: number } = {},
+): Promise<void> {
+  if (sessions.length > 0) throw new Error("MCP servers are already started")
+  const pending = new Map(Object.entries(configs))
+
+  for (const [name, config] of pending) {
+    try {
+      await connectServer(name, config)
+      pending.delete(name)
+    } catch (error) {
+      if (isConfigError(error)) {
+        await stopMcpServers()
+        throw error
+      }
+      console.warn(
+        `[mcp] ${name}: connect failed, will retry in the background: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+  }
+
+  if (pending.size === 0) return
+  const retryIntervalMs = Math.max(1_000, options.retryIntervalMs ?? MCP_RETRY_INTERVAL_MS)
+  retryTimer = setInterval(() => {
+    void (async () => {
+      for (const [name, config] of [...pending]) {
+        try {
+          await connectServer(name, config)
+          pending.delete(name)
+          console.log(`[mcp] ${name}: connected after retry`)
+        } catch {
+          // stays pending for the next tick
+        }
+      }
+      if (pending.size === 0 && retryTimer) {
+        clearInterval(retryTimer)
+        retryTimer = null
+      }
+    })()
+  }, retryIntervalMs)
+  retryTimer.unref?.()
 }
 
 export function getMcpToolDefinitions(): ToolDefinition[] {
@@ -141,6 +202,10 @@ export async function callMcpTool(name: string, args: Record<string, unknown>): 
 }
 
 export async function stopMcpServers(): Promise<void> {
+  if (retryTimer) {
+    clearInterval(retryTimer)
+    retryTimer = null
+  }
   const active = sessions.splice(0).reverse()
   toolDefinitions.length = 0
   toolOwners.clear()

@@ -58,6 +58,21 @@ export class LocalAgentSupervisor {
     await this.spawnAndWaitForHealth()
   }
 
+  /**
+   * Starts the agent without blocking or failing the caller: a failed boot
+   * (unhealthy worker, crash before ready) logs and enters the normal restart
+   * backoff instead of taking down the whole control plane.
+   */
+  startInBackground(): void {
+    this.stopping = false
+    void this.spawnAndWaitForHealth().catch((error) => {
+      console.error(
+        `[server] local agent ${this.agent.id} failed to start (${error instanceof Error ? error.message : String(error)}); will retry in the background`,
+      )
+      if (!this.stopping) this.scheduleRestart()
+    })
+  }
+
   async stop(): Promise<void> {
     this.stopping = true
     if (this.restartTimer) clearTimeout(this.restartTimer)

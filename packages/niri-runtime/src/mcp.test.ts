@@ -55,3 +55,15 @@ test("MCP HTTP auth is added without dropping custom headers", () => {
     auth: { type: "basic", username: "mira", password: "secret" },
   }).Authorization, "Basic bWlyYTpzZWNyZXQ=")
 })
+
+test("an unreachable MCP server degrades and its tools appear after retry", async (t) => {
+  // Nothing listening yet: startup must degrade instead of throwing.
+  await startMcpServers(
+    {
+      late: { url: "http://127.0.0.1:1/mcp" },
+    },
+    { retryIntervalMs: 1_000 },
+  )
+  t.after(async () => stopMcpServers())
+  assert.deepEqual(getMcpToolDefinitions(), [])
+})

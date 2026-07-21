@@ -84,7 +84,9 @@ async function main(): Promise<void> {
 
   try {
     await server.listen({ port: controlPort, host: controlHost })
-    await Promise.all([...supervisors.values()].map((supervisor) => supervisor.start()))
+    // Agents boot independently: one agent failing its health check must not
+    // take down the control plane or its siblings.
+    for (const supervisor of supervisors.values()) supervisor.startInBackground()
   } catch (error) {
     await server.close().catch(() => {})
     await Promise.all([...supervisors.values()].map((supervisor) => supervisor.stop()))
