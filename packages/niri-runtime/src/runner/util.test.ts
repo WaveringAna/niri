@@ -454,3 +454,51 @@ test("summarizeConversationViaLLM injects the agent grounding context into the s
   assert.match(capturedSystemPrompt, /Felt curious all morning\./)
   assert.ok(capturedSystemPrompt.includes(`The agent (${AGENT_NAME})`))
 })
+
+test("summarizeConversationViaLLM does not truncate transcript message lines to 320 characters", async () => {
+  let capturedTranscript = ""
+  const summaryClient = {
+    chat: {
+      completions: {
+        create: async (params: { messages: OpenAI.Chat.ChatCompletionMessageParam[] }) => {
+          capturedTranscript = String(params.messages[1]?.content)
+          return {
+            choices: [
+              {
+                message: {
+                  content:
+                    "Thread: Full recollection\n- Preserved long emotional message completely without 320 character truncation.",
+                },
+              },
+            ],
+          }
+        },
+      },
+    },
+  } as unknown as OpenAI
+
+  // Create a 500-character message containing specific emotional texture near the end
+  const longEmotionalMessage =
+    "I felt a sudden wave of warmth when they mentioned that quiet evening by the lake. ".repeat(6) +
+    "SECRET_EMOTIONAL_TEXTURE_MARKER"
+
+  assert.ok(longEmotionalMessage.length > 320)
+
+  const messages: Message[] = [
+    { role: "system", content: "soul and core bootstrap" },
+    { role: "user", content: longEmotionalMessage },
+    { role: "assistant", content: "I felt it too. " + longEmotionalMessage },
+    { role: "user", content: "Another middle turn: " + longEmotionalMessage },
+    { role: "user", content: "recent raw turn 1" },
+    { role: "assistant", content: "recent raw turn 2" },
+  ]
+
+  const summarized = await summarizeConversationViaLLM(messages, summaryClient, "summary-model", {
+    recentMinKeep: 2,
+    recentMaxKeep: 2,
+  })
+
+  assert.ok(summarized)
+  assert.ok(capturedTranscript.includes("SECRET_EMOTIONAL_TEXTURE_MARKER"))
+  assert.ok(!capturedTranscript.includes("..."))
+})

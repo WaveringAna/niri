@@ -991,7 +991,6 @@ const CONTEXT_SUMMARY_HEADER = "[context summary v1]"
 const CONTEXT_SUMMARY_NOTE =
   "Compressed notes of older conversation turns. If anything conflicts, trust newer raw messages."
 const CONTEXT_SUMMARY_SEGMENTS_MARKER = "[segments]"
-const SUMMARY_LINE_MAX_CHARS = 320
 const SUMMARY_LINE_DEFAULT_EMPTY = "(no text)"
 const TOOL_ACK_RESULT = "(ok)"
 const WAIT_TOOL_RESULT = "Waiting for next event."
@@ -1170,13 +1169,13 @@ function summarizeMessageLine(message: Message): string | null {
     const parts: string[] = []
     if (text) parts.push(text)
     if (callDescs.length > 0) parts.push(`[${callDescs.join(" | ")}]`)
-    return `- assistant: ${truncateSummaryText(parts.join(" "), SUMMARY_LINE_MAX_CHARS)}`
+    return `- assistant: ${parts.join(" ")}`
   }
 
   if (role === "tool") {
     const compact = compactToolResult(rawContent)
     if (compact === null) return null
-    return `- tool: ${truncateSummaryText(compact, SUMMARY_LINE_MAX_CHARS)}`
+    return `- tool: ${compact}`
   }
 
   if (role === "user") {
@@ -1184,15 +1183,15 @@ function summarizeMessageLine(message: Message): string | null {
       ? compactDiscordBatch(rawContent)
       : normalizeSummaryText(rawContent)
     const safe = stripped || SUMMARY_LINE_DEFAULT_EMPTY
-    return `- user: ${truncateSummaryText(safe, SUMMARY_LINE_MAX_CHARS)}`
+    return `- user: ${safe}`
   }
 
   if (role === "system") {
-    const text = truncateSummaryText(normalizeSummaryText(rawContent), SUMMARY_LINE_MAX_CHARS) || SUMMARY_LINE_DEFAULT_EMPTY
+    const text = normalizeSummaryText(rawContent) || SUMMARY_LINE_DEFAULT_EMPTY
     return `- system: ${text}`
   }
 
-  const text = truncateSummaryText(normalizeSummaryText(rawContent), SUMMARY_LINE_MAX_CHARS) || SUMMARY_LINE_DEFAULT_EMPTY
+  const text = normalizeSummaryText(rawContent) || SUMMARY_LINE_DEFAULT_EMPTY
   return `- ${role || "message"}: ${text}`
 }
 
