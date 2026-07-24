@@ -68,3 +68,41 @@ test("discord server nicknames are preferred and rendered correctly", () => {
   assert.match(event.content, /@Ana Server Nick/)
   assert.match(event.content, /hey @Dawn Server Nick and @Nova Server Nick/)
 })
+
+test("generic file attachments are included for dms only", () => {
+  const attachment = {
+    id: "file-1",
+    url: "https://cdn.discordapp.com/attachments/file-1/report.pdf",
+    filename: "report.pdf",
+    content_type: "application/pdf",
+    size: 2048,
+  }
+  const dmEvent = fromDiscord({
+    message: {
+      id: "dm-1",
+      channel_id: "dm-channel",
+      channel_type: 1,
+      content: "here is the report",
+      author: { id: "789", username: "ana" },
+      attachments: [attachment],
+    },
+    is_dm: true,
+  })
+  assert.match(dmEvent.content, /files \(discord cdn links/)
+  assert.match(dmEvent.content, /report\.pdf/)
+  assert.match(dmEvent.content, /2048 bytes/)
+
+  const serverEvent = fromDiscord({
+    message: {
+      id: "server-1",
+      channel_id: "server-channel",
+      guild_id: "guild-1",
+      channel_type: 0,
+      content: "here is the report",
+      author: { id: "789", username: "ana" },
+      attachments: [attachment],
+    },
+  })
+  assert.doesNotMatch(serverEvent.content, /files \(discord cdn links/)
+  assert.doesNotMatch(serverEvent.content, /report\.pdf/)
+})

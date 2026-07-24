@@ -1,6 +1,12 @@
 import type { UserMessage } from "../types"
 import { getDb } from "../db"
-import { asObject, asString, extractImageAttachments, renderDiscordUserMentions } from "../discord/parse"
+import {
+  asObject,
+  asString,
+  extractFileAttachments,
+  extractImageAttachments,
+  renderDiscordUserMentions,
+} from "../discord/parse"
 import { getCachedPronouns } from "../discord/pronouns"
 
 function asIsoTimestamp(value: unknown, fallback: string): string {
@@ -90,6 +96,17 @@ function formatImageBlock(images: ReturnType<typeof extractImageAttachments>): s
   return `\n\nimages (discord cdn links — download with shell, then inspect with image_tool if useful):\n${lines.join("\n")}`
 }
 
+function formatFileBlock(files: ReturnType<typeof extractFileAttachments>): string {
+  if (files.length === 0) return ""
+  const lines = files.map((file) => {
+    const meta = [file.filename, file.contentType, file.size != null ? `${file.size} bytes` : null]
+      .filter(Boolean)
+      .join(", ")
+    return `- ${file.url}${meta ? ` (${meta})` : ""}`
+  })
+  return `\n\nfiles (discord cdn links — download with shell if useful):\n${lines.join("\n")}`
+}
+
 export function fromDiscord(body: unknown): UserMessage {
   const b = body as Record<string, unknown>
   const message = (typeof b.message === "object" && b.message
@@ -156,11 +173,12 @@ export function fromDiscord(body: unknown): UserMessage {
     : "This is a server channel message, not a DM. You may choose not to reply; only respond if useful."
   const replyLine = replyContextLine(message, b)
   const imageBlock = formatImageBlock(extractImageAttachments(body))
+  const fileBlock = isDm ? formatFileBlock(extractFileAttachments(body)) : ""
 
   return {
     source: "discord",
     triggeredAt,
-    content: `${header} @${authorName}${pronounsSuffix}\ncontext: ${location}\nmessage_id: ${messageId}\nsource_item_id: ${messageId}\ntimestamp: ${timestamp}${replyLine ? `\n${replyLine}` : ""}\naction: ${action}\n\n${content}${imageBlock}`,
+    content: `${header} @${authorName}${pronounsSuffix}\ncontext: ${location}\nmessage_id: ${messageId}\nsource_item_id: ${messageId}\ntimestamp: ${timestamp}${replyLine ? `\n${replyLine}` : ""}\naction: ${action}\n\n${content}${imageBlock}${fileBlock}`,
     raw: body,
   }
 }

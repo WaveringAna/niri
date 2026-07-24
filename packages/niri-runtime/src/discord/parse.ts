@@ -138,6 +138,13 @@ export type DiscordImageAttachment = {
   contentType: string | null
 }
 
+export type DiscordFileAttachment = {
+  url: string
+  filename: string | null
+  contentType: string | null
+  size: number | null
+}
+
 const IMAGE_EXTENSION_RE = /\.(png|jpe?g|gif|webp|bmp|heic|heif|tiff?|avif)$/i
 
 /**
@@ -197,6 +204,33 @@ export function extractImageAttachmentsFromRawJson(rawJson: string): DiscordImag
   } catch {
     return []
   }
+}
+
+/**
+ * Extracts non-image attachment CDN links from a Discord message object.
+ *
+ * Generic files are intentionally exposed to the agent only by the DM
+ * trigger. Server-channel messages retain the existing image-only behavior.
+ */
+export function extractFileAttachments(payload: unknown): DiscordFileAttachment[] {
+  const root = asObject(payload)
+  if (!root) return []
+  const message = asObject(root.message) ?? root
+  const attachments = Array.isArray(message.attachments) ? message.attachments : []
+  const out: DiscordFileAttachment[] = []
+  for (const entry of attachments) {
+    const attachment = asObject(entry)
+    if (!attachment || isImageAttachment(attachment)) continue
+    const url = asString(attachment.url) ?? asString(attachment.proxy_url)
+    if (!url) continue
+    out.push({
+      url,
+      filename: asString(attachment.filename),
+      contentType: asString(attachment.content_type),
+      size: asNumber(attachment.size),
+    })
+  }
+  return out
 }
 
 function userDisplayName(value: unknown): string | null {
