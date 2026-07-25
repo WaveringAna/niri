@@ -67,6 +67,39 @@ type Compaction = {
   summary?: string
 }
 
+type ContextSourceStats = {
+  messageCount: number
+  estimatedTokens: number
+  earliestAt: string | null
+  latestAt: string | null
+}
+
+type ContextDagSummary = {
+  content: string
+  method: string
+  createdAt: string
+  parentIds: string[]
+  parentSegments: Array<{ id: string; content: string; method: string; createdAt: string; depth: number }>
+  childIds: string[]
+  depth: number
+  provenanceNodeCount: number
+  directSources: ContextSourceStats
+  expandedSources: ContextSourceStats
+}
+
+type ContextDagNode = {
+  id: string
+  type: "summary"
+  summary: ContextDagSummary
+  expansion: { totalMessages: number; estimatedPages: number }
+}
+
+type ContextDagFrontier = {
+  id: string
+  depth: number
+  summary: ContextDagSummary | null
+}
+
 type WorkerEvent = {
   id: string
   agentId: string
@@ -116,7 +149,7 @@ type ChatLine = {
 const PANEL_COOKIE = "niri_control_panels"
 const NOTES_WIDTH_STORAGE_KEY = "niri_notes_width"
 const NOTES_WIDTH_MIN = 220
-const NOTES_WIDTH_MAX = 520
+const NOTES_WIDTH_MAX = 1_000
 
 function clampNotesWidth(value: number): number {
   return Math.min(NOTES_WIDTH_MAX, Math.max(NOTES_WIDTH_MIN, value))
@@ -704,9 +737,15 @@ export function App() {
   const [selectedDiscordChannel, setSelectedDiscordChannel] = useState<string | null>(null)
   const [discordMessages, setDiscordMessages] = useState<DiscordMessage[]>([])
   const [discordLoading, setDiscordLoading] = useState(false)
+  const [dagFrontier, setDagFrontier] = useState<ContextDagFrontier[]>([])
+  const [selectedDagId, setSelectedDagId] = useState<string | null>(null)
+  const [dagNode, setDagNode] = useState<ContextDagNode | null>(null)
+  const [dagLoading, setDagLoading] = useState(false)
   const [notesWidth, setNotesWidth] = useState(() => readNotesWidth())
   const resizeStart = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null)
   const streamRef = useRef<AbortController | null>(null)
+  const messagesRef = useRef<HTMLDivElement | null>(null)
+  const discordMessagesRef = useRef<HTMLDivElement | null>(null)
 
   const startNotesResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault()
@@ -758,6 +797,22 @@ export function App() {
 
   const chatLines = useMemo(() => linesFromEvents(events), [events])
 
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const element = messagesRef.current
+      if (element) element.scrollTop = element.scrollHeight
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [chatLines.length, selectedKey])
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const element = discordMessagesRef.current
+      if (element) element.scrollTop = element.scrollHeight
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [discordMessages.length, selectedDiscordChannel])
+
   const mergeEvents = useCallback((incoming: WorkerEvent[]) => {
     setEvents((prev) => {
       const byId = new Map(prev.map((event) => [event.id, event]))
@@ -801,7 +856,7 @@ export function App() {
     if (!selected) return
     setError("")
     try {
-      const [overviewData, eventData, discordData] = await Promise.all([
+      const [overviewData, eventData, discordData, dagData] = await Promise.all([
         requestJson<Overview>(urlFor(selected.panel, `/agents/${encodeURIComponent(selected.agent.id)}/overview`)),
         requestJson<{ events: WorkerEvent[] }>(
           urlFor(selected.panel, `/agents/${encodeURIComponent(selected.agent.id)}/events?tail=1&limit=1000&view=chat`),
@@ -809,10 +864,15 @@ export function App() {
         requestJson<{ channels: DiscordChannel[] }>(
           urlFor(selected.panel, `/agents/${encodeURIComponent(selected.agent.id)}/discord/channels`),
         ).catch(() => ({ channels: [] })),
+        requestJson<{ frontier: ContextDagFrontier[] }>(
+          urlFor(selected.panel, `/agents/${encodeURIComponent(selected.agent.id)}/context/dag`),
+        ).catch(() => ({ frontier: [] })),
       ])
       setOverview(overviewData)
       setEvents(eventData.events ?? [])
       setDiscordChannels(discordData.channels ?? [])
+      setDagFrontier(dagData.frontier ?? [])
+      setSelectedDagId((current) => current ?? dagData.frontier?.at(-1)?.id ?? null)
       setSelectedDiscordChannel((current) =>
         current && (discordData.channels ?? []).some((channel) => channel.channel_id === current)
           ? current
@@ -825,8 +885,28 @@ export function App() {
       setDiscordChannels([])
       setSelectedDiscordChannel(null)
       setDiscordMessages([])
+      setDagFrontier([])
+      setSelectedDagId(null)
+      setDagNode(null)
     }
   }, [selected])
+
+  useEffect(() => {
+    if (!selected || !selectedDagId) {
+      setDagNode(null)
+      return
+    }
+    setDagLoading(true)
+    void requestJson<{ node: ContextDagNode }>(
+      urlFor(
+        selected.panel,
+        `/agents/${encodeURIComponent(selected.agent.id)}/context/dag/${encodeURIComponent(selectedDagId)}`,
+      ),
+    )
+      .then((data) => setDagNode(data.node))
+      .catch(() => setDagNode(null))
+      .finally(() => setDagLoading(false))
+  }, [selected, selectedDagId])
 
   useEffect(() => {
     if (!selected || !selectedDiscordChannel) {
@@ -852,6 +932,11 @@ export function App() {
   useEffect(() => {
     void loadSelected()
   }, [loadSelected])
+
+  useEffect(() => {
+    setSelectedDagId(null)
+    setDagNode(null)
+  }, [selectedKey])
 
   useEffect(() => {
     if (!selected) return
@@ -1035,7 +1120,7 @@ export function App() {
         {error ? <p className="error-line">{error}</p> : null}
 
         <div className="chat-pane">
-          <div className="messages">
+          <div className="messages" ref={messagesRef}>
             {chatLines.length === 0 ? (
               <p className="empty">No mirrored history yet. Send a message or open the stream to start collecting it.</p>
             ) : (
@@ -1125,7 +1210,7 @@ export function App() {
               ))}
             </div>
             {selectedDiscordChannel ? (
-              <div className="discord-messages">
+              <div className="discord-messages" ref={discordMessagesRef}>
                 {discordLoading ? <p className="quiet">loading...</p> : null}
                 {!discordLoading && discordMessages.length === 0 ? <p className="quiet">no messages</p> : null}
                 {discordMessages.map((message) => (
@@ -1140,6 +1225,69 @@ export function App() {
               </div>
             ) : null}
           </div>
+        </section>
+
+        <section>
+          <h2>memory dag</h2>
+          {dagFrontier.length === 0 ? <p className="quiet">no active memory segments</p> : null}
+          <div className="dag-frontier" aria-label="active memory frontier">
+            {dagFrontier.map((item, index) => (
+              <button
+                key={item.id}
+                type="button"
+                className={item.id === selectedDagId ? "dag-node-button is-current" : "dag-node-button"}
+                onClick={() => setSelectedDagId(item.id)}
+              >
+                <span>{index + 1}</span>
+                <strong>{item.id.slice(4, 12)}</strong>
+                <small>depth {item.depth} · {formatTime(item.summary?.createdAt)}</small>
+              </button>
+            ))}
+          </div>
+          {dagLoading ? <p className="quiet">loading node...</p> : null}
+          {!dagLoading && dagNode ? (
+            <div className="dag-detail">
+              <header>
+                <div>
+                  <strong>{dagNode.id}</strong>
+                  <small>{dagNode.summary.method} · depth {dagNode.summary.depth}</small>
+                </div>
+                <time>{formatTime(dagNode.summary.createdAt)}</time>
+              </header>
+              <dl className="dag-stats">
+                <div><dt>direct</dt><dd>{formatNumber(dagNode.summary.directSources.messageCount)} messages</dd></div>
+                <div><dt>reachable</dt><dd>{formatNumber(dagNode.summary.expandedSources.messageCount)} messages</dd></div>
+                <div><dt>nodes</dt><dd>{formatNumber(dagNode.summary.provenanceNodeCount)}</dd></div>
+              </dl>
+              {dagNode.summary.parentSegments.length ? (
+                <div className="dag-links">
+                  <span>parents, oldest → newest</span>
+                  {dagNode.summary.parentSegments.map((parent, index) => (
+                    <button key={parent.id} type="button" onClick={() => setSelectedDagId(parent.id)}>
+                      <span>{index + 1}</span>
+                      <strong>{parent.id.slice(4, 12)}</strong>
+                      <small>depth {parent.depth}</small>
+                    </button>
+                  ))}
+                </div>
+              ) : <p className="dag-leaf">leaf node · raw messages directly beneath</p>}
+              {dagNode.summary.childIds.length ? (
+                <div className="dag-links">
+                  <span>used by</span>
+                  {dagNode.summary.childIds.map((childId) => (
+                    <button key={childId} type="button" onClick={() => setSelectedDagId(childId)}>
+                      <span>↑</span>
+                      <strong>{childId.slice(4, 12)}</strong>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <details>
+                <summary>read summary</summary>
+                <MarkdownBody text={dagNode.summary.content} />
+              </details>
+            </div>
+          ) : null}
         </section>
 
         <section>

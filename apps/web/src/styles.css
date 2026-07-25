@@ -137,6 +137,18 @@ h2 {
   background: transparent;
 }
 
+.notes-resizer::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  width: 5px;
+  height: 38px;
+  transform: translateY(-50%);
+  border-left: 1px solid #353535;
+  border-right: 1px solid #353535;
+}
+
 .notes-resizer:hover::after,
 .notes-resizer:focus-visible::after,
 .is-resizing-notes .notes-resizer::after {
@@ -774,6 +786,120 @@ dd {
 .compactions {
   display: grid;
   gap: 10px;
+}
+
+.dag-frontier {
+  display: grid;
+  gap: 6px;
+}
+
+.dag-node-button,
+.dag-links button {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  border: 0;
+  border-left: 2px solid #303030;
+  border-radius: 0;
+  background: transparent;
+  padding: 7px 8px;
+  text-align: left;
+}
+
+.dag-node-button.is-current {
+  border-left-color: var(--violet);
+  background: #0b0910;
+}
+
+.dag-node-button > span,
+.dag-links button > span {
+  color: var(--quiet);
+  font-size: 11px;
+}
+
+.dag-node-button small,
+.dag-links small,
+.dag-detail small,
+.dag-detail time {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.dag-detail {
+  margin-top: 14px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 12px;
+}
+
+.dag-detail > header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dag-detail > header > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.dag-detail > header strong {
+  overflow: hidden;
+  color: #d8c9ef;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dag-stats {
+  margin-top: 10px;
+}
+
+.dag-stats div {
+  grid-template-columns: 72px minmax(0, 1fr);
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.dag-links {
+  display: grid;
+  gap: 5px;
+  margin-top: 12px;
+}
+
+.dag-links > span,
+.dag-leaf {
+  color: var(--quiet);
+  font-size: 11px;
+}
+
+.dag-links button {
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  padding: 5px 7px;
+}
+
+.dag-links button:hover:not(:disabled) {
+  border-left-color: var(--cyan);
+}
+
+.dag-detail details {
+  margin-top: 13px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 10px;
+}
+
+.dag-detail summary {
+  cursor: pointer;
+  color: #bdbdbd;
+  font-size: 12px;
+}
+
+.dag-detail details .markdown-body {
+  margin-top: 12px;
+  font-size: 12px;
 }
 
 .compactions article {

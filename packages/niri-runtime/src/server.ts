@@ -15,6 +15,8 @@ import { parseChannelIds } from "./discord/parse"
 import { queryChannelMessages, queryChannels } from "./discord/db"
 import type { MetricListType } from "./metrics"
 import type { UserMessage } from "./types"
+import { activeContextSummaries, describeContextSummary } from "./runner/context-store"
+import { loadSession } from "./runner/util"
 
 const DISCORD_BATCH_INTERVAL_MS = Math.max(
   1_000,
@@ -151,6 +153,23 @@ export function createServer(options: { requestRestart?: (reason?: string) => vo
   }))
 
   app.get("/awp/client/status", async () => clientTools.status())
+
+  app.get("/awp/context/dag", async () => {
+    const session = await loadSession() ?? []
+    const frontier = activeContextSummaries(session).map(({ id, depth }) => {
+      const described = describeContextSummary(id)
+      return described ? { id, depth, summary: described.summary } : { id, depth, summary: null }
+    })
+    return { agentId: AGENT_ID, frontier }
+  })
+
+  app.get("/awp/context/dag/:summaryId", async (req, reply) => {
+    const { summaryId } = req.params as { summaryId: string }
+    if (!/^sum_[0-9a-f-]+$/.test(summaryId)) return reply.code(400).send({ error: "invalid summary id" })
+    const described = describeContextSummary(summaryId)
+    if (!described) return reply.code(404).send({ error: "summary not found" })
+    return { agentId: AGENT_ID, node: described }
+  })
 
   app.post("/awp/events", async (req, reply) => {
     const body =

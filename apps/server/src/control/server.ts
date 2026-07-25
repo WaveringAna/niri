@@ -480,6 +480,28 @@ export function registerControlRoutes(
     }
   })
 
+  app.get("/agents/:id/context/dag", async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const agent = findAgent(id)
+    if (!agent) return reply.code(404).send({ error: "agent not found" })
+    try {
+      return reply.send(await fetchWorkerJson(agent, "/awp/context/dag"))
+    } catch (err) {
+      return reply.code(502).send({ error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+
+  app.get("/agents/:id/context/dag/:summaryId", async (req, reply) => {
+    const { id, summaryId } = req.params as { id: string; summaryId: string }
+    const agent = findAgent(id)
+    if (!agent) return reply.code(404).send({ error: "agent not found" })
+    try {
+      return reply.send(await fetchWorkerJson(agent, `/awp/context/dag/${encodeURIComponent(summaryId)}`))
+    } catch (err) {
+      return reply.code(502).send({ error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+
   app.get("/agents/:id/stream", async (req, reply) => {
     const { id } = req.params as { id: string }
     const query = req.query as { after_seq?: string }
