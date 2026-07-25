@@ -534,3 +534,106 @@ test("summarizeConversationViaLLM does not truncate transcript message lines to 
   assert.ok(capturedTranscript.includes("SECRET_EMOTIONAL_TEXTURE_MARKER"))
   assert.ok(!capturedTranscript.includes("..."))
 })
+
+test("summarizeConversationViaLLM summarizes the complete transcript across chronological chunks", async () => {
+  const chunkInputs: string[] = []
+  let consolidationInput = ""
+  const summaryClient = {
+    chat: {
+      completions: {
+        create: async (params: { messages: OpenAI.Chat.ChatCompletionMessageParam[] }) => {
+          const system = String(params.messages[0]?.content)
+          const user = String(params.messages[1]?.content)
+          if (system.startsWith("Consolidate these ordered partial recollections")) {
+            consolidationInput = user
+            return {
+              choices: [{ message: { content: "I kept the early, middle, and late relationships, corrections, feelings, projects, and unfinished work together in one faithful recollection." } }],
+            }
+          }
+          chunkInputs.push(user)
+          const markers = [...user.matchAll(/THREAD_[A-Z_]+/g)].map((match) => match[0]).join(", ")
+          return {
+            choices: [{ message: { content: `I preserved this chronological part and its load-bearing details, including ${markers || "the continuing thread"}, without treating it as the whole period.` } }],
+          }
+        },
+      },
+    },
+  } as unknown as OpenAI
+
+  const padded = (marker: string) => `${marker} ${"specific lived detail ".repeat(80)}`
+  const messages: Message[] = [
+    { role: "system", content: "soul and core bootstrap" },
+    { role: "user", content: padded("THREAD_EARLY") },
+    { role: "assistant", content: padded("THREAD_MIDDLE") },
+    { role: "user", content: padded("THREAD_LATE_SOCKET") },
+    { role: "assistant", content: padded("THREAD_LATE_LISYA") },
+    { role: "user", content: padded("THREAD_LATE_JUNE") },
+    { role: "assistant", content: padded("THREAD_END") },
+    { role: "user", content: "recent raw turn 1" },
+    { role: "assistant", content: "recent raw turn 2" },
+  ]
+
+  const summarized = await summarizeConversationViaLLM(messages, summaryClient, "summary-model", {
+    recentMinKeep: 2,
+    recentMaxKeep: 2,
+    maxTranscriptChars: 2_000,
+  })
+
+  assert.ok(summarized)
+  assert.ok(chunkInputs.length > 1)
+  const completeInput = chunkInputs.join("")
+  for (const marker of ["THREAD_EARLY", "THREAD_MIDDLE", "THREAD_LATE_SOCKET", "THREAD_LATE_LISYA", "THREAD_LATE_JUNE", "THREAD_END"]) {
+    assert.ok(completeInput.includes(marker), `${marker} should reach a summary pass`)
+    assert.ok(consolidationInput.includes(marker), `${marker} should reach consolidation`)
+  }
+})
+
+test("summary transcripts preserve discord tools but omit unrelated tool traffic", async () => {
+  let capturedTranscript = ""
+  const summaryClient = {
+    chat: {
+      completions: {
+        create: async (params: { messages: OpenAI.Chat.ChatCompletionMessageParam[] }) => {
+          capturedTranscript = String(params.messages[1]?.content)
+          return {
+            choices: [{ message: { content: "I kept the full discord conversation and my response while leaving unrelated implementation noise outside the memory transcript." } }],
+          }
+        },
+      },
+    },
+  } as unknown as OpenAI
+
+  const messages: Message[] = [
+    { role: "system", content: "soul and core bootstrap" },
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        { id: "discord-call", type: "function", function: { name: "discord_backread", arguments: '{"channel_id":"123"}' } },
+      ],
+    } as Message,
+    { role: "tool", tool_call_id: "discord-call", content: "FULL_DISCORD_HISTORY " + "social detail ".repeat(100) } as Message,
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        { id: "shell-call", type: "function", function: { name: "shell", arguments: '{"command":"cat giant.log"}' } },
+      ],
+    } as Message,
+    { role: "tool", tool_call_id: "shell-call", content: "UNRELATED_TOOL_BLOB " + "noise ".repeat(400) } as Message,
+    { role: "user", content: "incoming social message with feelings and a correction " + "detail ".repeat(100) },
+    { role: "assistant", content: "my response to the social message " + "care ".repeat(100) },
+    { role: "user", content: "recent raw turn 1" },
+    { role: "assistant", content: "recent raw turn 2" },
+  ]
+
+  const summarized = await summarizeConversationViaLLM(messages, summaryClient, "summary-model", {
+    recentMinKeep: 2,
+    recentMaxKeep: 2,
+  })
+
+  assert.ok(summarized)
+  assert.match(capturedTranscript, /discord_backread/)
+  assert.match(capturedTranscript, /FULL_DISCORD_HISTORY/)
+  assert.doesNotMatch(capturedTranscript, /cat giant\.log|UNRELATED_TOOL_BLOB/)
+})

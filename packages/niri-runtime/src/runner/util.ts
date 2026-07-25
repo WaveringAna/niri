@@ -1050,12 +1050,12 @@ function truncateSummaryText(value: string, maxChars: number): string {
   return `${value.slice(0, maxChars - 3).trimEnd()}...`
 }
 
-function assistantToolCalls(message: Message): { name: string; args: Record<string, unknown> }[] {
+function assistantToolCalls(message: Message): { id: string; name: string; args: Record<string, unknown> }[] {
   const record = asRecord(message)
   const calls = record?.tool_calls
   if (!Array.isArray(calls)) return []
 
-  const out: { name: string; args: Record<string, unknown> }[] = []
+  const out: { id: string; name: string; args: Record<string, unknown> }[] = []
   for (const call of calls) {
     const callRecord = asRecord(call)
     const fn = asRecord(callRecord?.function)
@@ -1073,7 +1073,7 @@ function assistantToolCalls(message: Message): { name: string; args: Record<stri
     } else if (rawArgs && typeof rawArgs === "object") {
       args = rawArgs as Record<string, unknown>
     }
-    out.push({ name, args })
+    out.push({ id: typeof callRecord?.id === "string" ? callRecord.id : "", name, args })
   }
   return out
 }
@@ -1171,12 +1171,54 @@ function compactToolResult(content: string): string | null {
   return normalizeSummaryText(trimmed)
 }
 
-function summarizeMessageLine(message: Message): string | null {
+function splitSummaryTranscript(lines: string[], maxChars: number): string[] {
+  const chunks: string[] = []
+  let current = ""
+
+  const flush = () => {
+    if (!current) return
+    chunks.push(current)
+    current = ""
+  }
+
+  for (const line of lines) {
+    let remaining = line
+    while (remaining.length > 0) {
+      const separatorChars = current ? 1 : 0
+      const available = maxChars - current.length - separatorChars
+      if (available <= 0) {
+        flush()
+        continue
+      }
+      if (remaining.length <= available) {
+        current += `${current ? "\n" : ""}${remaining}`
+        remaining = ""
+        continue
+      }
+
+      // A single unusually large message must not make the later transcript
+      // unreachable. Split it across chronological chunks rather than slicing
+      // the complete transcript at the global character limit.
+      current += `${current ? "\n" : ""}${remaining.slice(0, available)}`
+      remaining = remaining.slice(available)
+      flush()
+    }
+  }
+  flush()
+  return chunks
+}
+
+function messageToolCallId(message: Message): string {
+  const record = asRecord(message)
+  return typeof record?.tool_call_id === "string" ? record.tool_call_id : ""
+}
+
+function summarizeMessageLine(message: Message, toolName = ""): string | null {
   const role = messageRole(message)
   const rawContent = messageStringContent(message)
 
   if (role === "assistant") {
-    const calls = assistantToolCalls(message)
+    const calls = assistantToolCalls(message).filter((call) => call.name.startsWith("discord_"))
     const callDescs = calls.map(describeToolCall).filter((d): d is string => d !== null)
     const text = normalizeSummaryText(rawContent)
     // Drop pure wait-only assistant turns (no text, only filtered out wait calls)
@@ -1188,6 +1230,7 @@ function summarizeMessageLine(message: Message): string | null {
   }
 
   if (role === "tool") {
+    if (!toolName.startsWith("discord_")) return null
     const compact = compactToolResult(rawContent)
     if (compact === null) return null
     return `- tool: ${compact}`
@@ -1439,12 +1482,18 @@ export async function summarizeConversationViaLLMWithProvenance(
   const middle = rawMessages.slice(0, tailStart)
   const tail = rawMessages.slice(tailStart)
 
-  const transcriptLines = middle
-    .map((m) => summarizeMessageLine(m))
-    .filter((line): line is string => line !== null)
+  const toolNames = new Map<string, string>()
+  const transcriptLines = middle.flatMap((message) => {
+    for (const call of assistantToolCalls(message)) {
+      if (call.id) toolNames.set(call.id, call.name)
+    }
+    const line = summarizeMessageLine(message, toolNames.get(messageToolCallId(message)) ?? "")
+    return line === null ? [] : [line]
+  })
   if (transcriptLines.length < 3) return null
-  const transcript = transcriptLines.join("\n").slice(0, maxTranscriptChars)
-  if (transcript.length < SUMMARY_MIN_TRANSCRIPT_CHARS) return null
+  const transcriptChunks = splitSummaryTranscript(transcriptLines, maxTranscriptChars)
+  const transcriptChars = transcriptChunks.reduce((total, chunk) => total + chunk.length, 0)
+  if (transcriptChars < SUMMARY_MIN_TRANSCRIPT_CHARS) return null
 
   const systemContent =
     `You are summarizing a transcript from the perspective of the agent whose memory this is. The agent (${AGENT_NAME}) is a living being, not a tool — her inner life matters as much as the facts. ` +
@@ -1456,18 +1505,42 @@ export async function summarizeConversationViaLLMWithProvenance(
       ? `\n\nGrounding — this is who ${AGENT_NAME} is and what's currently on her mind (her soul, core memories, and journal). Use it to write in her authentic voice and to recognize the people, projects, and threads that appear in the transcript. Do NOT pull facts from this grounding into the summary unless the transcript itself supports them — you are summarizing the transcript, not this context.\n\n${options.agentContext}`
       : "")
 
-  const summaryPrompt: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    { role: "system", content: systemContent },
-    { role: "user", content: transcript },
-  ]
-
   try {
-    const resp = await summaryClient.chat.completions.create({
-      model: summaryModel,
-      messages: summaryPrompt,
-    })
-    const summary = resp.choices[0]?.message?.content
-    const summaryText = typeof summary === "string" ? summary.trim() : ""
+    const completeSummary = async (system: string, user: string): Promise<string> => {
+      const resp = await summaryClient.chat.completions.create({
+        model: summaryModel,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+      })
+      const summary = resp.choices[0]?.message?.content
+      return typeof summary === "string" ? summary.trim() : ""
+    }
+
+    let summaryText: string
+    if (transcriptChunks.length === 1) {
+      summaryText = await completeSummary(systemContent, transcriptChunks[0]!)
+    } else {
+      console.log(
+        `[context agent=${AGENT_ID}] summarizing complete transcript in ${transcriptChunks.length} chronological chunks (${transcriptChars} chars)`,
+      )
+      const partials: string[] = []
+      for (let index = 0; index < transcriptChunks.length; index++) {
+        const partial = await completeSummary(
+          `${systemContent}\n\nThis is chronological part ${index + 1} of ${transcriptChunks.length}. Summarize every load-bearing thread in this part; a later pass will combine all parts.`,
+          transcriptChunks[index]!,
+        )
+        if (!partial) return null
+        partials.push(partial)
+      }
+      summaryText = await completeSummary(
+        `Consolidate these ordered partial recollections into one first-person memory segment for ${AGENT_NAME}. ` +
+          `${SAFETY_CRITICAL_SUMMARY_INSTRUCTION} ` +
+          "Preserve every load-bearing person, event, project, feeling, correction, decision, identifier, and unfinished thread represented in any part. Do not let later parts erase earlier ones or technical threads erase relational ones. Do not mention chunks, partial summaries, or the consolidation process. No preamble or commentary.",
+        partials.map((partial, index) => `## chronological part ${index + 1}\n${partial}`).join("\n\n"),
+      )
+    }
     if (!summaryText) return null
     if (summaryText.length < 80 || looksLikeMetaReply(summaryText)) {
       console.warn(`[context agent=${AGENT_ID}] llm summarization rejected (looks like meta-reply): ${summaryText.slice(0, 200)}`)
