@@ -64,6 +64,7 @@ runtime:
   contextCompactTriggerTokens: 90000
   contextCompactHardTriggerTokens: 115000
   contextCompactMinNewMessages: 24
+  lcmSummaryBatchSize: 4
   migrateLegacyState: true
   maxTurns: 120
   antigravity:

@@ -13,7 +13,7 @@ import {
   loadAgentSummaryContext,
   summarizeConversationViaLLMWithProvenance,
 } from "./util"
-import { attachContextSummaryId, recordContextCompaction } from "./context-store"
+import { commitLcmCompaction, consolidateLcmFrontier } from "./lcm-compaction"
 import { addAssistantMessage, applyUsage, configuredSummaryProvider, emitThinking, fetchCompletion } from "./loop-completion"
 import { assistantContentText, isFunctionToolCall } from "./loop-content"
 import { buildTurnSignature, hasIncomingUserMessage } from "./loop-signatures"
@@ -167,6 +167,36 @@ async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-tu
   // used to fire compaction at ~22-31k real tokens and produce nonsense summaries.
   if (state.contextSize < CONTEXT_COMPACT_TRIGGER_TOKENS) return false
   const beforeEstimate = estimatePromptTokens(state.conversation)
+
+  const summaryProvider = await configuredSummaryProvider()
+  if (!summaryProvider.client || !summaryProvider.model) {
+    console.warn(`[context agent=${AGENT_ID}] ${phase}: no summary client available; skipping llm compaction`)
+    return false
+  }
+
+  const beforeCount = state.conversation.length
+  const agentContext = await loadAgentSummaryContext()
+  const consolidated = await consolidateLcmFrontier(
+    state.conversation,
+    summaryProvider.client,
+    summaryProvider.model,
+    agentContext,
+  )
+  if (consolidated.mergedSummaryIds.length > 0) {
+    state.conversation = consolidated.messages
+    state.contextSize = estimatePromptTokens(state.conversation)
+    console.log(
+      `[context agent=${AGENT_ID}] ${phase}: reduced active lcm frontier before touching fresh tail (${beforeEstimate} -> ${state.contextSize} tokens, merged=${consolidated.mergedSummaryIds.join(",")}, active=${consolidated.activeSummaryIds.join(",")})`,
+    )
+    recordMetric({
+      type: "compaction",
+      before: beforeEstimate,
+      after: state.contextSize,
+      method: `${phase}-lcm-merge`,
+    })
+    return true
+  }
+
   const priorSummaryIndex = findSummaryMessageIndex(state.conversation)
   const candidateCount = countConversationCompactionCandidates(state.conversation, {
     recentMinKeep: LLM_RECENT_MIN_KEEP,
@@ -180,14 +210,6 @@ async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-tu
     return false
   }
 
-  const summaryProvider = await configuredSummaryProvider()
-  if (!summaryProvider.client || !summaryProvider.model) {
-    console.warn(`[context agent=${AGENT_ID}] ${phase}: no summary client available; skipping llm compaction`)
-    return false
-  }
-
-  const beforeCount = state.conversation.length
-  const agentContext = await loadAgentSummaryContext()
   const compaction = await summarizeConversationViaLLMWithProvenance(
     state.conversation,
     summaryProvider.client,
@@ -210,20 +232,18 @@ async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-tu
     return false
   }
 
-  const summaryId = recordContextCompaction({
-    summaryText: compaction.summaryText,
-    compactedMessages: compaction.compactedMessages,
-    priorSummaryContent: compaction.priorSummaryContent,
-    method: `${phase}-llm`,
-  })
-  state.conversation = attachContextSummaryId(compaction.messages, summaryId)
+  const committed = await commitLcmCompaction(
+    compaction,
+    summaryProvider.client,
+    summaryProvider.model,
+    `${phase}-llm`,
+    agentContext,
+  )
+  state.conversation = committed.messages
   state.contextSize = estimatePromptTokens(state.conversation)
 
-  const summaryIdx = findSummaryMessageIndex(state.conversation)
-  const summary = summaryIdx >= 0 ? (state.conversation[summaryIdx]?.content as string) : undefined
-
   console.log(
-    `[context agent=${AGENT_ID}] ${phase}: llm-summarized conversation via ${summaryProvider.model} (${beforeCount} -> ${state.conversation.length} msgs, ${beforeEstimate} -> ${state.contextSize} tokens, ${summaryId})`,
+    `[context agent=${AGENT_ID}] ${phase}: added lcm segment via ${summaryProvider.model} (${beforeCount} -> ${state.conversation.length} msgs, ${beforeEstimate} -> ${state.contextSize} tokens, leaf=${committed.leafSummaryId}, active=${committed.activeSummaryIds.join(",")})`,
   )
 
   recordMetric({
@@ -231,7 +251,7 @@ async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-tu
     before: beforeEstimate,
     after: state.contextSize,
     method: `${phase}-llm`,
-    summary,
+    summary: compaction.summaryContent,
   })
   return true
 }

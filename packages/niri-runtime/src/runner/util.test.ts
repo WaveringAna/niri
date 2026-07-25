@@ -27,6 +27,7 @@ import {
   shouldFallback,
   shouldRetryProvider,
   summarizeConversationViaLLM,
+  summarizeContextSummaryBatchViaLLM,
 } from "./util"
 
 test("countConversationCompactionCandidates excludes the prior summary and preserved tail", () => {
@@ -189,6 +190,8 @@ test("loadRestSnapshot keeps the snapshot available for later boots", async () =
 
     assert.equal(first?.note, "still here")
     assert.equal(second?.note, "still here")
+    assert.deepEqual(first?.forests, [messages[1]?.content])
+    assert.deepEqual(second?.forests, [messages[1]?.content])
     assert.match(raw, /held over from rest/)
     assert.equal((await fs.stat(REST_SNAPSHOT_FILE)).mode & 0o777, 0o600)
     assert.equal((await fs.stat(path.dirname(REST_SNAPSHOT_FILE))).mode & 0o777, 0o700)
@@ -355,7 +358,7 @@ test("restForestFromMessages returns the llm context summary", () => {
   assert.match(forest, /Thread: project/)
 })
 
-test("summarizeConversationViaLLM folds prior summary even when it is not directly after the system head", async () => {
+test("summarizeConversationViaLLM preserves prior segments and appends an independent leaf", async () => {
   let capturedSystemPrompt = ""
   const summaryClient = {
     chat: {
@@ -399,14 +402,17 @@ test("summarizeConversationViaLLM folds prior summary even when it is not direct
   assert.ok(summarized)
   assert.equal(summarized[0]?.role, "system")
   assert.equal(summarized[1]?.role, "user")
-  assert.match(String(summarized[1]?.content), /^\[context summary v1\]/)
-  assert.equal(summarized.filter((m) => String(m.content).startsWith("[context summary v1]")).length, 1)
+  assert.equal(summarized[1]?.content, priorSummary)
+  assert.match(String(summarized[2]?.content), /^\[context summary v1\]/)
+  assert.equal(summarized.filter((m) => String(m.content).startsWith("[context summary v1]")).length, 2)
   assert.equal(summarized.at(-2)?.content, "recent raw turn 1")
   assert.equal(summarized.at(-1)?.content, "recent raw turn 2")
 
-  assert.match(capturedSystemPrompt, /Prior recollection/)
-  assert.match(capturedSystemPrompt, /old recollection about niri's project and feelings/)
+  assert.doesNotMatch(capturedSystemPrompt, /Prior recollection/)
+  assert.doesNotMatch(capturedSystemPrompt, /old recollection about niri's project and feelings/)
   assert.match(capturedSystemPrompt, /Organize the summary as a set of ongoing threads/)
+  assert.match(capturedSystemPrompt, /SAFETY-CRITICAL EVENTS ARE ALWAYS LOAD-BEARING/)
+  assert.match(capturedSystemPrompt, /Resolution does not make them less important/)
 })
 
 test("summarizeConversationViaLLM injects the agent grounding context into the summary prompt", async () => {
@@ -453,6 +459,32 @@ test("summarizeConversationViaLLM injects the agent grounding context into the s
   assert.match(capturedSystemPrompt, /Grounding — this is who/)
   assert.match(capturedSystemPrompt, /Felt curious all morning\./)
   assert.ok(capturedSystemPrompt.includes(`The agent (${AGENT_NAME})`))
+})
+
+test("higher-depth segment merges keep niri's safety-critical memory instruction", async () => {
+  let capturedSystemPrompt = ""
+  const summaryClient = {
+    chat: {
+      completions: {
+        create: async (params: { messages: OpenAI.Chat.ChatCompletionMessageParam[] }) => {
+          capturedSystemPrompt = String(params.messages[0]?.content)
+          return {
+            choices: [{ message: { content: "I retained every concrete action, feeling, safety-critical event, relationship, and unfinished thread from both periods as part of one continuous life." } }],
+          }
+        },
+      },
+    },
+  } as unknown as OpenAI
+  const longMemory = "specific lived memory with emotional texture and exact details ".repeat(20)
+
+  const merged = await summarizeContextSummaryBatchViaLLM([
+    { id: "sum_a", depth: 0, content: longMemory },
+    { id: "sum_b", depth: 0, content: longMemory },
+  ], summaryClient, "summary-model")
+
+  assert.ok(merged)
+  assert.match(capturedSystemPrompt, /SAFETY-CRITICAL EVENTS ARE ALWAYS LOAD-BEARING/)
+  assert.match(capturedSystemPrompt, /They get their own section/)
 })
 
 test("summarizeConversationViaLLM does not truncate transcript message lines to 320 characters", async () => {

@@ -27,7 +27,6 @@ import {
   estimatePromptTokens,
   fallbackClient,
   fallbackContextWindow,
-  findSummaryMessageIndex,
   isContentFilterError,
   isImageParseError,
   isPromptTooLargeError,
@@ -43,7 +42,8 @@ import {
   summaryClient,
   summarizeConversationViaLLMWithProvenance,
 } from "./util"
-import { attachContextSummaryId, recordContextCompaction } from "./context-store"
+import { batchActiveContextSummariesForPrompt } from "./context-store"
+import { commitLcmCompaction, consolidateLcmFrontier } from "./lcm-compaction"
 import { createAnthropicCompletion } from "./anthropic"
 import type { CompletionRequest, CompletionTurnResult, ToolCallAssembly } from "./loop-shared"
 
@@ -718,6 +718,26 @@ async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Pro
 
   console.warn(`[context agent=${AGENT_ID}] recovery: attempting llm summarization via ${summaryProvider.model} (attempt=${attempt + 1})`)
   const agentContext = await loadAgentSummaryContext()
+  const consolidated = await consolidateLcmFrontier(
+    state.conversation,
+    summaryProvider.client,
+    summaryProvider.model,
+    agentContext,
+  )
+  if (consolidated.mergedSummaryIds.length > 0) {
+    state.conversation = consolidated.messages
+    state.contextSize = estimatePromptTokens(state.conversation)
+    console.warn(
+      `[context agent=${AGENT_ID}] recovery: reduced active lcm frontier before fresh tail (merged=${consolidated.mergedSummaryIds.join(",")}, active=${consolidated.activeSummaryIds.join(",")})`,
+    )
+    recordMetric({
+      type: "compaction",
+      before: beforeEstimate,
+      after: state.contextSize,
+      method: "force-lcm-merge",
+    })
+    return true
+  }
   const compaction = await summarizeConversationViaLLMWithProvenance(state.conversation, summaryProvider.client, summaryProvider.model, {
     agentContext,
   })
@@ -732,20 +752,18 @@ async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Pro
     return false
   }
 
-  const summaryId = recordContextCompaction({
-    summaryText: compaction.summaryText,
-    compactedMessages: compaction.compactedMessages,
-    priorSummaryContent: compaction.priorSummaryContent,
-    method: "force-llm",
-  })
-  state.conversation = attachContextSummaryId(compaction.messages, summaryId)
+  const committed = await commitLcmCompaction(
+    compaction,
+    summaryProvider.client,
+    summaryProvider.model,
+    "force-llm",
+    agentContext,
+  )
+  state.conversation = committed.messages
   state.contextSize = estimatePromptTokens(state.conversation)
 
-  const summaryIdx = findSummaryMessageIndex(state.conversation)
-  const summary = summaryIdx >= 0 ? (state.conversation[summaryIdx]?.content as string) : undefined
-
   console.warn(
-    `[context agent=${AGENT_ID}] recovery: llm-summarized conversation (${beforeCount} -> ${state.conversation.length} msgs, ${beforeEstimate} -> ${state.contextSize} tokens, ${summaryId})`,
+    `[context agent=${AGENT_ID}] recovery: added lcm segment (${beforeCount} -> ${state.conversation.length} msgs, ${beforeEstimate} -> ${state.contextSize} tokens, leaf=${committed.leafSummaryId}, active=${committed.activeSummaryIds.join(",")})`,
   )
 
   recordMetric({
@@ -753,7 +771,7 @@ async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Pro
     before: beforeEstimate,
     after: state.contextSize,
     method: "force-llm",
-    summary,
+    summary: compaction.summaryContent,
   })
   return true
 }
@@ -825,7 +843,7 @@ export async function fetchCompletion(
           state.memoryRecallTurn,
         )
       : { messages: baseConversation, recalledChunkIds: [] as number[] }
-    const requestMessages = requestContext.messages
+    const requestMessages = batchActiveContextSummariesForPrompt(requestContext.messages)
 
     const primaryFailoverBefore = USE_FALLBACK ? null : await primaryFailoverStatus()
     if (primaryFailoverBefore?.active) {

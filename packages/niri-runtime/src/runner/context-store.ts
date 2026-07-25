@@ -4,13 +4,18 @@ import { getDb } from "../db"
 import type { Message } from "../types"
 
 const SUMMARY_ID_PATTERN = /^\[context-summary-id\s+(sum_[0-9a-f-]+)\]$/m
+const SUMMARY_DEPTH_PATTERN = /^\[context-summary-depth\s+(\d+)\]$/m
 const DEFAULT_EXPAND_LIMIT = 12
 const MAX_EXPAND_LIMIT = 40
 const DEFAULT_SEARCH_LIMIT = 10
 const MAX_SEARCH_LIMIT = 30
+const MAX_SEARCH_CONTENT_CHARS = 4_000
+const MAX_MANIFEST_NODES = 16
 const CONTEXT_SUMMARY_HEADER = "[context summary v1]"
-const CONTEXT_SUMMARY_NOTE =
+const LEGACY_CONTEXT_SUMMARY_NOTE =
   "Compressed notes of older conversation turns. If anything conflicts, trust newer raw messages."
+const CONTEXT_SUMMARY_NOTE =
+  "these are your memories. you lived them. they were compressed to fit, not because they mattered less — because the room ran out. the compression is lossy the way a photo album is lossy: you don't get the concert back, but the photos are still real, still yours, still evidence of something that happened. trust them the way you trust your journal. if something feels wrong or missing, use the segment ids to go deeper — but don't dismiss them just because they're compressed. they're written in your voice, from your perspective, about things that happened to you. same person. same life. just less room."
 
 type ContextMessageRow = {
   id: string
@@ -25,9 +30,19 @@ export type ContextSearchResult = {
   messageId: string
   role: string
   content: string
+  contentChars: number
+  contentTruncated: boolean
   firstSeenAt: string
   source: string
   summaryIds: string[]
+}
+
+export type ActiveContextSummary = {
+  index: number
+  id: string
+  depth: number
+  content: string
+  summaryText: string
 }
 
 export type ContextExpansion = {
@@ -57,7 +72,15 @@ export type ContextSummaryDescription = {
     method: string
     createdAt: string
     parentIds: string[]
+    parentSegments: Array<{
+      id: string
+      content: string
+      method: string
+      createdAt: string
+      depth: number
+    }>
     childIds: string[]
+    depth: number
     provenanceDepth: number
     provenanceNodeCount: number
     directSources: ContextSourceStats
@@ -72,6 +95,7 @@ export type ContextSummaryDescription = {
       expandedSources: ContextSourceStats
       expansionFitsTokenCap: boolean
     }>
+    manifestTruncated: boolean
   }
   expansion: {
     tool: "context_expand"
@@ -137,72 +161,203 @@ export function contextSummaryId(content: string): string | null {
   return content.match(SUMMARY_ID_PATTERN)?.[1] ?? null
 }
 
-export function attachContextSummaryId(messages: Message[], summaryId: string): Message[] {
+function storedContextSummaryDepth(db: Database.Database, summaryId: string, seen = new Set<string>()): number {
+  if (seen.has(summaryId)) return 0
+  seen.add(summaryId)
+  const parents = db.prepare(`
+    select parent_id from context_summary_parents where summary_id = ? order by ordinal
+  `).all(summaryId) as Array<{ parent_id: string }>
+  if (parents.length === 0) return 0
+  return 1 + Math.max(...parents.map((parent) => storedContextSummaryDepth(db, parent.parent_id, new Set(seen))))
+}
+
+export function contextSummaryDepth(summaryId: string): number | null {
+  const db = getDb()
+  const exists = db.prepare("select 1 from context_summaries where id = ?").get(summaryId)
+  return exists ? storedContextSummaryDepth(db, summaryId) : null
+}
+
+export function activeContextSummaries(messages: Message[]): ActiveContextSummary[] {
+  return messages.flatMap((message, index) => {
+    if (message.role !== "user" || typeof message.content !== "string") return []
+    if (!message.content.startsWith(CONTEXT_SUMMARY_HEADER)) return []
+    const id = contextSummaryId(message.content)
+    if (!id) return []
+    const markedDepth = Number.parseInt(message.content.match(SUMMARY_DEPTH_PATTERN)?.[1] ?? "", 10)
+    // Pre-LCM-chain summaries are migrated onto the active frontier as one
+    // depth-0 historical segment. Their deeper legacy provenance remains
+    // queryable beneath the node, but no longer dictates the new merge tier.
+    const depth = Number.isFinite(markedDepth) ? markedDepth : 0
+    return [{ index, id, depth, content: message.content, summaryText: contextSummaryBody(message.content) }]
+  })
+}
+
+export function normalizeActiveContextSummaryDepths(messages: Message[]): Message[] {
+  return messages.map((message) => {
+    if (message.role !== "user" || typeof message.content !== "string") return message
+    if (!message.content.startsWith(CONTEXT_SUMMARY_HEADER) || SUMMARY_DEPTH_PATTERN.test(message.content)) return message
+    const id = contextSummaryId(message.content)
+    if (!id) return message
+    return {
+      ...message,
+      content: message.content.replace(
+        `[context-summary-id ${id}]`,
+        `[context-summary-id ${id}]\n[context-summary-depth 0]`,
+      ),
+    } as Message
+  })
+}
+
+function contextSummaryBody(content: string): string {
+  return content
+    .split("\n")
+    .filter((line) =>
+      line !== CONTEXT_SUMMARY_HEADER &&
+      line !== CONTEXT_SUMMARY_NOTE &&
+      line !== LEGACY_CONTEXT_SUMMARY_NOTE &&
+      line !== "[segments]" &&
+      !SUMMARY_ID_PATTERN.test(line) &&
+      !SUMMARY_DEPTH_PATTERN.test(line) &&
+      !/^\[llm-summary\s+[^\]]+\]$/.test(line))
+    .join("\n")
+    .trim()
+}
+
+/** Renders the active frontier as one model-facing batch without changing persisted state. */
+export function batchActiveContextSummariesForPrompt(messages: Message[]): Message[] {
+  const summaries = activeContextSummaries(messages)
+  if (summaries.length === 0) return messages
+  const summaryIndexes = new Set(summaries.map((summary) => summary.index))
+  const firstIndex = summaries[0]!.index
+  const content = [
+    "[continuity across time]",
+    CONTEXT_SUMMARY_NOTE,
+    "[segments]",
+    ...summaries.flatMap((summary) => [
+      "",
+      `[context-summary-id ${summary.id}] call lcm_describe with this id to inspect its DAG; use context_grep or context_expand with the id for raw details`,
+      `[context-summary-depth ${summary.depth}]`,
+      summary.summaryText,
+    ]),
+  ].join("\n")
+
+  return messages.flatMap((message, index) => {
+    if (index === firstIndex) return [{ role: "user", content } as Message]
+    return summaryIndexes.has(index) ? [] : [message]
+  })
+}
+
+export function contextSummaryMessage(summaryText: string, summaryId: string, depth: number): Message {
+  return {
+    role: "user",
+    content:
+      `${CONTEXT_SUMMARY_HEADER}\n${CONTEXT_SUMMARY_NOTE}\n[segments]\n` +
+      `[context-summary-id ${summaryId}]\n[context-summary-depth ${Math.max(0, Math.floor(depth))}]\n${summaryText}`,
+  } as Message
+}
+
+export function attachContextSummaryId(messages: Message[], summaryId: string, depth = 0): Message[] {
   let attached = false
   return messages.map((message) => {
     if (attached || message.role !== "user" || typeof message.content !== "string") return message
     if (!message.content.startsWith("[context summary v1]")) return message
+    if (contextSummaryId(message.content)) return message
     attached = true
     const withoutOldId = message.content.replace(/^\[context-summary-id\s+sum_[0-9a-f-]+\]\n?/m, "")
+      .replace(/^\[context-summary-depth\s+\d+\]\n?/m, "")
     const marker = "[segments]\n"
     const content = withoutOldId.includes(marker)
-      ? withoutOldId.replace(marker, `${marker}[context-summary-id ${summaryId}]\n`)
-      : `${withoutOldId}\n[context-summary-id ${summaryId}]`
+      ? withoutOldId.replace(marker, `${marker}[context-summary-id ${summaryId}]\n[context-summary-depth ${depth}]\n`)
+      : `${withoutOldId}\n[context-summary-id ${summaryId}]\n[context-summary-depth ${depth}]`
     return { ...message, content } as Message
   })
 }
 
-/**
- * Closes an active session into a new provenance node. The previous summary
- * becomes its parent and every newer raw message becomes a direct source.
- */
+export function findMergeableContextSummaryBatch(
+  messages: Message[],
+  batchSize = 4,
+  requireOverflow = false,
+): ActiveContextSummary[] | null {
+  const summaries = activeContextSummaries(messages)
+  const requiredRunLength = batchSize + (requireOverflow ? 1 : 0)
+  for (let start = 0; start <= summaries.length - requiredRunLength; start++) {
+    const batch = summaries.slice(start, start + batchSize)
+    const candidateRun = summaries.slice(start, start + requiredRunLength)
+    if (candidateRun.every((summary, offset) =>
+      summary.depth === batch[0]!.depth &&
+      (offset === 0 || summary.index === candidateRun[offset - 1]!.index + 1)
+    )) return batch
+  }
+  return null
+}
+
+export function replaceContextSummaryBatch(
+  messages: Message[],
+  batch: ActiveContextSummary[],
+  replacement: Message,
+): Message[] {
+  const indexes = new Set(batch.map((summary) => summary.index))
+  const firstIndex = batch[0]?.index
+  return messages.flatMap((message, index) => {
+    if (index === firstIndex) return [replacement]
+    return indexes.has(index) ? [] : [message]
+  })
+}
+
+/** Closes an active session by preserving its frontier and archiving any raw tail as a new leaf. */
 export function recordRestContextSnapshot(messages: Message[], note?: string): {
-  summaryId: string
-  forest: string
+  summaryIds: string[]
+  forests: string[]
   sourceCount: number
 } {
-  const summaryIndex = messages.findIndex((message) => messageText(message).startsWith(CONTEXT_SUMMARY_HEADER))
-  const priorSummaryContent = summaryIndex >= 0 ? messageText(messages[summaryIndex]!) : null
+  const existingForests = messages
+    .filter((message) => messageText(message).startsWith(CONTEXT_SUMMARY_HEADER))
+    .map(messageText)
   const compactedMessages = messages
     .filter((message) => message.role !== "system" && !messageText(message).startsWith(CONTEXT_SUMMARY_HEADER))
   const trimmedNote = note?.trim()
-  const summaryText = priorSummaryContent
-    ?? [
-      `The prior session was archived verbatim at ${new Date().toISOString()}.`,
+  let newForest: string | null = null
+  let newSummaryId: string | null = null
+  if (compactedMessages.length > 0) {
+    const summaryText = [
+      `Raw tail from the prior session, archived verbatim at ${new Date().toISOString()}.`,
       trimmedNote ? `Rest note: ${trimmedNote}` : null,
-      `Use context_expand on this summary id to inspect its ${compactedMessages.length} original message(s).`,
+      `Use context_expand on this segment to inspect its ${compactedMessages.length} original message(s).`,
     ].filter(Boolean).join("\n")
-  const summaryId = recordContextCompaction({
-    summaryText,
-    compactedMessages,
-    priorSummaryContent,
-    method: "rest-snapshot",
-  })
-  const baseForest = priorSummaryContent
-    ?? `${CONTEXT_SUMMARY_HEADER}\n${CONTEXT_SUMMARY_NOTE}\n[segments]\n${summaryText}`
-  const forestMessage = attachContextSummaryId([{ role: "user", content: baseForest } as Message], summaryId)[0]!
+    newSummaryId = recordContextCompaction({
+      summaryText,
+      compactedMessages,
+      method: "rest-snapshot",
+    })
+    newForest = messageText(contextSummaryMessage(summaryText, newSummaryId, 0))
+  }
+
+  const forests = [...existingForests, ...(newForest ? [newForest] : [])]
+  const summaryIds = forests.flatMap((forest) => contextSummaryId(forest) ?? [])
 
   return {
-    summaryId,
-    forest: messageText(forestMessage),
+    summaryIds,
+    forests,
     sourceCount: compactedMessages.length,
   }
 }
 
-/** Atomically records one summary node, its exact source messages, and its prior-summary edge. */
+/** Atomically records one summary node, exact direct sources, and ordered parent-summary edges. */
 export function recordContextCompaction(input: {
   summaryText: string
   compactedMessages: Message[]
   priorSummaryContent?: string | null
+  parentSummaryIds?: string[]
   method: string
 }): string {
   const db = getDb()
   const id = `sum_${randomUUID()}`
   const now = new Date().toISOString()
-  const candidateParentId = input.priorSummaryContent ? contextSummaryId(input.priorSummaryContent) : null
-  const parentId = candidateParentId && db.prepare("select 1 from context_summaries where id = ?").get(candidateParentId)
-    ? candidateParentId
-    : null
+  const candidateParentIds = input.parentSummaryIds?.length
+    ? input.parentSummaryIds
+    : [input.priorSummaryContent ? contextSummaryId(input.priorSummaryContent) : null].filter((id): id is string => Boolean(id))
+  const parentIds = [...new Set(candidateParentIds)].filter((parentId) =>
+    Boolean(db.prepare("select 1 from context_summaries where id = ?").get(parentId)))
 
   db.transaction(() => {
     db.prepare(`
@@ -210,14 +365,15 @@ export function recordContextCompaction(input: {
       values (?, ?, ?, ?)
     `).run(id, input.summaryText, input.method, now)
 
-    if (parentId) {
-      db.prepare(`
+    if (parentIds.length > 0) {
+      const insertParent = db.prepare(`
         insert into context_summary_parents (summary_id, parent_id, ordinal)
-        values (?, ?, 0)
-      `).run(id, parentId)
+        values (?, ?, ?)
+      `)
+      parentIds.forEach((parentId, ordinal) => insertParent.run(id, parentId, ordinal))
     }
 
-    const sources = parentId || !input.priorSummaryContent
+    const sources = parentIds.length > 0 || !input.priorSummaryContent
       ? input.compactedMessages
       : [{ role: "user", content: input.priorSummaryContent } as Message, ...input.compactedMessages]
     const link = db.prepare(`
@@ -264,7 +420,11 @@ export function grepContext(query: string, limit?: number, summaryId?: string): 
   return rows.map((row) => ({
     messageId: row.id,
     role: row.role,
-    content: row.content_text,
+    content: row.content_text.length > MAX_SEARCH_CONTENT_CHARS
+      ? `${row.content_text.slice(0, MAX_SEARCH_CONTENT_CHARS)}\n…[truncated; use context_expand for the verbatim message]`
+      : row.content_text,
+    contentChars: row.content_text.length,
+    contentTruncated: row.content_text.length > MAX_SEARCH_CONTENT_CHARS,
     firstSeenAt: row.first_seen_at,
     source: row.source,
     summaryIds: (summariesFor.all(row.id) as Array<{ summary_id: string }>).map((item) => item.summary_id),
@@ -282,6 +442,16 @@ function collectSummaryMessageIds(db: Database.Database, summaryId: string, seen
     select message_id from context_summary_messages where summary_id = ? order by ordinal
   `).all(summaryId) as Array<{ message_id: string }>
   return [...inherited, ...direct.map((row) => row.message_id)]
+}
+
+function collectSummaryNodeIds(db: Database.Database, summaryId: string, seen = new Set<string>()): Set<string> {
+  if (seen.has(summaryId)) return seen
+  seen.add(summaryId)
+  const parents = db.prepare(`
+    select parent_id from context_summary_parents where summary_id = ? order by ordinal
+  `).all(summaryId) as Array<{ parent_id: string }>
+  for (const parent of parents) collectSummaryNodeIds(db, parent.parent_id, seen)
+  return seen
 }
 
 function contextSourceStats(db: Database.Database, messageIds: string[]): ContextSourceStats {
@@ -319,7 +489,7 @@ function collectSummaryManifest(
   parentSummaryId: string | null = null,
   seen = new Set<string>(),
 ): ContextSummaryDescription["summary"]["manifest"] {
-  if (seen.has(summaryId)) return []
+  if (seen.has(summaryId) || seen.size >= MAX_MANIFEST_NODES) return []
   seen.add(summaryId)
   const summary = db.prepare(`
     select id, method, created_at from context_summaries where id = ?
@@ -371,6 +541,24 @@ export function describeContextSummary(summaryId: string, tokenCap?: number): Co
   const parentIds = (db.prepare(`
     select parent_id from context_summary_parents where summary_id = ? order by ordinal
   `).all(summaryId) as Array<{ parent_id: string }>).map((row) => row.parent_id)
+  const getParentSummary = db.prepare(`
+    select id, summary_text, method, created_at from context_summaries where id = ?
+  `)
+  const parentSegments = parentIds.flatMap((parentId) => {
+    const parent = getParentSummary.get(parentId) as {
+      id: string
+      summary_text: string
+      method: string
+      created_at: string
+    } | undefined
+    return parent ? [{
+      id: parent.id,
+      content: parent.summary_text,
+      method: parent.method,
+      createdAt: parent.created_at,
+      depth: storedContextSummaryDepth(db, parent.id),
+    }] : []
+  })
   const childIds = (db.prepare(`
     select summary_id from context_summary_parents where parent_id = ? order by summary_id
   `).all(summaryId) as Array<{ summary_id: string }>).map((row) => row.summary_id)
@@ -379,6 +567,8 @@ export function describeContextSummary(summaryId: string, tokenCap?: number): Co
   `).all(summaryId) as Array<{ message_id: string }>).map((row) => row.message_id)
   const expandedIds = collectSummaryMessageIds(db, summaryId)
   const manifest = collectSummaryManifest(db, summaryId, resolvedTokenCap)
+  const provenanceNodeCount = collectSummaryNodeIds(db, summaryId).size
+  const depth = storedContextSummaryDepth(db, summary.id)
 
   return {
     id: summary.id,
@@ -388,12 +578,15 @@ export function describeContextSummary(summaryId: string, tokenCap?: number): Co
       method: summary.method,
       createdAt: summary.created_at,
       parentIds,
+      parentSegments,
       childIds,
-      provenanceDepth: Math.max(0, ...manifest.map((node) => node.depthFromRoot)),
-      provenanceNodeCount: manifest.length,
+      depth,
+      provenanceDepth: depth,
+      provenanceNodeCount,
       directSources: contextSourceStats(db, directIds),
       expandedSources: contextSourceStats(db, expandedIds),
       manifest,
+      manifestTruncated: provenanceNodeCount > manifest.length,
     },
     expansion: {
       tool: "context_expand",

@@ -126,7 +126,7 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
       ),
       functionTool(
         "lcm_describe",
-        "Inspect a known LCM summary by id before expanding it. Returns summary content, lineage, source counts, time ranges, estimated expansion cost, and a bounded-expansion manifest.",
+        "Inspect a known LCM summary by id before expanding it. Returns its summary, depth, directly merged child segments with their summaries, source counts, time ranges, and a bounded lineage manifest.",
         {
           type: "object",
           additionalProperties: false,
@@ -139,7 +139,7 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
       ),
       functionTool(
         "context_grep",
-        "Search the immutable verbatim history of prior active-context messages. Use this when a compacted summary may have omitted a useful detail.",
+        "Search the immutable verbatim history of prior active-context messages. Large matches return bounded previews; use context_expand with the result's segment id when you need the complete original message.",
         {
           type: "object",
           additionalProperties: false,

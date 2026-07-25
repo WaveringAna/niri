@@ -7,7 +7,7 @@ import { emit } from "../stream"
 import { runLoop } from "./loop"
 import { setRunnerPresence } from "./presence"
 import { createNiriToolCatalog } from "./tool-catalog"
-import { archiveContextMessages } from "./context-store"
+import { archiveContextMessages, normalizeActiveContextSummaryDepths } from "./context-store"
 import type { RunnerStateInternal } from "./types"
 import { clearSession, loadRestSnapshot, loadSession, saveRestSnapshot, saveSession } from "./util"
 import type { UserMessage } from "../types"
@@ -301,7 +301,7 @@ export async function wake(event: UserMessage): Promise<void> {
 
   const saved = await loadSession()
   if (saved) {
-    state.conversation = saved
+    state.conversation = normalizeActiveContextSummaryDepths(saved)
     autoSeeDiscordEvent(event)
     state.conversation.push({
       role: "user",
@@ -309,11 +309,11 @@ export async function wake(event: UserMessage): Promise<void> {
     })
   } else {
     autoSeeDiscordEvent(event)
-    state.conversation = await buildBootstrap(event, await loadRestSnapshot(), {
+    state.conversation = normalizeActiveContextSummaryDepths(await buildBootstrap(event, await loadRestSnapshot(), {
       clientCapabilities: clientTools.getCapabilities(),
       workspace: clientTools.getWorkspace(),
       discord: areDiscordToolsAvailable(),
-    })
+    }))
   }
 
   const convId = startConversation(event.source, event.triggeredAt)

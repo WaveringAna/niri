@@ -4,6 +4,7 @@ import { initDb } from "../db"
 import type { Message } from "../types"
 import {
   archiveContextMessages,
+  batchActiveContextSummariesForPrompt,
   attachContextSummaryId,
   contextSummaryId,
   describeContextSummary,
@@ -27,6 +28,19 @@ test("immutable context archive preserves exact messages and supports literal se
   assert.equal(results[0]?.messageId, messageId)
   assert.equal(results[0]?.content, message.content)
   assert.equal(results[0]?.source, "test-checkpoint")
+})
+
+test("context grep bounds large recursive tool results while retaining expansion metadata", () => {
+  const marker = `bounded-search-${Date.now()}`
+  const message = { role: "tool", content: `${marker}\n${"nested result ".repeat(1_000)}` } as Message
+  archiveContextMessages([message], "test-large-tool-result")
+
+  const result = grepContext(marker, 1)[0]
+  assert.ok(result)
+  assert.equal(result.contentTruncated, true)
+  assert.equal(result.contentChars, String(message.content).length)
+  assert.ok(result.content.length < result.contentChars)
+  assert.match(result.content, /use context_expand/)
 })
 
 test("summary DAG expands parent provenance before newer direct messages", () => {
@@ -80,6 +94,9 @@ test("lcm description exposes summary content, lineage, and bounded expansion co
   assert.equal(described.type, "summary")
   assert.equal(described.summary.content, "describe child summary")
   assert.deepEqual(described.summary.parentIds, [parentId])
+  assert.equal(described.summary.parentSegments[0]?.id, parentId)
+  assert.equal(described.summary.parentSegments[0]?.content, "describe parent summary")
+  assert.equal(described.summary.depth, 1)
   assert.equal(described.summary.provenanceDepth, 1)
   assert.equal(described.summary.provenanceNodeCount, 2)
   assert.equal(described.summary.directSources.messageCount, 1)
@@ -102,6 +119,48 @@ test("active summary messages carry a stable retrievable id", () => {
 
   assert.equal(contextSummaryId(String(messages[1]?.content)), id)
   assert.match(String(messages[1]?.content), /\[segments\]\n\[context-summary-id/)
+  assert.match(String(messages[1]?.content), /\[context-summary-depth 0\]/)
+})
+
+test("model-facing context batches every active segment with the trust note and query handles", () => {
+  const firstId = "sum_10000000-0000-4000-8000-000000000000"
+  const secondId = "sum_20000000-0000-4000-8000-000000000000"
+  const messages = [
+    { role: "system", content: "bootstrap" },
+    ...attachContextSummaryId([{ role: "user", content: "[context summary v1]\n[segments]\nfirst memory" } as Message], firstId, 0),
+    ...attachContextSummaryId([{ role: "user", content: "[context summary v1]\n[segments]\nsecond memory" } as Message], secondId, 0),
+    { role: "user", content: "fresh tail" },
+  ] as Message[]
+
+  const batched = batchActiveContextSummariesForPrompt(messages)
+  assert.equal(batched.length, 3)
+  assert.match(String(batched[1]?.content), /^\[continuity across time\]/)
+  assert.match(String(batched[1]?.content), /these are your memories\. you lived them\./)
+  assert.match(String(batched[1]?.content), new RegExp(firstId))
+  assert.match(String(batched[1]?.content), new RegExp(secondId))
+  assert.match(String(batched[1]?.content), /call lcm_describe/)
+  assert.equal(batched[2]?.content, "fresh tail")
+})
+
+test("summary DAG records ordered multi-parent consolidation nodes", () => {
+  const childIds = ["one", "two", "three", "four"].map((label) => recordContextCompaction({
+    summaryText: `${label} leaf summary`,
+    compactedMessages: [{ role: "user", content: `${label} exact source` } as Message],
+    method: "test-lcm-leaf",
+  }))
+  const parentId = recordContextCompaction({
+    summaryText: "four-way merged memory",
+    compactedMessages: [],
+    parentSummaryIds: childIds,
+    method: "test-lcm-merge-d1",
+  })
+
+  const described = describeContextSummary(parentId)
+  assert.ok(described)
+  assert.deepEqual(described.summary.parentIds, childIds)
+  assert.equal(described.summary.depth, 1)
+  assert.equal(described.summary.parentSegments.length, 4)
+  assert.equal(expandContextSummary(parentId)?.totalMessages, 4)
 })
 
 test("summary provenance preserves repeated identical message occurrences", () => {
@@ -118,7 +177,7 @@ test("summary provenance preserves repeated identical message occurrences", () =
   assert.equal(expanded.messages[0]?.id, expanded.messages[1]?.id)
 })
 
-test("rest snapshot extends the current summary with the exact raw tail", () => {
+test("rest snapshot preserves active segments and archives the exact raw tail as a new leaf", () => {
   const oldSource = { role: "user", content: `older compacted message ${Date.now()}` } as Message
   const parentId = recordContextCompaction({
     summaryText: "older living summary",
@@ -141,15 +200,19 @@ test("rest snapshot extends the current summary with the exact raw tail", () => 
     ...tail,
   ] as Message[], "going to sleep")
 
-  assert.notEqual(snapshot.summaryId, parentId)
-  assert.equal(contextSummaryId(snapshot.forest), snapshot.summaryId)
-  assert.doesNotMatch(snapshot.forest, new RegExp(parentId))
-  const expanded = expandContextSummary(snapshot.summaryId, 0, 10)
+  assert.equal(snapshot.summaryIds[0], parentId)
+  assert.equal(snapshot.forests[0], parentForest)
+  assert.equal(snapshot.summaryIds.length, 2)
+  const tailSummaryId = snapshot.summaryIds[1]!
+  assert.equal(contextSummaryId(snapshot.forests[1]!), tailSummaryId)
+  const expanded = expandContextSummary(tailSummaryId, 0, 10)
   assert.ok(expanded)
   assert.deepEqual(
     expanded.messages.map((message) => (message.content as { content: string }).content),
-    [oldSource.content, preSummaryWake.content, tail[0]?.content, tail[1]?.content],
+    [preSummaryWake.content, tail[0]?.content, tail[1]?.content],
   )
+  assert.equal(expandContextSummary(parentId)?.messages[0]?.content &&
+    (expandContextSummary(parentId)!.messages[0]!.content as { content: string }).content, oldSource.content)
 })
 
 test("rest snapshot creates a recoverable summary before the first compaction", () => {
@@ -159,7 +222,7 @@ test("rest snapshot creates a recoverable summary before the first compaction", 
     raw,
   ] as Message[])
 
-  assert.match(snapshot.forest, /^\[context summary v1\]/)
-  assert.equal(contextSummaryId(snapshot.forest), snapshot.summaryId)
-  assert.equal(expandContextSummary(snapshot.summaryId)?.totalMessages, 1)
+  assert.match(snapshot.forests[0]!, /^\[context summary v1\]/)
+  assert.equal(contextSummaryId(snapshot.forests[0]!), snapshot.summaryIds[0])
+  assert.equal(expandContextSummary(snapshot.summaryIds[0]!)?.totalMessages, 1)
 })

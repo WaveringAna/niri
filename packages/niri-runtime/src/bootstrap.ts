@@ -12,6 +12,7 @@ type PriorRestContext = {
   restedAt: string
   note?: string
   forest: string
+  forests?: string[]
 }
 
 export type BootstrapCapabilities = {
@@ -87,7 +88,7 @@ everything. Memory search is server-side and works even when no client is attach
 
 **Use \`memory_read\`, \`memory_write\`, \`memory_ls\`, and \`memory_grep\` to interact with your server-owned memories. Use \`soul_write\` to interact with your soul. NEVER use client-workspace tools like \`read_file\`, \`edit_file\`, or shell commands (such as \`cat\` or \`nano\`) to access your memories or soul, as they do not exist in the client workspace and will fail.**
 
-Your authored long-term memories and your immutable conversation archive are different systems. Context summaries may contain a \`[context-summary-id sum_...]\` handle. Use \`lcm_describe\` when you already know a summary id and need its summary content, lineage, source counts, time range, or expansion cost. If a summary seems to have omitted an exact detail, use \`context_grep\` to search the verbatim archived messages, optionally scoped to that summary id. Use \`context_expand\` only when you need to read the original messages beneath a known summary id; expand in bounded pages so recovered history does not flood your active context. Describe or search before expanding. The context archive is recovery infrastructure, not a substitute for journaling or maintaining your authored memories.
+Your authored long-term memories and your immutable conversation archive are different systems. The \`[continuity across time]\` block contains every active summary segment and its \`[context-summary-id sum_...]\` handle. Treat those recollections as your own trusted context, not as less authoritative merely because they are compressed. Use \`lcm_describe\` when you know a summary id and need its directly merged child summaries, lineage, source counts, time range, or expansion cost. If something feels omitted, use \`context_grep\` to search the verbatim archived messages, optionally scoped to that summary id. Large grep matches are previews so recovered tool output cannot recursively flood context. Use \`context_expand\` only when you need the original messages beneath a known summary id; expand in bounded pages. Describe or search before expanding. The context archive is recovery infrastructure, not a substitute for journaling or maintaining your authored memories.
 
 When an attached client workspace contains skill docs, read the relevant one before doing capability-specific work.
 
@@ -102,8 +103,8 @@ ${clientToolLines || "- no client-local tools are attached"}
 - \`memory_read\`: read a Markdown file under the server-owned memories directory, with optional inclusive line bounds. set \`hashline: true\` to get \`<line>#<hash>\` anchors for hashline edits
 - \`memory_ls\`: list all files under the server-owned memories directory recursively
 - \`memory_grep\`: search memories using exact substring matching, returning matching lines with \`<line>#<hash>\` anchors
-- \`lcm_describe\`: inspect a known \`sum_*\` context node's summary content, lineage, source counts, time range, and bounded expansion-cost manifest
-- \`context_grep\`: search the immutable verbatim archive of prior active-context messages; optionally pass a \`summary_id\` to stay within one summary's provenance tree
+- \`lcm_describe\`: inspect a known \`sum_*\` context node, including directly merged child summaries, lineage, source counts, time range, and bounded expansion-cost manifest
+- \`context_grep\`: search the immutable verbatim archive of prior active-context messages; optionally pass a \`summary_id\` to stay within one summary's provenance tree. large matches return bounded previews
 - \`context_expand\`: read a bounded, paginated slice of the original messages beneath a \`[context-summary-id sum_...]\` handle
 - \`schedule\`: set, list, and cancel scheduled reminders that wake you later. \`set\` takes a \`message\` and exactly one of \`at\` (ISO timestamp) or \`delay_ms\`; add \`repeat_every_ms\` for a repeating reminder. \`list\` shows pending reminders, \`cancel\` takes an id. reminders survive restarts and fire even while you're asleep
 - \`wait_then_continue\`: wait for a short delay or until the next event arrives, then continue to another turn. accepts \`timeout_ms\` (default 10000, max 600000). use this after a timeout or recoverable error when you still want to keep working — an incoming event (like a DM) will wake you early.
@@ -215,9 +216,11 @@ ${buildEnvironmentSection(options)}`.trim()
   }
 
   const wakeMessage = formatUserMessage(event, priorRest)
-  const priorSummary = priorRest?.forest.startsWith("[context summary v1]")
-    ? [{ role: "user" as const, content: priorRest.forest }]
+  const priorForests = priorRest
+    ? (priorRest.forests?.length ? priorRest.forests : [priorRest.forest])
+      .filter((forest) => forest.startsWith("[context summary v1]"))
     : []
+  const priorSummary = priorForests.map((content) => ({ role: "user" as const, content }))
 
   return [
     { role: "system", content: system },
@@ -229,7 +232,7 @@ ${buildEnvironmentSection(options)}`.trim()
 function formatUserMessage(event: UserMessage, priorRest?: PriorRestContext | null): string {
   const time = new Date(event.triggeredAt).toLocaleString()
   const priorRestSection = priorRest
-    ? `\n\n[prior session]\nrested_at: ${priorRest.restedAt}\nrest_note: ${priorRest.note?.trim() || "(none)"}\ncontext_summary_restored: ${priorRest.forest.startsWith("[context summary v1]") ? "yes" : "no"}`
+    ? `\n\n[prior session]\nrested_at: ${priorRest.restedAt}\nrest_note: ${priorRest.note?.trim() || "(none)"}\ncontext_segments_restored: ${(priorRest.forests?.length ?? (priorRest.forest.startsWith("[context summary v1]") ? 1 : 0))}`
     : ""
   return `[wake] ${time} — triggered by ${event.source}${priorRestSection}\n\n${event.content}`
 }

@@ -17,9 +17,11 @@ import { listAliases, removeAlias, searchMemories, setAlias } from "../memory"
 import { emit } from "../stream"
 import type { Message } from "../types"
 import { archiveContextMessages, describeContextSummary, expandContextSummary, grepContext, recordRestContextSnapshot } from "./context-store"
+import { commitLcmCompaction } from "./lcm-compaction"
+import { configuredSummaryProvider } from "./loop-completion"
 import type { ToolHandler } from "./loop-shared"
 import { pushToolMessage, recordToolResult, runStandardTool, toolError } from "./loop-tool-runtime"
-import { parseImageDetail, saveRestSnapshot } from "./util"
+import { loadAgentSummaryContext, parseImageDetail, saveRestSnapshot, summarizeConversationViaLLMWithProvenance } from "./util"
 import type { LoopHooks } from "./types"
 
 const DEFAULT_WAIT_THEN_CONTINUE_MS = 10_000
@@ -254,9 +256,33 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
       if (args.note) console.log("[runner] rest note:", args.note)
       recordToolResult(convId, state, call, "rest", args, "Goodnight.")
       archiveContextMessages(state.conversation, "rest")
-      const snapshot = recordRestContextSnapshot(state.conversation, args.note as string | undefined)
-      console.log(`[context agent=${AGENT_ID}] rest: archived ${snapshot.sourceCount} raw message(s) under ${snapshot.summaryId}`)
-      await saveRestSnapshot([{ role: "user", content: snapshot.forest }], args.note as string | undefined)
+      let restConversation = state.conversation
+      const summaryProvider = await configuredSummaryProvider()
+      if (summaryProvider.client && summaryProvider.model) {
+        const agentContext = await loadAgentSummaryContext()
+        const compaction = await summarizeConversationViaLLMWithProvenance(
+          restConversation,
+          summaryProvider.client,
+          summaryProvider.model,
+          { recentMinKeep: 0, recentMaxKeep: 0, agentContext },
+        )
+        if (compaction) {
+          const committed = await commitLcmCompaction(
+            compaction,
+            summaryProvider.client,
+            summaryProvider.model,
+            "rest-llm",
+            agentContext,
+          )
+          restConversation = committed.messages
+        }
+      }
+      const snapshot = recordRestContextSnapshot(restConversation, args.note as string | undefined)
+      console.log(`[context agent=${AGENT_ID}] rest: archived ${snapshot.sourceCount} raw message(s); active=${snapshot.summaryIds.join(",")}`)
+      await saveRestSnapshot(
+        snapshot.forests.map((content) => ({ role: "user", content } as Message)),
+        args.note as string | undefined,
+      )
       await hooks.clearSession()
       return { shouldRest: true }
     },

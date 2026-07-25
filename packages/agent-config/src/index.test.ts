@@ -70,3 +70,15 @@ server:
   assert.equal(settings.OPENAI_API_KEY, "key-1")
   assert.equal(settings.MODEL, "gpt-test")
 })
+
+test("agentSettings exposes the lcm summary batch size", async (t) => {
+  const file = await withYaml(`
+client: local
+runtime:
+  lcmSummaryBatchSize: 4
+`)
+  t.after(() => fs.rm(path.dirname(file), { recursive: true, force: true }))
+
+  const settings = agentSettings(parseAgentFile(file))
+  assert.equal(settings.LCM_SUMMARY_BATCH_SIZE, "4")
+})
