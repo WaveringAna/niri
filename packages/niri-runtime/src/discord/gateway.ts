@@ -112,7 +112,12 @@ async function updateGuildBios(client: Client, bio: string): Promise<void> {
   await Promise.all(
     Array.from(client.guilds.cache.values()).map(async (guild) => {
       try {
-        await guild.members.editMe({ bio })
+        // discord.js's Routes.guildMember helper percent-encodes @me, but
+        // Discord's current-member bio route requires the literal @me path.
+        const response = await client.rest.patch(`/guilds/${guild.id}/members/@me`, { body: { bio } })
+        if (!response || typeof response !== "object" || !("bio" in response) || response.bio !== bio) {
+          throw new Error("Discord did not return the requested guild bio")
+        }
       } catch (err) {
         console.warn(`[discord gateway] failed to update bio in guild ${guild.id}:`, err)
       }
