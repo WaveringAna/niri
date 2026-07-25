@@ -61,6 +61,7 @@ import {
   withDiscordRestRetry,
 } from "./rest"
 import { maybeFetchAndCachePronouns } from "./pronouns"
+import { getPosture } from "./posture"
 
 // ── result types ───────────────────────────────────────────────────────
 
@@ -69,6 +70,8 @@ export type DiscordIngestResult = {
   isNew: boolean
   messageId?: string
   channelId?: string
+  authorId?: string | null
+  isDm?: boolean
   itemId?: string
   bucket?: "dm" | "mention"
   isFromBot?: boolean
@@ -210,6 +213,8 @@ export function ingestDiscordEvent(payload: unknown, options?: { botUserId?: str
       isNew,
       messageId: record.messageId,
       channelId: record.channelId,
+      authorId: record.authorId,
+      isDm: record.isDm,
       itemId: record.messageId,
       bucket,
       isFromBot: record.isFromBot,
@@ -222,6 +227,8 @@ export function ingestDiscordEvent(payload: unknown, options?: { botUserId?: str
     isNew,
     messageId: record.messageId,
     channelId: record.channelId,
+    authorId: record.authorId,
+    isDm: record.isDm,
     isFromBot: record.isFromBot,
     isFromSelf: record.isFromSelf,
     ...(!record.isDm && record.mentionsBot && !isConfiguredDiscordChannel(record.channelId)
@@ -341,6 +348,8 @@ export function buildDiscordBatchDigest(params?: {
   pendingPreviewLimit?: number
   intervalMs?: number
 }): DiscordBatchDigest | null {
+  if (getPosture() === "forge") return null
+
   const now = new Date()
   const nowIso = now.toISOString()
   const defaultIntervalMs = Math.max(

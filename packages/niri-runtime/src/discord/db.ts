@@ -291,30 +291,30 @@ export function repairDiscordMessageChannelFlags(): number {
 
 // ── inbox status types ─────────────────────────────────────────────────
 
-export type InboxStatus = "pending" | "seen" | "acted" | "ignored"
+export type InboxStatus = "pending" | "queued" | "seen" | "acted" | "ignored"
 export type InboxAction = "none" | "replied" | "messaged" | "dismissed" | "noted"
 
-const VALID_STATUS = new Set<InboxStatus>(["pending", "seen", "acted", "ignored"])
+const VALID_STATUS = new Set<InboxStatus>(["pending", "queued", "seen", "acted", "ignored"])
 export const VALID_ACTION = new Set<InboxAction>(["none", "replied", "messaged", "dismissed", "noted"])
 
 /**
  * Normalizes a status filter input into a validated array of inbox statuses.
  *
  * @param input - Comma-separated string or array.
- * @returns Array of valid statuses, defaulting to `["pending"]`.
+ * @returns Array of valid statuses, defaulting to pending and forge-held items.
  */
 export function normalizeStatuses(input?: string[] | string | null): InboxStatus[] {
   const rawValues = Array.isArray(input)
     ? input
     : typeof input === "string"
       ? input.split(",").map((x) => x.trim())
-      : ["pending"]
+      : ["pending", "queued"]
 
   const values = rawValues
     .map((x) => x.trim())
     .filter((x): x is InboxStatus => VALID_STATUS.has(x as InboxStatus))
 
-  return values.length > 0 ? values : ["pending"]
+  return values.length > 0 ? values : ["pending", "queued"]
 }
 
 /**
@@ -612,6 +612,24 @@ export function updateInboxItem(itemId: string, status: InboxStatus, action: Inb
   ).run(status, action, note, now, now, itemId)
 }
 
+/**
+ * Holds pending inbox items while the agent is in forge without marking them
+ * seen. Held items remain available to Discord tools after forge ends.
+ */
+export function holdPendingDiscordItems(): number {
+  const db = getDb()
+  const now = new Date().toISOString()
+  const result = db.prepare(
+    `update discord_items
+     set status = 'queued',
+         decision_note = coalesce(decision_note, 'queued during forge'),
+         last_decision_at = ?,
+         last_seen_at = ?
+     where status = 'pending'`,
+  ).run(now, now)
+  return Number(result.changes ?? 0)
+}
+
 // ── reads: channels ────────────────────────────────────────────────────
 
 /**
@@ -831,6 +849,39 @@ export function queryBatchPendingPreview(opts: {
     .all(opts.botUserId, opts.botUserId, ...opts.configuredIds, opts.limit) as BatchPendingRow[]
 }
 
+export type PostureQueueRow = {
+  is_dm: number
+  author_id: string | null
+  author_username: string | null
+  channel_id: string
+  channel_name: string | null
+  count: number
+  first_seen_at: string
+}
+
+/** Returns forge-held messages grouped for a compact posture summary. */
+export function queryPostureQueue(): PostureQueueRow[] {
+  const db = getDb()
+  return db
+    .prepare(
+      `select
+         m.is_dm,
+         m.author_id,
+         m.author_username,
+         m.channel_id,
+         c.channel_name,
+         count(*) as count,
+         min(i.first_seen_at) as first_seen_at
+       from discord_items i
+       join discord_messages m on m.message_id = i.message_id
+       left join discord_channels c on c.channel_id = m.channel_id
+       where i.status = 'queued'
+       group by m.is_dm, m.author_id, m.author_username, m.channel_id, c.channel_name
+       order by first_seen_at asc`,
+    )
+    .all() as PostureQueueRow[]
+}
+
 // ── reads: reference resolution ────────────────────────────────────────
 
 /**
@@ -940,7 +991,7 @@ export function findPendingDmItemId(channelId: string): string | null {
       `select i.item_id
        from discord_items i
        join discord_messages m on m.message_id = i.message_id
-       where i.status = 'pending'
+       where i.status in ('pending', 'queued')
          and m.channel_id = ?
          and m.is_dm = 1
          and m.is_from_bot = 0

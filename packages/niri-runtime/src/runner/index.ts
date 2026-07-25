@@ -333,6 +333,7 @@ export async function wake(event: UserMessage): Promise<void> {
       waitForEvent,
       waitForEventWithTimeout,
       injectIncomingEvent,
+      enqueueEvent,
       flushDeferredEvents,
       clearSession,
       saveSession: saveRuntimeSnapshot,

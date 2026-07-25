@@ -82,3 +82,30 @@ runtime:
   const settings = agentSettings(parseAgentFile(file))
   assert.equal(settings.LCM_SUMMARY_BATCH_SIZE, "4")
 })
+
+test("agentSettings exposes Discord posture bypass ids", async (t) => {
+  const file = await withYaml(`
+client: local
+discord:
+  posture_bypass:
+    users:
+      - "250140413774659587"
+      - "1497041312061329618"
+    channels:
+      - "1497733589545123981"
+`)
+  t.after(() => fs.rm(path.dirname(file), { recursive: true, force: true }))
+
+  const config = parseAgentFile(file)
+  assert.deepEqual(config.discord?.posture_bypass, {
+    users: ["250140413774659587", "1497041312061329618"],
+    channels: ["1497733589545123981"],
+  })
+  assert.equal(
+    agentSettings(config).DISCORD_POSTURE_BYPASS,
+    JSON.stringify({
+      users: ["250140413774659587", "1497041312061329618"],
+      channels: ["1497733589545123981"],
+    }),
+  )
+})

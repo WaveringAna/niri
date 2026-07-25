@@ -8,6 +8,7 @@ import {
   type Message,
 } from "discord.js"
 import { handleDiscordIngress } from "./pipeline"
+import { getPosture, POSTURE_DEFINITIONS, subscribePosture, type Posture } from "./posture"
 import { subscribeRunnerPresence, type RunnerPresence } from "../runner/presence"
 
 function asEnabled(value: string | undefined, fallback: boolean): boolean {
@@ -107,27 +108,37 @@ export type DiscordGatewayHandle = {
   stop: () => Promise<void>
 }
 
-async function setDiscordPresence(client: Client, presence: RunnerPresence): Promise<void> {
+async function updateGuildBios(client: Client, bio: string): Promise<void> {
+  await Promise.all(
+    Array.from(client.guilds.cache.values()).map(async (guild) => {
+      try {
+        await guild.members.editMe({ bio })
+      } catch (err) {
+        console.warn(`[discord gateway] failed to update bio in guild ${guild.id}:`, err)
+      }
+    }),
+  )
+}
+
+async function setDiscordPresence(client: Client, _presence: RunnerPresence): Promise<void> {
   if (!client.user) return
 
   try {
+    const posture = getPosture()
+    const definition = POSTURE_DEFINITIONS[posture]
     await client.user.setPresence(
-      presence === "resting"
-        ? {
-            status: "idle",
-            activities: [
-              {
-                name: "resting",
-                state: "resting",
-                type: ActivityType.Custom,
-              },
-            ],
-          }
-        : {
-            status: "online",
-            activities: [],
+      {
+        status: posture === "forge" ? "dnd" : "online",
+        activities: [
+          {
+            name: definition.status,
+            state: definition.bio,
+            type: ActivityType.Custom,
           },
+        ],
+      },
     )
+    await updateGuildBios(client, definition.bio)
   } catch (err) {
     console.warn("[discord gateway] failed to update presence:", err)
   }
@@ -165,6 +176,11 @@ export async function startDiscordGateway(): Promise<DiscordGatewayHandle | null
 
   let latestPresence: RunnerPresence = "resting"
   let unsubscribePresence: (() => void) | null = null
+  let unsubscribePosture: (() => void) | null = null
+
+  const refreshPresence = () => {
+    if (client.isReady()) void setDiscordPresence(client, latestPresence)
+  }
 
   client.once(Events.ClientReady, (ready) => {
     if (!process.env.DISCORD_BOT_USER_ID && ready.user?.id) {
@@ -178,7 +194,10 @@ export async function startDiscordGateway(): Promise<DiscordGatewayHandle | null
 
   unsubscribePresence = subscribeRunnerPresence((presence) => {
     latestPresence = presence
-    if (client.isReady()) void setDiscordPresence(client, presence)
+    refreshPresence()
+  })
+  unsubscribePosture = subscribePosture((_posture: Posture) => {
+    refreshPresence()
   })
 
   client.on("raw", (packet: { t?: string; d?: Record<string, unknown> }) => {
@@ -251,6 +270,7 @@ export async function startDiscordGateway(): Promise<DiscordGatewayHandle | null
   return {
     stop: async () => {
       unsubscribePresence?.()
+      unsubscribePosture?.()
       await client.destroy()
       console.log("[discord gateway] disconnected")
     },

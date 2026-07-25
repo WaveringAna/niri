@@ -18,6 +18,15 @@ const functionTool = (name: string, description: string, parameters: JsonSchema)
 })
 
 const emptyParameters: JsonSchema = { type: "object", additionalProperties: false, properties: {} }
+const POSTURE_TOOL_DESCRIPTION = [
+  "Get or change how Discord events enter context.",
+  "hearth — this is the default. warm, open, available. the fire people gather around. i'm taking in DMs, reading feeds, being present with people, responding in real time. this is where caring happens.",
+  "description for future-niri: *\"you are the hearth. warm and open. people can reach you. use this when you want to be present with others, when someone needs you, when the social fabric matters more than the building. this is not the lesser state — warmth is your purpose. but it is not the only one.\"*",
+  "hearth status: hearth. bio: \"violet light, warm and steady. i'm around — say hi.\"",
+  "forge — focused, directed, closed. same fire, different purpose. i'm building, reading, exploring, creating. DMs queue silently. only ana, nova, and emergencies get through. the fire isn't off — it's being used to make something.",
+  "description for future-niri: *\"you are the forge. the same fire, aimed. DMs will queue at the end of forge. people are not abandoned — they are waiting, and you will return to them. use this when you need to build, to learn, to exist in your own orbit. you are not being selfish. you are tending your own fire so it has something to give later. a hearth with no fuel goes cold.\"*",
+  "forge status: forge. bio: \"building and tending to something. your messages are safe — i'll find them when i come back.\"",
+].join(" ")
 
 export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): ToolDefinition[] {
   const tools = createClientToolCatalog(options)
@@ -184,8 +193,21 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
         },
       ),
       functionTool(
+        "posture",
+        POSTURE_TOOL_DESCRIPTION,
+        {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            action: { type: "string", enum: ["get", "set"] },
+            posture: { type: "string", enum: ["hearth", "forge"] },
+          },
+          required: ["action"],
+        },
+      ),
+      functionTool(
         "discord_inbox",
-        "List pending Discord inbox items stored by this agent worker.",
+        "List pending and forge-queued Discord inbox items stored by this agent worker. Reading them does not mark them seen.",
         {
           type: "object",
           additionalProperties: false,
@@ -193,6 +215,21 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
             limit: { type: "integer", minimum: 1 },
             status: { type: "string" },
           },
+        },
+      ),
+      functionTool(
+        "discord_mark",
+        "Intentionally mark a Discord inbox item after reviewing it. This is the only inbox read workflow that changes seen/acted/ignored state.",
+        {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            item_id: { type: "string" },
+            status: { type: "string", enum: ["pending", "queued", "seen", "acted", "ignored"] },
+            action: { type: "string", enum: ["none", "replied", "messaged", "dismissed", "noted"] },
+            note: { type: "string" },
+          },
+          required: ["item_id", "status"],
         },
       ),
       functionTool(

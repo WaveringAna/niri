@@ -22,6 +22,7 @@ export interface LoopHooks {
   waitForEvent: () => Promise<UserMessage | null>
   waitForEventWithTimeout: (timeoutMs: number) => Promise<UserMessage | null>
   injectIncomingEvent: (convId: number, event: UserMessage) => void
+  enqueueEvent?: (event: UserMessage, options?: { priority?: boolean }) => boolean
   flushDeferredEvents: () => void
   clearSession: () => Promise<void>
   saveSession: () => Promise<void>

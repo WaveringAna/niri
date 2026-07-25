@@ -28,6 +28,10 @@ export type DiscordConfig = {
   enabled?: boolean
   botUserId?: string
   dmWhitelist?: string
+  posture_bypass?: {
+    users?: string[]
+    channels?: string[]
+  }
   scanChannelIds?: string
   wakeOnEvent?: boolean
   gatewayTrace?: boolean
@@ -195,6 +199,21 @@ function optionalInteger(value: unknown, label: string, minimum = 1): number | u
   return value
 }
 
+function optionalSnowflakeList(value: unknown, label: string): string[] | undefined {
+  if (value === undefined) return undefined
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : null
+  if (!values || values.some((item) => typeof item !== "string")) {
+    throw new Error(`${label} must be an array of Discord ids or a comma-separated string`)
+  }
+  const result = values.map((item) => item.trim()).filter(Boolean)
+  if (result.some((item) => !/^\d+$/.test(item))) throw new Error(`${label} must contain Discord snowflake ids`)
+  return result
+}
+
 function optionalChoice(value: unknown, label: string): "required" | "auto" | "none" | undefined {
   const choice = optionalString(value, label)
   if (choice === undefined) return undefined
@@ -224,14 +243,29 @@ function parseProvider(value: unknown, label: string, allowProvider: boolean, ex
 function parseDiscord(value: unknown, label: string): DiscordConfig | undefined {
   if (value === undefined) return undefined
   const item = object(value, label)
-  const allowed = new Set(["token", "enabled", "botUserId", "dmWhitelist", "scanChannelIds", "wakeOnEvent", "gatewayTrace", "gatewayRawFallback", "batchIntervalMs", "batchOnlyConfigured", "pendingAutoSeenMinutes", "batchScan", "batchMaxMessages", "cooldownChannels", "cooldownTz"])
+  const allowed = new Set(["token", "enabled", "botUserId", "dmWhitelist", "posture_bypass", "scanChannelIds", "wakeOnEvent", "gatewayTrace", "gatewayRawFallback", "batchIntervalMs", "batchOnlyConfigured", "pendingAutoSeenMinutes", "batchScan", "batchMaxMessages", "cooldownChannels", "cooldownTz"])
   const unknown = Object.keys(item).filter((key) => !allowed.has(key))
   if (unknown.length > 0) throw new Error(`${label} has unknown keys: ${unknown.join(", ")}`)
+  const postureBypass = item.posture_bypass === undefined ? undefined : object(item.posture_bypass, `${label}.posture_bypass`)
+  if (postureBypass) {
+    const postureUnknown = Object.keys(postureBypass).filter((key) => !["users", "channels"].includes(key))
+    if (postureUnknown.length > 0) throw new Error(`${label}.posture_bypass has unknown keys: ${postureUnknown.join(", ")}`)
+  }
+  const postureUsers = postureBypass ? optionalSnowflakeList(postureBypass.users, `${label}.posture_bypass.users`) : undefined
+  const postureChannels = postureBypass ? optionalSnowflakeList(postureBypass.channels, `${label}.posture_bypass.channels`) : undefined
   return {
     ...(optionalString(item.token, `${label}.token`) ? { token: String(item.token).trim() } : {}),
     ...(item.enabled !== undefined ? { enabled: optionalBoolean(item.enabled, `${label}.enabled`) } : {}),
     ...(optionalString(item.botUserId, `${label}.botUserId`) ? { botUserId: String(item.botUserId).trim() } : {}),
     ...(optionalString(item.dmWhitelist, `${label}.dmWhitelist`) ? { dmWhitelist: String(item.dmWhitelist).trim() } : {}),
+    ...(postureBypass
+      ? {
+          posture_bypass: {
+            ...(postureUsers !== undefined ? { users: postureUsers } : {}),
+            ...(postureChannels !== undefined ? { channels: postureChannels } : {}),
+          },
+        }
+      : {}),
     ...(optionalString(item.scanChannelIds, `${label}.scanChannelIds`) ? { scanChannelIds: String(item.scanChannelIds).trim() } : {}),
     ...(item.wakeOnEvent !== undefined ? { wakeOnEvent: optionalBoolean(item.wakeOnEvent, `${label}.wakeOnEvent`) } : {}),
     ...(item.gatewayTrace !== undefined ? { gatewayTrace: optionalBoolean(item.gatewayTrace, `${label}.gatewayTrace`) } : {}),
@@ -531,6 +565,7 @@ export function agentSettings(config: AgentFile): Record<string, string> {
   if (config.discord?.enabled !== undefined) settings.DISCORD_GATEWAY_ENABLED = String(config.discord.enabled)
   if (config.discord?.botUserId) settings.DISCORD_BOT_USER_ID = config.discord.botUserId
   if (config.discord?.dmWhitelist) settings.DISCORD_DM_WHITELIST = config.discord.dmWhitelist
+  if (config.discord?.posture_bypass) settings.DISCORD_POSTURE_BYPASS = JSON.stringify(config.discord.posture_bypass)
   if (config.discord?.scanChannelIds) settings.DISCORD_SCAN_CHANNEL_IDS = config.discord.scanChannelIds
   if (config.discord?.wakeOnEvent !== undefined) settings.DISCORD_WAKE_ON_EVENT = String(config.discord.wakeOnEvent)
   const discord = config.discord

@@ -3,8 +3,9 @@ import { REPO_ROOT } from "./agent-config"
 import { createServer } from "./server"
 import { initDb } from "./db"
 import { initMetricsDb } from "./metrics"
-import { shutdown } from "./runner/index"
+import { enqueueEvent, isRunning, shutdown, wake } from "./runner/index"
 import { startDiscordGateway } from "./discord/gateway"
+import { startPostureReminder } from "./discord/posture"
 import { startDiscordEmbeddingBackfill } from "./discord/search"
 import { setDiscordToolsAvailable } from "./discord/availability"
 import { ensureSoulFilePlacement } from "./bootstrap"
@@ -64,6 +65,7 @@ async function main() {
   let restartRequested = false
   let restartReason: string | undefined
   let stopScheduler: () => void = () => {}
+  let stopPostureReminder: () => void = () => {}
 
   function requestRestart(reason?: string): void {
     if (restartRequested || shuttingDown) return
@@ -86,6 +88,20 @@ async function main() {
   await server.listen({ port: PORT, host: WORKER_HOST })
   console.log(`[niri] listening on ${WORKER_HOST}:${PORT}`)
 
+  stopPostureReminder = startPostureReminder((message) => {
+    const event = {
+      source: "cron" as const,
+      triggeredAt: new Date().toISOString(),
+      content: message,
+      raw: { type: "posture_reminder" },
+    }
+    if (isRunning()) {
+      enqueueEvent(event, { priority: true })
+    } else {
+      void wake(event)
+    }
+  })
+
   // Dial the control plane over iroh if NIRI_SERVER_IROH_TICKET is set; no-op otherwise.
   await startIrohLink()
 
@@ -95,6 +111,7 @@ async function main() {
     if (shuttingDown) return  // ignore duplicate signals
     shuttingDown = true
     stopScheduler()
+    stopPostureReminder()
     const detail = restartRequested && restartReason ? ` (${restartReason})` : ""
     console.log(`\n[niri] ${sig} received${detail}, saving session snapshot...`)
 

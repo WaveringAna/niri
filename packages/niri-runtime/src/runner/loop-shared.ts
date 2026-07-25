@@ -23,6 +23,7 @@ export type ToolArgs = {
   status?: string
   item_id?: string
   action?: string
+  posture?: string
   channel_id?: string
   channel_ids?: string[]
   before_message_id?: string

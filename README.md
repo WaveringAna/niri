@@ -163,6 +163,8 @@ Relative `home` and `workspace` paths resolve from the repository root.
 | `enabled` | boolean |
 | `botUserId` | string |
 | `dmWhitelist` | comma-separated string |
+| `posture_bypass.users` | array of Discord user ids |
+| `posture_bypass.channels` | array of Discord channel ids |
 | `scanChannelIds` | comma-separated string |
 | `wakeOnEvent` | boolean |
 

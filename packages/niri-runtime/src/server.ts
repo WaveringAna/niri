@@ -6,6 +6,7 @@ import type { ControlCommand } from "./awp/types"
 import { wake, isRunning, isWaitingForEvent, enqueueEvent, getRunnerStatus } from "./runner/index"
 import { buildDiscordBatchDigest, scanDiscordChannels } from "./discord/state"
 import { handleDiscordIngress } from "./discord/pipeline"
+import { getPosture } from "./discord/posture"
 import { fromBsky } from "./triggers/bsky"
 import { fromCron } from "./triggers/cron"
 import { fromChat } from "./triggers/chat"
@@ -73,6 +74,7 @@ export function createServer(options: { requestRestart?: (reason?: string) => vo
     try {
       if (!isRunning()) return
       if (!isWaitingForEvent()) return
+      if (getPosture() === "forge") return
 
       if (DISCORD_BATCH_SCAN) {
         await scanDiscordChannels({ limit: DISCORD_BATCH_MAX_MESSAGES })

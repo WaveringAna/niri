@@ -1,6 +1,8 @@
 import { enqueueEvent, isRunning, wake } from "../runner/index"
 import { fromDiscord } from "../triggers/discord"
 import { isChannelActiveNow } from "./cooldown"
+import { updateInboxItem } from "./db"
+import { getPosture, isPostureBypass } from "./posture"
 import { ingestDiscordEvent } from "./state"
 
 const DISCORD_WAKE_ON_EVENT = (process.env.DISCORD_WAKE_ON_EVENT ?? "false").trim().toLowerCase() === "true"
@@ -8,18 +10,35 @@ const DISCORD_WAKE_ON_EVENT = (process.env.DISCORD_WAKE_ON_EVENT ?? "false").tri
 export type DiscordIngressOutcome = {
   ingested: boolean
   woke: boolean
-  reason: "ingest_only" | "wake_on_event" | "dm_priority" | "cooldown"
+  reason: "ingest_only" | "wake_on_event" | "dm_priority" | "cooldown" | "forge" | "posture_bypass"
   note?: string
 }
 
 export function handleDiscordIngress(payload: unknown): DiscordIngressOutcome {
   const ingest = ingestDiscordEvent(payload)
-  const isWakeEligible = ingest.isNew && !ingest.isFromSelf && Boolean(ingest.bucket)
+  const posture = getPosture()
+  const inForge = posture === "forge"
+  const postureBypass = isPostureBypass(ingest.authorId, ingest.channelId)
+  const isWakeEligible =
+    ingest.isNew &&
+    !ingest.isFromSelf &&
+    (Boolean(ingest.bucket) || (inForge && postureBypass))
   const wakeForDm = ingest.bucket === "dm"
+
+  if (inForge && !postureBypass && isWakeEligible && ingest.itemId) {
+    updateInboxItem(ingest.itemId, "queued", "none", "queued during forge")
+    return {
+      ingested: ingest.stored,
+      woke: false,
+      reason: "forge",
+      note: "Discord event held until hearth",
+    }
+  }
 
   // Cooldown channels: keep ingesting for memory, but never wake outside the
   // configured active hours (even for @mentions; DMs bypass cooldowns).
-  const outsideActiveHours = !wakeForDm && ingest.channelId != null && !isChannelActiveNow(ingest.channelId)
+  const outsideActiveHours =
+    !wakeForDm && !postureBypass && ingest.channelId != null && !isChannelActiveNow(ingest.channelId)
   if (isWakeEligible && outsideActiveHours) {
     return {
       ingested: ingest.stored,
@@ -29,7 +48,7 @@ export function handleDiscordIngress(payload: unknown): DiscordIngressOutcome {
     }
   }
 
-  const shouldWake = isWakeEligible && (DISCORD_WAKE_ON_EVENT || wakeForDm)
+  const shouldWake = isWakeEligible && (DISCORD_WAKE_ON_EVENT || wakeForDm || (inForge && postureBypass))
 
   if (!shouldWake) {
     return {
@@ -42,7 +61,7 @@ export function handleDiscordIngress(payload: unknown): DiscordIngressOutcome {
 
   const event = fromDiscord(payload)
   if (isRunning()) {
-    enqueueEvent(event, { priority: wakeForDm })
+    enqueueEvent(event, { priority: wakeForDm || postureBypass })
   } else {
     void wake(event)
   }
@@ -50,7 +69,7 @@ export function handleDiscordIngress(payload: unknown): DiscordIngressOutcome {
   return {
     ingested: ingest.stored,
     woke: true,
-    reason: wakeForDm ? "dm_priority" : "wake_on_event",
+    reason: inForge && postureBypass ? "posture_bypass" : wakeForDm ? "dm_priority" : "wake_on_event",
     ...(ingest.reason ? { note: ingest.reason } : {}),
   }
 }

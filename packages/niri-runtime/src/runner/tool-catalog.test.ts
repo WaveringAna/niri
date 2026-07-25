@@ -18,4 +18,6 @@ test("Discord and client tools are independently gated", () => {
   assert.equal(names.includes("read_file"), true)
   assert.equal(names.includes("shell"), false)
   assert.equal(names.includes("discord_send"), true)
+  assert.equal(names.includes("discord_mark"), true)
+  assert.equal(names.includes("posture"), true)
 })

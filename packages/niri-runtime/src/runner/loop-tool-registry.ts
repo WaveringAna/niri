@@ -8,10 +8,12 @@ import {
   listDiscordBackread,
   listDiscordChannels,
   listDiscordInbox,
+  markDiscordItem,
   scanDiscordChannels,
   sendDiscordMessage,
   setDiscordChannelNote,
 } from "../discord/state"
+import { getPostureState, setPosture, type Posture } from "../discord/posture"
 import { searchDiscordMessages } from "../discord/search"
 import { listAliases, removeAlias, searchMemories, setAlias } from "../memory"
 import { emit } from "../stream"
@@ -541,6 +543,33 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
           ),
       }),
 
+    posture: (ctx) =>
+      runStandardTool(ctx, {
+        name: "posture",
+        logArgKeys: ["action", "posture"] as const,
+        runArgKeys: ["action", "posture"] as const,
+        run: async (action, posture) => {
+          if (action === "get") return JSON.stringify(getPostureState(), null, 2)
+          if (action !== "set" || (posture !== "hearth" && posture !== "forge")) {
+            throw new Error("posture requires action=get or action=set with posture=hearth|forge")
+          }
+
+          const result = setPosture(posture as Posture)
+          if (result.changed && result.previous === "forge" && result.posture === "hearth") {
+            ctx.hooks.enqueueEvent?.(
+              {
+                source: "discord",
+                triggeredAt: new Date().toISOString(),
+                content: `[posture queue]\n\n${result.queue}\n\nthese messages remain queued and unseen; use discord_inbox to sift through them.`,
+                raw: { type: "posture_queue" },
+              },
+              { priority: true },
+            )
+          }
+          return JSON.stringify(result, null, 2)
+        },
+      }),
+
     discord_inbox: (ctx) =>
       runStandardTool(ctx, {
         name: "discord_inbox",
@@ -552,6 +581,22 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
             null,
             2,
           ),
+      }),
+
+    discord_mark: (ctx) =>
+      runStandardTool(ctx, {
+        name: "discord_mark",
+        logArgKeys: ["item_id", "status", "action"] as const,
+        runArgKeys: ["item_id", "status", "note", "action"] as const,
+        run: async (item_id, status, note, action) => {
+          markDiscordItem(
+            String(item_id ?? ""),
+            String(status ?? "") as Parameters<typeof markDiscordItem>[1],
+            String(note ?? ""),
+            String(action ?? "none") as Parameters<typeof markDiscordItem>[3],
+          )
+          return JSON.stringify({ ok: true, item_id, status, action: action ?? "none" })
+        },
       }),
 
     discord_backread: (ctx) =>
