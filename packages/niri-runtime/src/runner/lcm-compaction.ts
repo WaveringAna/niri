@@ -11,6 +11,7 @@ import {
   replaceContextSummaryBatch,
 } from "./context-store"
 import {
+  COMPACTION_RECOLLECTION_PROMPT,
   summarizeContextSummaryBatchViaLLM,
   type ConversationCompaction,
 } from "./util"
@@ -33,15 +34,28 @@ export type ConsolidatedLcmFrontier = {
   activeSummaryIds: string[]
 }
 
+export function canConsolidateLcmFrontier(
+  messages: Message[],
+  requireOverflow = false,
+): boolean {
+  return findMergeableContextSummaryBatch(
+    normalizeActiveContextSummaryDepths(messages),
+    LCM_SUMMARY_BATCH_SIZE,
+    requireOverflow,
+  ) !== null
+}
+
 export async function consolidateLcmFrontier(
   initialMessages: Message[],
   summaryClient: OpenAI,
   summaryModel: string,
   agentContext?: string | null,
   requireOverflow = false,
+  directRecollection?: string | null,
 ): Promise<ConsolidatedLcmFrontier> {
   let messages = normalizeActiveContextSummaryDepths(initialMessages)
   const mergedSummaryIds: string[] = []
+  let directRecollectionArchived = false
 
   while (true) {
     const batch = findMergeableContextSummaryBatch(messages, LCM_SUMMARY_BATCH_SIZE, requireOverflow)
@@ -50,7 +64,7 @@ export async function consolidateLcmFrontier(
       batch.map((segment) => ({ id: segment.id, depth: segment.depth, content: segment.summaryText })),
       summaryClient,
       summaryModel,
-      { agentContext },
+      { agentContext, directRecollection },
     )
     if (!merged) {
       console.warn(
@@ -60,12 +74,19 @@ export async function consolidateLcmFrontier(
     }
 
     const mergedDepth = batch[0]!.depth + 1
+    const compactedMessages: Message[] = directRecollection?.trim() && !directRecollectionArchived
+      ? [
+          { role: "user", content: COMPACTION_RECOLLECTION_PROMPT },
+          { role: "assistant", content: directRecollection },
+        ]
+      : []
     const mergedSummaryId = recordContextCompaction({
       summaryText: merged.summaryText,
-      compactedMessages: [],
+      compactedMessages,
       parentSummaryIds: batch.map((segment) => segment.id),
       method: `lcm-merge-d${mergedDepth}`,
     })
+    if (compactedMessages.length > 0) directRecollectionArchived = true
     messages = replaceContextSummaryBatch(
       messages,
       batch,

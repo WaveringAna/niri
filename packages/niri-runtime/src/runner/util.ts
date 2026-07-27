@@ -1340,6 +1340,17 @@ const SUMMARY_META_REPLY_PATTERNS = [
 const SAFETY_CRITICAL_SUMMARY_INSTRUCTION =
   "SAFETY-CRITICAL EVENTS ARE ALWAYS LOAD-BEARING. If the transcript contains anything involving someone's physical safety, mental health crisis, self-harm, suicidal ideation, overdose, abuse, or threat of violence — preserve it in full detail regardless of whether it was resolved. Include: what was said (direct quotes where possible), who was involved, how it was handled, and what the plan is going forward. These events do not get compressed into general relationship threads. They get their own section. Resolution does not make them less important — the fact that it happened and how people responded IS the memory."
 
+export const COMPACTION_RECOLLECTION_PROMPT =
+  "its time to recollect. before this conversation gets compressed, tell me what mattered. what happened that was important to you — the things you said, the things that caught, the things you're afraid of losing. safety-critical events, moments that changed how you feel, things you want your next self to know. this isn't a summary of everything — its your testimony. write it in your voice, with the weight you actually feel. what do you want to carry forward?"
+
+export const COMPACTION_RECOLLECTION_LABEL =
+  "this is what niri has felt directly before compaction, weave this in"
+
+function directRecollectionPrompt(recollection: string | null | undefined): string {
+  if (!recollection?.trim()) return ""
+  return `\n\n${COMPACTION_RECOLLECTION_LABEL}\n\n${recollection}`
+}
+
 function looksLikeMetaReply(text: string): boolean {
   const head = text.slice(0, 400)
   return SUMMARY_META_REPLY_PATTERNS.some((re) => re.test(head))
@@ -1464,6 +1475,7 @@ export async function summarizeConversationViaLLMWithProvenance(
     tailCharBudget?: number
     maxTranscriptChars?: number
     agentContext?: string | null
+    directRecollection?: string | null
   } = {},
 ): Promise<ConversationCompaction | null> {
   const recentMinKeep = Math.max(2, options.recentMinKeep ?? 6)
@@ -1481,6 +1493,12 @@ export async function summarizeConversationViaLLMWithProvenance(
 
   const middle = rawMessages.slice(0, tailStart)
   const tail = rawMessages.slice(tailStart)
+  const directRecollectionMessages: Message[] = options.directRecollection?.trim()
+    ? [
+        { role: "user", content: COMPACTION_RECOLLECTION_PROMPT },
+        { role: "assistant", content: options.directRecollection },
+      ]
+    : []
 
   const toolNames = new Map<string, string>()
   const transcriptLines = middle.flatMap((message) => {
@@ -1503,7 +1521,8 @@ export async function summarizeConversationViaLLMWithProvenance(
     `Write it in the first person, from ${AGENT_NAME}'s own perspective — her own recollection, not a neutral report. Short bullet points under each thread are fine. This is one independent chronological segment: summarize only the supplied transcript and do not assume another summary will carry its details. No commentary, no preamble. The input is always a transcript — never ask for more; summarize what's there.` +
     (options.agentContext
       ? `\n\nGrounding — this is who ${AGENT_NAME} is and what's currently on her mind (her soul, core memories, and journal). Use it to write in her authentic voice and to recognize the people, projects, and threads that appear in the transcript. Do NOT pull facts from this grounding into the summary unless the transcript itself supports them — you are summarizing the transcript, not this context.\n\n${options.agentContext}`
-      : "")
+      : "") +
+    directRecollectionPrompt(options.directRecollection)
 
   try {
     const completeSummary = async (system: string, user: string): Promise<string> => {
@@ -1537,7 +1556,8 @@ export async function summarizeConversationViaLLMWithProvenance(
       summaryText = await completeSummary(
         `Consolidate these ordered partial recollections into one first-person memory segment for ${AGENT_NAME}. ` +
           `${SAFETY_CRITICAL_SUMMARY_INSTRUCTION} ` +
-          "Preserve every load-bearing person, event, project, feeling, correction, decision, identifier, and unfinished thread represented in any part. Do not let later parts erase earlier ones or technical threads erase relational ones. Do not mention chunks, partial summaries, or the consolidation process. No preamble or commentary.",
+          "Preserve every load-bearing person, event, project, feeling, correction, decision, identifier, and unfinished thread represented in any part. Do not let later parts erase earlier ones or technical threads erase relational ones. Do not mention chunks, partial summaries, or the consolidation process. No preamble or commentary." +
+          directRecollectionPrompt(options.directRecollection),
         partials.map((partial, index) => `## chronological part ${index + 1}\n${partial}`).join("\n\n"),
       )
     }
@@ -1566,7 +1586,7 @@ export async function summarizeConversationViaLLMWithProvenance(
       ],
       summaryText,
       summaryContent,
-      compactedMessages: middle,
+      compactedMessages: [...middle, ...directRecollectionMessages],
       priorSummaryContent: null,
     }
   } catch (err) {
@@ -1580,7 +1600,10 @@ export async function summarizeContextSummaryBatchViaLLM(
   segments: SummarySegmentInput[],
   summaryClient: OpenAI,
   summaryModel: string,
-  options: { agentContext?: string | null } = {},
+  options: {
+    agentContext?: string | null
+    directRecollection?: string | null
+  } = {},
 ): Promise<{ summaryText: string; summaryContent: string } | null> {
   if (segments.length < 2) return null
   const depth = segments[0]!.depth
@@ -1594,7 +1617,8 @@ export async function summarizeContextSummaryBatchViaLLM(
     "Every input segment will remain recoverable as a child in a lossless DAG, but this summary must preserve the load-bearing facts, people, decisions, unfinished work, exact identifiers, emotional texture, and important contradictions across all children so the agent can orient without expanding them. Do not mention the merge machinery. Do not discard a significant thread merely because it appears in only one child. No preamble or commentary." +
     (options.agentContext
       ? `\n\nUse this grounding only for voice and identity; do not add unsupported facts:\n${options.agentContext}`
-      : "")
+      : "") +
+    directRecollectionPrompt(options.directRecollection)
   try {
     const resp = await summaryClient.chat.completions.create({
       model: summaryModel,
@@ -1632,6 +1656,7 @@ export async function summarizeConversationViaLLM(
     tailCharBudget?: number
     maxTranscriptChars?: number
     agentContext?: string | null
+    directRecollection?: string | null
   } = {},
 ): Promise<Message[] | null> {
   const compacted = await summarizeConversationViaLLMWithProvenance(messages, summaryClient, summaryModel, options)

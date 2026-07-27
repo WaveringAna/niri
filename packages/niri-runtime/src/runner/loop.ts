@@ -13,8 +13,15 @@ import {
   loadAgentSummaryContext,
   summarizeConversationViaLLMWithProvenance,
 } from "./util"
-import { commitLcmCompaction, consolidateLcmFrontier } from "./lcm-compaction"
-import { addAssistantMessage, applyUsage, configuredSummaryProvider, emitThinking, fetchCompletion } from "./loop-completion"
+import { canConsolidateLcmFrontier, commitLcmCompaction, consolidateLcmFrontier } from "./lcm-compaction"
+import {
+  addAssistantMessage,
+  applyUsage,
+  collectAgentCompactionRecollection,
+  configuredSummaryProvider,
+  emitThinking,
+  fetchCompletion,
+} from "./loop-completion"
 import { assistantContentText, isFunctionToolCall } from "./loop-content"
 import { buildTurnSignature, hasIncomingUserMessage } from "./loop-signatures"
 import { processToolCalls } from "./loop-tools"
@@ -61,7 +68,7 @@ async function applyLoopGuardNudge(state: LoopState, hooks: LoopHooks, reason: s
 
 async function processAssistantTurn(convId: number, state: LoopState, hooks: LoopHooks): Promise<CycleOutcome> {
   state.memoryRecallTurn += 1
-  const response = await fetchCompletion(state, undefined, hooks.getTools())
+  const response = await fetchCompletion(convId, state, undefined, hooks.getTools())
   // Recall (if any) has been applied for this turn; don't re-recall on the
   // follow-up iterations that work through the same incoming event.
   state.memoryRecallPending = false
@@ -161,12 +168,15 @@ function applyDiscordSendNudge(
   return true
 }
 
-async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-turn"): Promise<boolean> {
+async function applyLLMCompaction(
+  convId: number,
+  state: LoopState,
+  phase: "pre-turn" | "post-turn",
+): Promise<boolean> {
   // Gate strictly on the model-reported prompt_tokens (state.contextSize).
   // The char-based estimatePromptTokens inflates the tools schema ~3×, which
   // used to fire compaction at ~22-31k real tokens and produce nonsense summaries.
   if (state.contextSize < CONTEXT_COMPACT_TRIGGER_TOKENS) return false
-  const beforeEstimate = estimatePromptTokens(state.conversation)
 
   const summaryProvider = await configuredSummaryProvider()
   if (!summaryProvider.client || !summaryProvider.model) {
@@ -174,13 +184,35 @@ async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-tu
     return false
   }
 
-  const beforeCount = state.conversation.length
+  const priorSummaryIndex = findSummaryMessageIndex(state.conversation)
+  const candidateCount = countConversationCompactionCandidates(state.conversation, {
+    recentMinKeep: LLM_RECENT_MIN_KEEP,
+    recentMaxKeep: LLM_RECENT_MAX_KEEP,
+    tailCharBudget: LLM_TAIL_CHAR_BUDGET,
+  })
+  const shouldDefer = shouldDeferSmallFollowUpCompaction(
+    priorSummaryIndex >= 0,
+    candidateCount,
+    state.contextSize,
+  )
+  if (shouldDefer && !canConsolidateLcmFrontier(state.conversation)) {
+    console.log(
+      `[context agent=${AGENT_ID}] ${phase}: deferring follow-up compaction with only ${candidateCount} new candidate message(s) at ${state.contextSize} observed tokens (hard trigger ${CONTEXT_COMPACT_HARD_TRIGGER_TOKENS})`,
+    )
+    return false
+  }
+
   const agentContext = await loadAgentSummaryContext()
+  const directRecollection = await collectAgentCompactionRecollection(convId, state)
+  const beforeCount = state.conversation.length
+  const beforeEstimate = estimatePromptTokens(state.conversation)
   const consolidated = await consolidateLcmFrontier(
     state.conversation,
     summaryProvider.client,
     summaryProvider.model,
     agentContext,
+    false,
+    directRecollection,
   )
   if (consolidated.mergedSummaryIds.length > 0) {
     state.conversation = consolidated.messages
@@ -197,13 +229,7 @@ async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-tu
     return true
   }
 
-  const priorSummaryIndex = findSummaryMessageIndex(state.conversation)
-  const candidateCount = countConversationCompactionCandidates(state.conversation, {
-    recentMinKeep: LLM_RECENT_MIN_KEEP,
-    recentMaxKeep: LLM_RECENT_MAX_KEEP,
-    tailCharBudget: LLM_TAIL_CHAR_BUDGET,
-  })
-  if (shouldDeferSmallFollowUpCompaction(priorSummaryIndex >= 0, candidateCount, state.contextSize)) {
+  if (shouldDefer) {
     console.log(
       `[context agent=${AGENT_ID}] ${phase}: deferring follow-up compaction with only ${candidateCount} new candidate message(s) at ${state.contextSize} observed tokens (hard trigger ${CONTEXT_COMPACT_HARD_TRIGGER_TOKENS})`,
     )
@@ -219,6 +245,7 @@ async function applyLLMCompaction(state: LoopState, phase: "pre-turn" | "post-tu
       recentMaxKeep: LLM_RECENT_MAX_KEEP,
       tailCharBudget: LLM_TAIL_CHAR_BUDGET,
       agentContext,
+      directRecollection,
     },
   )
   if (!compaction) {
@@ -274,7 +301,7 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
   let consecutiveIdenticalToolTurns = 0
 
   while (true) {
-    const preCompacted = await applyLLMCompaction(state, "pre-turn")
+    const preCompacted = await applyLLMCompaction(convId, state, "pre-turn")
     if (preCompacted) await hooks.saveSession()
 
     const turnStart = state.conversation.length
@@ -347,7 +374,7 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
       continue
     }
 
-    await applyLLMCompaction(state, "post-turn")
+    await applyLLMCompaction(convId, state, "post-turn")
     await hooks.saveSession()
   }
 }

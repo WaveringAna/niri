@@ -15,6 +15,7 @@ import {
   FALLBACK_TOOL_CHOICE,
   ANTHROPIC_BASE_URL,
   ANTHROPIC_MODEL,
+  COMPACTION_RECOLLECTION_PROMPT,
   MODEL,
   PRIMARY_TOOL_CHOICE,
   SUMMARY_MODEL,
@@ -442,6 +443,7 @@ function drainReasoningToolCallBlocks(buffer: string): { blocks: string[]; remai
 
 async function consumeCompletionStream(
   stream: AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
+  emitEvents = true,
 ): Promise<CompletionTurnResult> {
   const startedAt = Date.now()
   const contentParts: string[] = []
@@ -465,10 +467,12 @@ async function consumeCompletionStream(
     }
 
     if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
-      if (ENABLE_THINKING) {
+      if (ENABLE_THINKING && emitEvents) {
         reasoningParts.push(delta.reasoning_content)
         emit({ type: "thinking", text: delta.reasoning_content })
         emittedThinking = true
+      } else if (ENABLE_THINKING) {
+        reasoningParts.push(delta.reasoning_content)
       }
 
       reasoningToolBuffer += delta.reasoning_content
@@ -485,8 +489,10 @@ async function consumeCompletionStream(
 
     if (typeof delta.content === "string" && delta.content.length > 0) {
       contentParts.push(delta.content)
-      emit({ type: "text", text: delta.content })
-      emittedText = true
+      if (emitEvents) {
+        emit({ type: "text", text: delta.content })
+        emittedText = true
+      }
     }
 
     if (!Array.isArray(delta.tool_calls)) continue
@@ -556,6 +562,7 @@ async function consumeCompletionStream(
 async function createStreamedCompletion(
   apiClient: OpenAI,
   request: CompletionRequest,
+  emitEvents = true,
 ): Promise<CompletionTurnResult> {
   const streamedRequest = {
     ...request,
@@ -567,7 +574,7 @@ async function createStreamedCompletion(
 
   try {
     const stream = await apiClient.chat.completions.create(streamedRequest)
-    const result = await consumeCompletionStream(stream as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>)
+    const result = await consumeCompletionStream(stream as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>, emitEvents)
     recordPromptResponse(request, result, promptMetricId)
     return result
   } catch (err) {
@@ -576,7 +583,7 @@ async function createStreamedCompletion(
         ...request,
         stream: true,
       } as const)
-      const result = await consumeCompletionStream(stream as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>)
+      const result = await consumeCompletionStream(stream as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>, emitEvents)
       recordPromptResponse(request, result, promptMetricId)
       return result
     }
@@ -587,12 +594,16 @@ async function createStreamedCompletion(
 async function createFallbackCompletion(
   messages: OpenAI.Chat.ChatCompletionMessageParam[],
   tools: OpenAI.Chat.ChatCompletionTool[],
+  options: {
+    toolChoice?: "required" | "auto" | "none"
+    emitEvents?: boolean
+  } = {},
 ): Promise<CompletionTurnResult> {
   const request: CompletionRequest = {
     model: FALLBACK_MODEL,
     messages,
     tools,
-    tool_choice: FALLBACK_TOOL_CHOICE,
+    tool_choice: options.toolChoice ?? FALLBACK_TOOL_CHOICE,
     ...promptCacheRequestExtras(FALLBACK_BASE, "fallback"),
     ...openRouterToolRequestExtras(FALLBACK_BASE),
     ...configuredThinkingRequestExtras(),
@@ -604,7 +615,7 @@ async function createFallbackCompletion(
   let retriedWithReasoning = false
   while (true) {
     try {
-      return await createStreamedCompletion(fallbackClient, currentRequest)
+      return await createStreamedCompletion(fallbackClient, currentRequest, options.emitEvents)
     } catch (err) {
       if (currentRequest.tool_choice !== "auto" && !retriedAutoToolChoice && shouldRetryWithAutoToolChoice(err)) {
         retriedAutoToolChoice = true
@@ -637,21 +648,25 @@ async function createFallbackCompletion(
 async function createPrimaryCompletion(
   messages: OpenAI.Chat.ChatCompletionMessageParam[],
   tools: OpenAI.Chat.ChatCompletionTool[],
+  options: {
+    toolChoice?: "required" | "auto" | "none"
+    emitEvents?: boolean
+  } = {},
 ): Promise<CompletionTurnResult> {
   if (USE_ANTHROPIC) {
     return createAnthropicCompletion({
       model: ANTHROPIC_MODEL,
       messages,
       tools,
-      tool_choice: PRIMARY_TOOL_CHOICE,
-    })
+      tool_choice: options.toolChoice ?? PRIMARY_TOOL_CHOICE,
+    }, { emitEvents: options.emitEvents })
   }
 
   const request: CompletionRequest = {
     model: MODEL,
     messages,
     tools,
-    tool_choice: PRIMARY_TOOL_CHOICE,
+    tool_choice: options.toolChoice ?? PRIMARY_TOOL_CHOICE,
     ...promptCacheRequestExtras(API_BASE, "primary"),
     ...openRouterToolRequestExtras(API_BASE),
     ...configuredThinkingRequestExtras(),
@@ -663,7 +678,7 @@ async function createPrimaryCompletion(
   let retriedWithReasoning = false
   while (true) {
     try {
-      return await createStreamedCompletion(client!, currentRequest)
+      return await createStreamedCompletion(client!, currentRequest, options.emitEvents)
     } catch (err) {
       if (currentRequest.tool_choice !== "auto" && !retriedAutoToolChoice && shouldRetryWithAutoToolChoice(err)) {
         retriedAutoToolChoice = true
@@ -691,6 +706,63 @@ async function createPrimaryCompletion(
   }
 }
 
+/**
+ * Gives the active agent one tool-free turn to state what it wants carried
+ * forward before context is compressed, then appends that exchange to the
+ * durable chat log. The compactor separately archives the exact exchange in
+ * the LCM source graph without changing which external turn remains active.
+ */
+export async function collectAgentCompactionRecollection(
+  convId: number,
+  state: LoopState,
+): Promise<string | null> {
+  const recollectionMessages = batchActiveContextSummariesForPrompt(
+    sanitizeMessages([
+      ...state.conversation,
+      { role: "user", content: COMPACTION_RECOLLECTION_PROMPT },
+    ]),
+  )
+  const tools: OpenAI.Chat.ChatCompletionTool[] = []
+  const completionOptions = { toolChoice: "none" as const, emitEvents: false }
+
+  const keepRecollection = (result: CompletionTurnResult): string | null => {
+    const content = result.message.content
+    if (typeof content !== "string" || !content.trim()) return null
+
+    logMessage(convId, "user", COMPACTION_RECOLLECTION_PROMPT)
+    logMessage(convId, "assistant", content)
+    emit({ type: "text", text: content })
+    applyUsage(state, result.usage, {
+      elapsedMs: result.elapsedMs,
+      tokensPerSecond: result.tokensPerSecond,
+    })
+    console.log(`[context agent=${AGENT_ID}] recollection: appended agent testimony before compaction`)
+    return content
+  }
+
+  try {
+    const failover = USE_FALLBACK ? null : await primaryFailoverStatus()
+    if (USE_FALLBACK || failover?.active) {
+      return keepRecollection(await createFallbackCompletion(recollectionMessages, tools, completionOptions))
+    }
+
+    try {
+      return keepRecollection(await createPrimaryCompletion(recollectionMessages, tools, completionOptions))
+    } catch (primaryErr) {
+      if (isQuotaExhaustedError(primaryErr)) await recordPrimaryQuotaFailover(primaryErr)
+      console.warn(
+        `[context agent=${AGENT_ID}] recollection: primary unavailable (${errorSummary(primaryErr)}); trying fallback`,
+      )
+      return keepRecollection(await createFallbackCompletion(recollectionMessages, tools, completionOptions))
+    }
+  } catch (err) {
+    console.warn(
+      `[context agent=${AGENT_ID}] recollection: agent testimony unavailable (${errorSummary(err)}); continuing compaction`,
+    )
+    return null
+  }
+}
+
 function logPromptSizeDebug(state: LoopState, err: unknown, label: string): void {
   const messageCount = state.conversation.length
   const roleCounts = state.conversation.reduce<Record<string, number>>((acc, m) => {
@@ -706,10 +778,7 @@ function logPromptSizeDebug(state: LoopState, err: unknown, label: string): void
   )
 }
 
-async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Promise<boolean> {
-  const beforeCount = state.conversation.length
-  const beforeEstimate = estimatePromptTokens(state.conversation)
-
+async function recoverFromPromptTooLarge(convId: number, state: LoopState, attempt: number): Promise<boolean> {
   const summaryProvider = await configuredSummaryProvider()
   if (!summaryProvider.client || !summaryProvider.model) {
     console.warn(`[context agent=${AGENT_ID}] recovery: no summary client available; cannot llm-summarize`)
@@ -718,11 +787,16 @@ async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Pro
 
   console.warn(`[context agent=${AGENT_ID}] recovery: attempting llm summarization via ${summaryProvider.model} (attempt=${attempt + 1})`)
   const agentContext = await loadAgentSummaryContext()
+  const directRecollection = await collectAgentCompactionRecollection(convId, state)
+  const beforeCount = state.conversation.length
+  const beforeEstimate = estimatePromptTokens(state.conversation)
   const consolidated = await consolidateLcmFrontier(
     state.conversation,
     summaryProvider.client,
     summaryProvider.model,
     agentContext,
+    false,
+    directRecollection,
   )
   if (consolidated.mergedSummaryIds.length > 0) {
     state.conversation = consolidated.messages
@@ -740,6 +814,7 @@ async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Pro
   }
   const compaction = await summarizeConversationViaLLMWithProvenance(state.conversation, summaryProvider.client, summaryProvider.model, {
     agentContext,
+    directRecollection,
   })
   if (!compaction) {
     console.warn(`[context agent=${AGENT_ID}] recovery: llm summarization returned no changes`)
@@ -785,6 +860,7 @@ async function recoverFromPromptTooLarge(state: LoopState, attempt: number): Pro
  * @throws If the primary request fails with a non-fallback error condition.
  */
 export async function fetchCompletion(
+  convId: number,
   state: LoopState,
   baseConversation: OpenAI.Chat.ChatCompletionMessageParam[] = state.conversation,
   toolDefinitions: ToolDefinition[] = createNiriToolCatalog({ memory: true, discord: false }),
@@ -871,7 +947,7 @@ export async function fetchCompletion(
       } catch (fallbackErr) {
         if (isPromptTooLargeError(fallbackErr) && promptTooLargeAttempts < 2) {
           logPromptSizeDebug(state, fallbackErr, `fallback rejected prompt during primary quota cooldown (attempt ${promptTooLargeAttempts + 1}/2)`)
-          const recovered = await recoverFromPromptTooLarge(state, promptTooLargeAttempts)
+          const recovered = await recoverFromPromptTooLarge(convId, state, promptTooLargeAttempts)
           promptTooLargeAttempts++
           if (recovered) continue
         }
@@ -914,7 +990,7 @@ export async function fetchCompletion(
       } catch (fallbackErr) {
         if (isPromptTooLargeError(fallbackErr) && promptTooLargeAttempts < 2) {
           logPromptSizeDebug(state, fallbackErr, `fallback rejected prompt (attempt ${promptTooLargeAttempts + 1}/2)`)
-          const recovered = await recoverFromPromptTooLarge(state, promptTooLargeAttempts)
+          const recovered = await recoverFromPromptTooLarge(convId, state, promptTooLargeAttempts)
           promptTooLargeAttempts++
           if (recovered) continue
         }
@@ -950,7 +1026,7 @@ export async function fetchCompletion(
     } catch (primaryErr) {
       if (isPromptTooLargeError(primaryErr) && promptTooLargeAttempts < 2) {
         logPromptSizeDebug(state, primaryErr, `primary rejected prompt (attempt ${promptTooLargeAttempts + 1}/2)`)
-        const recovered = await recoverFromPromptTooLarge(state, promptTooLargeAttempts)
+        const recovered = await recoverFromPromptTooLarge(convId, state, promptTooLargeAttempts)
         promptTooLargeAttempts++
         if (recovered) continue
         logApiError(primaryErr, primaryApiContext())
@@ -1010,7 +1086,7 @@ export async function fetchCompletion(
       } catch (fallbackErr) {
         if (isPromptTooLargeError(fallbackErr) && promptTooLargeAttempts < 2) {
           logPromptSizeDebug(state, fallbackErr, `fallback rejected prompt during failover (attempt ${promptTooLargeAttempts + 1}/2)`)
-          const recovered = await recoverFromPromptTooLarge(state, promptTooLargeAttempts)
+          const recovered = await recoverFromPromptTooLarge(convId, state, promptTooLargeAttempts)
           promptTooLargeAttempts++
           if (recovered) continue
         }

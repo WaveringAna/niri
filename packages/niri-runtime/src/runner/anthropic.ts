@@ -330,6 +330,7 @@ async function* anthropicStreamToOpenAI(
 
 async function consumeAnthropicStream(
   stream: AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
+  emitEvents = true,
 ): Promise<CompletionTurnResult> {
   const startedAt = Date.now()
   const contentParts: string[] = []
@@ -351,7 +352,7 @@ async function consumeAnthropicStream(
 
     if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
       reasoningParts.push(delta.reasoning_content)
-      if (ENABLE_THINKING) {
+      if (ENABLE_THINKING && emitEvents) {
         emit({ type: "thinking", text: delta.reasoning_content })
         emittedThinking = true
       }
@@ -359,8 +360,10 @@ async function consumeAnthropicStream(
 
     if (typeof delta.content === "string" && delta.content.length > 0) {
       contentParts.push(delta.content)
-      emit({ type: "text", text: delta.content })
-      emittedText = true
+      if (emitEvents) {
+        emit({ type: "text", text: delta.content })
+        emittedText = true
+      }
     }
 
     if (!Array.isArray(delta.tool_calls)) continue
@@ -419,6 +422,7 @@ async function consumeAnthropicStream(
 
 export async function createAnthropicCompletion(
   request: CompletionRequest,
+  options: { emitEvents?: boolean } = {},
 ): Promise<CompletionTurnResult> {
   const { system, messages } = toAnthropicMessages(request.messages)
 
@@ -455,7 +459,7 @@ export async function createAnthropicCompletion(
   try {
     const stream = await client.messages.create({ ...body, stream: true })
     const convertedStream = anthropicStreamToOpenAI(stream)
-    const result = await consumeAnthropicStream(convertedStream)
+    const result = await consumeAnthropicStream(convertedStream, options.emitEvents)
 
     recordMetric({
       type: "prompt_response",

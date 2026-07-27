@@ -20,7 +20,7 @@ import { emit } from "../stream"
 import type { Message } from "../types"
 import { archiveContextMessages, describeContextSummary, expandContextSummary, grepContext, recordRestContextSnapshot } from "./context-store"
 import { commitLcmCompaction } from "./lcm-compaction"
-import { configuredSummaryProvider } from "./loop-completion"
+import { collectAgentCompactionRecollection, configuredSummaryProvider } from "./loop-completion"
 import type { ToolHandler } from "./loop-shared"
 import { pushToolMessage, recordToolResult, runStandardTool, toolError } from "./loop-tool-runtime"
 import { loadAgentSummaryContext, parseImageDetail, saveRestSnapshot, summarizeConversationViaLLMWithProvenance } from "./util"
@@ -258,15 +258,19 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
       if (args.note) console.log("[runner] rest note:", args.note)
       recordToolResult(convId, state, call, "rest", args, "Goodnight.")
       archiveContextMessages(state.conversation, "rest")
-      let restConversation = state.conversation
       const summaryProvider = await configuredSummaryProvider()
+      let directRecollection: string | null = null
+      if (summaryProvider.client && summaryProvider.model) {
+        directRecollection = await collectAgentCompactionRecollection(convId, state)
+      }
+      let restConversation = state.conversation
       if (summaryProvider.client && summaryProvider.model) {
         const agentContext = await loadAgentSummaryContext()
         const compaction = await summarizeConversationViaLLMWithProvenance(
           restConversation,
           summaryProvider.client,
           summaryProvider.model,
-          { recentMinKeep: 0, recentMaxKeep: 0, agentContext },
+          { recentMinKeep: 0, recentMaxKeep: 0, agentContext, directRecollection },
         )
         if (compaction) {
           const committed = await commitLcmCompaction(
