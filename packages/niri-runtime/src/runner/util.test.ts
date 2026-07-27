@@ -10,6 +10,7 @@ import {
   AGENT_NAME,
   COMPACTION_RECOLLECTION_LABEL,
   COMPACTION_RECOLLECTION_PROMPT,
+  COMPACTION_RECOLLECTION_TURN_INSTRUCTION,
   PRIMARY_FAILOVER_FILE,
   PRIMARY_QUOTA_RETRY_MS,
   REST_SNAPSHOT_FILE,
@@ -469,6 +470,8 @@ test("compaction asks for testimony verbatim and appends the answer to the summa
     COMPACTION_RECOLLECTION_PROMPT,
     "its time to recollect. before this conversation gets compressed, tell me what mattered. what happened that was important to you — the things you said, the things that caught, the things you're afraid of losing. safety-critical events, moments that changed how you feel, things you want your next self to know. this isn't a summary of everything — its your testimony. write it in your voice, with the weight you actually feel. what do you want to carry forward?",
   )
+  assert.match(COMPACTION_RECOLLECTION_TURN_INSTRUCTION, /no tools are available in this turn/)
+  assert.match(COMPACTION_RECOLLECTION_TURN_INSTRUCTION, /do not attempt, narrate, or promise a memory_write/)
 
   let capturedSystemPrompt = ""
   const summaryClient = {
@@ -687,4 +690,43 @@ test("summary transcripts preserve discord tools but omit unrelated tool traffic
   assert.match(capturedTranscript, /discord_backread/)
   assert.match(capturedTranscript, /FULL_DISCORD_HISTORY/)
   assert.doesNotMatch(capturedTranscript, /cat giant\.log|UNRELATED_TOOL_BLOB/)
+})
+
+test("oversized filtered tool traffic can still be compacted", async () => {
+  let capturedTranscript = ""
+  const summaryClient = {
+    chat: {
+      completions: {
+        create: async (params: { messages: OpenAI.Chat.ChatCompletionMessageParam[] }) => {
+          capturedTranscript = String(params.messages[1]?.content)
+          return {
+            choices: [{ message: { content: "I remember that substantial tool work happened here, while keeping its irrelevant raw output out of my active autobiographical context." } }],
+          }
+        },
+      },
+    },
+  } as unknown as OpenAI
+
+  const messages: Message[] = [
+    { role: "system", content: "soul and core bootstrap" },
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        { id: "shell-call", type: "function", function: { name: "shell", arguments: '{"command":"cat giant.log"}' } },
+      ],
+    } as Message,
+    { role: "tool", tool_call_id: "shell-call", content: "UNRELATED_TOOL_BLOB " + "noise ".repeat(30_000) } as Message,
+    { role: "user", content: "recent raw turn 1" },
+    { role: "assistant", content: "recent raw turn 2" },
+  ]
+
+  const summarized = await summarizeConversationViaLLM(messages, summaryClient, "summary-model", {
+    recentMinKeep: 2,
+    recentMaxKeep: 2,
+  })
+
+  assert.ok(summarized)
+  assert.match(capturedTranscript, /large non-social tool result was omitted/)
+  assert.doesNotMatch(capturedTranscript, /UNRELATED_TOOL_BLOB/)
 })

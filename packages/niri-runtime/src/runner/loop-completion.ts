@@ -16,6 +16,7 @@ import {
   ANTHROPIC_BASE_URL,
   ANTHROPIC_MODEL,
   COMPACTION_RECOLLECTION_PROMPT,
+  COMPACTION_RECOLLECTION_TURN_INSTRUCTION,
   MODEL,
   PRIMARY_TOOL_CHOICE,
   SUMMARY_MODEL,
@@ -44,9 +45,18 @@ import {
   summarizeConversationViaLLMWithProvenance,
 } from "./util"
 import { batchActiveContextSummariesForPrompt } from "./context-store"
-import { commitLcmCompaction, consolidateLcmFrontier } from "./lcm-compaction"
+import { canConsolidateLcmFrontier, commitLcmCompaction, consolidateLcmFrontier } from "./lcm-compaction"
 import { createAnthropicCompletion } from "./anthropic"
 import type { CompletionRequest, CompletionTurnResult, ToolCallAssembly } from "./loop-shared"
+
+function isPathologicalCompactionRecollection(content: string): boolean {
+  if (content.length > 20_000) return true
+  const repeatedLines = new Map<string, number>()
+  for (const line of content.split("\n").map((item) => item.trim()).filter((item) => item.length >= 12)) {
+    repeatedLines.set(line, (repeatedLines.get(line) ?? 0) + 1)
+  }
+  return [...repeatedLines.values()].some((count) => count >= 6)
+}
 
 /**
  * Resolves the configured summary client/model pair.
@@ -719,6 +729,7 @@ export async function collectAgentCompactionRecollection(
   const recollectionMessages = batchActiveContextSummariesForPrompt(
     sanitizeMessages([
       ...state.conversation,
+      { role: "system", content: COMPACTION_RECOLLECTION_TURN_INSTRUCTION },
       { role: "user", content: COMPACTION_RECOLLECTION_PROMPT },
     ]),
   )
@@ -726,16 +737,22 @@ export async function collectAgentCompactionRecollection(
   const completionOptions = { toolChoice: "none" as const, emitEvents: false }
 
   const keepRecollection = (result: CompletionTurnResult): string | null => {
-    const content = result.message.content
-    if (typeof content !== "string" || !content.trim()) return null
-
-    logMessage(convId, "user", COMPACTION_RECOLLECTION_PROMPT)
-    logMessage(convId, "assistant", content)
-    emit({ type: "text", text: content })
     applyUsage(state, result.usage, {
       elapsedMs: result.elapsedMs,
       tokensPerSecond: result.tokensPerSecond,
     })
+    const content = result.message.content
+    if (typeof content !== "string" || !content.trim()) return null
+    if (isPathologicalCompactionRecollection(content)) {
+      console.warn(
+        `[context agent=${AGENT_ID}] recollection: rejected pathological testimony (${content.length} chars); continuing compaction without it`,
+      )
+      return null
+    }
+
+    logMessage(convId, "user", COMPACTION_RECOLLECTION_PROMPT)
+    logMessage(convId, "assistant", content)
+    emit({ type: "text", text: content })
     console.log(`[context agent=${AGENT_ID}] recollection: appended agent testimony before compaction`)
     return content
   }
@@ -787,38 +804,59 @@ async function recoverFromPromptTooLarge(convId: number, state: LoopState, attem
 
   console.warn(`[context agent=${AGENT_ID}] recovery: attempting llm summarization via ${summaryProvider.model} (attempt=${attempt + 1})`)
   const agentContext = await loadAgentSummaryContext()
-  const directRecollection = await collectAgentCompactionRecollection(convId, state)
   const beforeCount = state.conversation.length
   const beforeEstimate = estimatePromptTokens(state.conversation)
-  const consolidated = await consolidateLcmFrontier(
-    state.conversation,
-    summaryProvider.client,
-    summaryProvider.model,
-    agentContext,
-    false,
-    directRecollection,
-  )
-  if (consolidated.mergedSummaryIds.length > 0) {
-    state.conversation = consolidated.messages
-    state.contextSize = estimatePromptTokens(state.conversation)
-    console.warn(
-      `[context agent=${AGENT_ID}] recovery: reduced active lcm frontier before fresh tail (merged=${consolidated.mergedSummaryIds.join(",")}, active=${consolidated.activeSummaryIds.join(",")})`,
+  let directRecollection: string | null = null
+  if (canConsolidateLcmFrontier(state.conversation)) {
+    directRecollection = await collectAgentCompactionRecollection(convId, state)
+    const consolidated = await consolidateLcmFrontier(
+      state.conversation,
+      summaryProvider.client,
+      summaryProvider.model,
+      agentContext,
+      false,
+      directRecollection,
     )
-    recordMetric({
-      type: "compaction",
-      before: beforeEstimate,
-      after: state.contextSize,
-      method: "force-lcm-merge",
-    })
-    return true
+    if (consolidated.mergedSummaryIds.length > 0) {
+      state.conversation = consolidated.messages
+      state.contextSize = estimatePromptTokens(state.conversation)
+      console.warn(
+        `[context agent=${AGENT_ID}] recovery: reduced active lcm frontier before fresh tail (merged=${consolidated.mergedSummaryIds.join(",")}, active=${consolidated.activeSummaryIds.join(",")})`,
+      )
+      recordMetric({
+        type: "compaction",
+        before: beforeEstimate,
+        after: state.contextSize,
+        method: "force-lcm-merge",
+      })
+      return true
+    }
   }
-  const compaction = await summarizeConversationViaLLMWithProvenance(state.conversation, summaryProvider.client, summaryProvider.model, {
+  const preflightCompaction = await summarizeConversationViaLLMWithProvenance(state.conversation, summaryProvider.client, summaryProvider.model, {
     agentContext,
-    directRecollection,
   })
-  if (!compaction) {
+  if (!preflightCompaction) {
     console.warn(`[context agent=${AGENT_ID}] recovery: llm summarization returned no changes`)
     return false
+  }
+
+  directRecollection ??= await collectAgentCompactionRecollection(convId, state)
+  let compaction = preflightCompaction
+  if (directRecollection) {
+    const recollectedCompaction = await summarizeConversationViaLLMWithProvenance(
+      state.conversation,
+      summaryProvider.client,
+      summaryProvider.model,
+      { agentContext, directRecollection },
+    )
+    compaction = recollectedCompaction ?? {
+      ...preflightCompaction,
+      compactedMessages: [
+        ...preflightCompaction.compactedMessages,
+        { role: "user", content: COMPACTION_RECOLLECTION_PROMPT },
+        { role: "assistant", content: directRecollection },
+      ],
+    }
   }
 
   const afterEstimate = estimatePromptTokens(compaction.messages)
@@ -1108,6 +1146,7 @@ export async function fetchCompletion(
 
 export const __completionTest = {
   consumeCompletionStream,
+  isPathologicalCompactionRecollection,
   promptCacheRequestExtras,
   quarantineLatestIncomingForContentFilter,
 }

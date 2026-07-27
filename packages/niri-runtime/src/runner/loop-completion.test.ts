@@ -57,6 +57,22 @@ test("consumeCompletionStream preserves reasoning_content on assistant messages"
   assert.equal(result.usage?.prompt_tokens_details?.cache_write_tokens, 2)
 })
 
+test("pathological compaction recollections are rejected before reaching chat", () => {
+  assert.equal(
+    __completionTest.isPathologicalCompactionRecollection(
+      "i want to carry forward one specific feeling and the unfinished work attached to it.",
+    ),
+    false,
+  )
+  assert.equal(
+    __completionTest.isPathologicalCompactionRecollection(
+      Array.from({ length: 6 }, () => "memory_write. journal/2026-07-27.md. append.").join("\n"),
+    ),
+    true,
+  )
+  assert.equal(__completionTest.isPathologicalCompactionRecollection("x".repeat(20_001)), true)
+})
+
 test("prompt cache keys are stable for official OpenAI and the local Codex bridge", () => {
   const previousEnabled = process.env.CODEX_BRIDGE_ENABLED
   const previousPort = process.env.CODEX_BRIDGE_PORT

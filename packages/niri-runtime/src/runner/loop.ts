@@ -6,6 +6,7 @@ import {
   CONTEXT_COMPACT_HARD_TRIGGER_TOKENS,
   CONTEXT_COMPACT_MIN_NEW_MESSAGES,
   CONTEXT_COMPACT_TRIGGER_TOKENS,
+  COMPACTION_RECOLLECTION_PROMPT,
   ENABLE_THINKING,
   countConversationCompactionCandidates,
   estimatePromptTokens,
@@ -195,7 +196,8 @@ async function applyLLMCompaction(
     candidateCount,
     state.contextSize,
   )
-  if (shouldDefer && !canConsolidateLcmFrontier(state.conversation)) {
+  const canConsolidate = canConsolidateLcmFrontier(state.conversation)
+  if (shouldDefer && !canConsolidate) {
     console.log(
       `[context agent=${AGENT_ID}] ${phase}: deferring follow-up compaction with only ${candidateCount} new candidate message(s) at ${state.contextSize} observed tokens (hard trigger ${CONTEXT_COMPACT_HARD_TRIGGER_TOKENS})`,
     )
@@ -203,30 +205,33 @@ async function applyLLMCompaction(
   }
 
   const agentContext = await loadAgentSummaryContext()
-  const directRecollection = await collectAgentCompactionRecollection(convId, state)
   const beforeCount = state.conversation.length
   const beforeEstimate = estimatePromptTokens(state.conversation)
-  const consolidated = await consolidateLcmFrontier(
-    state.conversation,
-    summaryProvider.client,
-    summaryProvider.model,
-    agentContext,
-    false,
-    directRecollection,
-  )
-  if (consolidated.mergedSummaryIds.length > 0) {
-    state.conversation = consolidated.messages
-    state.contextSize = estimatePromptTokens(state.conversation)
-    console.log(
-      `[context agent=${AGENT_ID}] ${phase}: reduced active lcm frontier before touching fresh tail (${beforeEstimate} -> ${state.contextSize} tokens, merged=${consolidated.mergedSummaryIds.join(",")}, active=${consolidated.activeSummaryIds.join(",")})`,
+  let directRecollection: string | null = null
+  if (canConsolidate) {
+    directRecollection = await collectAgentCompactionRecollection(convId, state)
+    const consolidated = await consolidateLcmFrontier(
+      state.conversation,
+      summaryProvider.client,
+      summaryProvider.model,
+      agentContext,
+      false,
+      directRecollection,
     )
-    recordMetric({
-      type: "compaction",
-      before: beforeEstimate,
-      after: state.contextSize,
-      method: `${phase}-lcm-merge`,
-    })
-    return true
+    if (consolidated.mergedSummaryIds.length > 0) {
+      state.conversation = consolidated.messages
+      state.contextSize = estimatePromptTokens(state.conversation)
+      console.log(
+        `[context agent=${AGENT_ID}] ${phase}: reduced active lcm frontier before touching fresh tail (${beforeEstimate} -> ${state.contextSize} tokens, merged=${consolidated.mergedSummaryIds.join(",")}, active=${consolidated.activeSummaryIds.join(",")})`,
+      )
+      recordMetric({
+        type: "compaction",
+        before: beforeEstimate,
+        after: state.contextSize,
+        method: `${phase}-lcm-merge`,
+      })
+      return true
+    }
   }
 
   if (shouldDefer) {
@@ -236,7 +241,7 @@ async function applyLLMCompaction(
     return false
   }
 
-  const compaction = await summarizeConversationViaLLMWithProvenance(
+  const preflightCompaction = await summarizeConversationViaLLMWithProvenance(
     state.conversation,
     summaryProvider.client,
     summaryProvider.model,
@@ -245,12 +250,43 @@ async function applyLLMCompaction(
       recentMaxKeep: LLM_RECENT_MAX_KEEP,
       tailCharBudget: LLM_TAIL_CHAR_BUDGET,
       agentContext,
-      directRecollection,
     },
   )
-  if (!compaction) {
+  if (!preflightCompaction) {
     console.warn(`[context agent=${AGENT_ID}] ${phase}: llm summary unavailable; keeping raw conversation`)
     return false
+  }
+
+  directRecollection ??= await collectAgentCompactionRecollection(convId, state)
+  let compaction = preflightCompaction
+  if (directRecollection) {
+    const recollectedCompaction = await summarizeConversationViaLLMWithProvenance(
+      state.conversation,
+      summaryProvider.client,
+      summaryProvider.model,
+      {
+        recentMinKeep: LLM_RECENT_MIN_KEEP,
+        recentMaxKeep: LLM_RECENT_MAX_KEEP,
+        tailCharBudget: LLM_TAIL_CHAR_BUDGET,
+        agentContext,
+        directRecollection,
+      },
+    )
+    if (recollectedCompaction) {
+      compaction = recollectedCompaction
+    } else {
+      console.warn(
+        `[context agent=${AGENT_ID}] ${phase}: testimony weave unavailable; using viable preflight summary and preserving exact testimony in provenance`,
+      )
+      compaction = {
+        ...preflightCompaction,
+        compactedMessages: [
+          ...preflightCompaction.compactedMessages,
+          { role: "user", content: COMPACTION_RECOLLECTION_PROMPT },
+          { role: "assistant", content: directRecollection },
+        ],
+      }
+    }
   }
 
   const afterEstimate = estimatePromptTokens(compaction.messages)
