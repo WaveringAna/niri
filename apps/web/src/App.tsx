@@ -109,6 +109,23 @@ type WorkerEvent = {
   payload: unknown
 }
 
+type CacheSample = {
+  key: string
+  at: string
+  promptTokens: number
+  cachedPromptTokens: number
+  cacheWriteTokens?: number
+}
+
+type CacheStats = {
+  samples: CacheSample[]
+  latestRate: number
+  recentRate: number
+  recentPromptTokens: number
+  recentCachedTokens: number
+  recentCacheWriteTokens: number
+}
+
 type Overview = {
   agent: Agent
   status: WorkerStatus
@@ -288,6 +305,44 @@ function formatDuration(ms: number | undefined): string {
 function formatNumber(value: number | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "0"
   return new Intl.NumberFormat().format(value)
+}
+
+function formatPercent(value: number | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—"
+  return `${Math.round(value * 100)}%`
+}
+
+function cacheStatsFromEvents(events: WorkerEvent[]): CacheStats | null {
+  const samples = events.flatMap((event): CacheSample[] => {
+    if (event.type !== "stream.event" || !event.payload || typeof event.payload !== "object") return []
+    const payload = event.payload as Record<string, unknown>
+    if (payload.type !== "usage") return []
+    const promptTokens = typeof payload.promptTokens === "number" ? payload.promptTokens : 0
+    const cachedPromptTokens = typeof payload.cachedPromptTokens === "number" ? payload.cachedPromptTokens : NaN
+    if (!Number.isFinite(promptTokens) || promptTokens <= 0 || !Number.isFinite(cachedPromptTokens)) return []
+    return [{
+      key: event.id,
+      at: event.createdAt,
+      promptTokens,
+      cachedPromptTokens: Math.max(0, Math.min(promptTokens, cachedPromptTokens)),
+      ...(typeof payload.cacheWriteTokens === "number" && Number.isFinite(payload.cacheWriteTokens)
+        ? { cacheWriteTokens: Math.max(0, payload.cacheWriteTokens) }
+        : {}),
+    }]
+  }).slice(-20)
+  const latest = samples.at(-1)
+  if (!latest) return null
+  const recentPromptTokens = samples.reduce((total, sample) => total + sample.promptTokens, 0)
+  const recentCachedTokens = samples.reduce((total, sample) => total + sample.cachedPromptTokens, 0)
+  const recentCacheWriteTokens = samples.reduce((total, sample) => total + (sample.cacheWriteTokens ?? 0), 0)
+  return {
+    samples,
+    latestRate: latest.cachedPromptTokens / latest.promptTokens,
+    recentRate: recentPromptTokens > 0 ? recentCachedTokens / recentPromptTokens : 0,
+    recentPromptTokens,
+    recentCachedTokens,
+    recentCacheWriteTokens,
+  }
 }
 
 function discordChannelLabel(channel: DiscordChannel): string {
@@ -796,6 +851,7 @@ export function App() {
   }, [agentsByPanel, panels, selectedKey])
 
   const chatLines = useMemo(() => linesFromEvents(events), [events])
+  const cacheStats = useMemo(() => cacheStatsFromEvents(events), [events])
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -1113,6 +1169,7 @@ export function App() {
           <div className="readout" aria-label="current token status">
             <span>{formatNumber(status?.contextSize)} ctx</span>
             <span>{formatNumber(status?.tokenCount)} total</span>
+            <span>{cacheStats ? `${formatPercent(cacheStats.latestRate)} cache` : "cache —"}</span>
             <span>{formatDuration(status?.uptimeMs)}</span>
           </div>
         </header>
@@ -1190,6 +1247,45 @@ export function App() {
               <dd>{formatDuration(status?.uptimeMs)}</dd>
             </div>
           </dl>
+        </section>
+
+        <section>
+          <h2>prompt cache</h2>
+          {!cacheStats ? <p className="quiet">no cache telemetry yet</p> : (
+            <>
+              <dl>
+                <div>
+                  <dt>latest hit</dt>
+                  <dd>{formatPercent(cacheStats.latestRate)}</dd>
+                </div>
+                <div>
+                  <dt>recent hit</dt>
+                  <dd>{formatPercent(cacheStats.recentRate)}</dd>
+                </div>
+                <div>
+                  <dt>cached</dt>
+                  <dd>{formatNumber(cacheStats.recentCachedTokens)} / {formatNumber(cacheStats.recentPromptTokens)}</dd>
+                </div>
+                <div>
+                  <dt>cache write</dt>
+                  <dd>{formatNumber(cacheStats.recentCacheWriteTokens)}</dd>
+                </div>
+              </dl>
+              <div className="cache-history" aria-label={`cache hit history for ${cacheStats.samples.length} recent calls`}>
+                {cacheStats.samples.map((sample) => {
+                  const rate = sample.cachedPromptTokens / sample.promptTokens
+                  return (
+                    <span
+                      key={sample.key}
+                      style={{ "--cache-height": `${Math.max(4, Math.round(rate * 100))}%` } as React.CSSProperties}
+                      title={`${formatTime(sample.at)} · ${formatPercent(rate)} · ${formatNumber(sample.cachedPromptTokens)} cached`}
+                    />
+                  )
+                })}
+              </div>
+              <p className="quiet">weighted across the latest {cacheStats.samples.length} calls</p>
+            </>
+          )}
         </section>
 
         <section>

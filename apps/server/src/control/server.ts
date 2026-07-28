@@ -93,6 +93,25 @@ function compactWorkerEventForChat(raw: unknown): WorkerEvent | null {
 
   if (raw.type === "stream.event") {
     const type = typeof payload.type === "string" ? payload.type : ""
+    if (type === "usage") {
+      const numeric = (key: string): number | undefined =>
+        typeof payload[key] === "number" && Number.isFinite(payload[key])
+          ? payload[key] as number
+          : undefined
+      return {
+        ...raw,
+        payload: {
+          type,
+          promptTokens: numeric("promptTokens"),
+          cachedPromptTokens: numeric("cachedPromptTokens"),
+          cacheWriteTokens: numeric("cacheWriteTokens"),
+          completionTokens: numeric("completionTokens"),
+          totalTokens: numeric("totalTokens"),
+          elapsedMs: numeric("elapsedMs"),
+          tokensPerSecond: numeric("tokensPerSecond"),
+        },
+      }
+    }
     if (type !== "user") return null
     return {
       ...raw,

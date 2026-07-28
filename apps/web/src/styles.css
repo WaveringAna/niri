@@ -783,6 +783,32 @@ dd {
   color: #dedede;
 }
 
+.cache-history {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(4px, 1fr);
+  align-items: end;
+  gap: 3px;
+  height: 42px;
+  margin-top: 12px;
+  padding: 5px 0;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.cache-history span {
+  display: block;
+  min-height: 2px;
+  height: var(--cache-height);
+  border-radius: 1px 1px 0 0;
+  background: var(--violet);
+  opacity: 0.82;
+}
+
+.cache-history + .quiet {
+  margin-top: 8px;
+}
+
 .compactions {
   display: grid;
   gap: 10px;
