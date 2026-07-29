@@ -263,6 +263,15 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
     let startWriteTimer: ReturnType<typeof setTimeout> | null = null
     let timer: ReturnType<typeof setTimeout> | null = null
     let commandWritten = false
+    let dataDisposable: { dispose(): void } | null = null
+    let exitDisposable: { dispose(): void } | null = null
+
+    const cleanup = (): void => {
+      if (timer) clearTimeout(timer)
+      if (startWriteTimer) clearTimeout(startWriteTimer)
+      dataDisposable?.dispose()
+      exitDisposable?.dispose()
+    }
 
     const writeCommandAndDoneSentinel = (): void => {
       if (commandWritten || settled) return
@@ -283,14 +292,12 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
       )
     }
 
-    const dataDisposable = session.onData((chunk: string) => {
+    dataDisposable = session.onData((chunk: string) => {
       raw += chunk
       if (Buffer.byteLength(raw, "utf8") > captureLimitBytes()) {
         if (settled) return
         settled = true
-        if (timer) clearTimeout(timer)
-        if (startWriteTimer) clearTimeout(startWriteTimer)
-        dataDisposable.dispose()
+        cleanup()
         session.kill()
         if (bash === session) bash = null
         reject(new Error(`command output exceeded ${captureLimitBytes()} bytes`))
@@ -303,12 +310,18 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
       if (startLine && endLine) {
         if (settled) return
         settled = true
-        if (timer) clearTimeout(timer)
-        if (startWriteTimer) clearTimeout(startWriteTimer)
-        dataDisposable.dispose()
+        cleanup()
         const body = cleaned.slice(startLine.nextLineStart, endLine.sentinelStart)
         resolve(removeInternalPtyControlEchoes(removeInternalSentinelEchoes(body, [startSentinel, endSentinel])).trimEnd())
       }
+    })
+
+    exitDisposable = session.onExit(({ exitCode }) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (bash === session) bash = null
+      reject(new Error(`bash exited during command with code ${exitCode}`))
     })
 
     // Wrap command in a { } group. When requested, redirect stdin from
@@ -332,8 +345,7 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
       timer = setTimeout(() => {
         if (settled) return
         settled = true
-        if (startWriteTimer) clearTimeout(startWriteTimer)
-        dataDisposable.dispose()
+        cleanup()
         // After a timeout + grace period we no longer know whether bash
         // consumed Ctrl+C, returned to a prompt, or still has a foreground
         // process attached. Reuse would interleave the next command with a

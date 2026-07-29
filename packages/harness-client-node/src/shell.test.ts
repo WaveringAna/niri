@@ -92,6 +92,13 @@ test("commands that read stdin do not consume completion sentinels", async () =>
   assert.equal(await runCommand("echo ok", 0, 5_000), "ok")
 })
 
+test("shell rejects promptly when a command exits bash and reconnects", async () => {
+  const startedAt = Date.now()
+  await assert.rejects(runCommand("set -e; false", 0, 60_000), /bash exited during command with code 1/)
+  assert.ok(Date.now() - startedAt < 5_000)
+  assert.equal(await runCommand("echo recovered", 0, 5_000), "recovered")
+})
+
 test("cleanOutput collapses terminal redraw controls", () => {
   assert.equal(cleanOutput("one\rspinner\rdone\n"), "done\n")
   assert.equal(cleanOutput("abc\b \bd\n"), "abd\n")
