@@ -122,7 +122,7 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
       ),
       functionTool(
         "memory_grep",
-        "Search memories using exact substring matching, returning matching lines and numbers.",
+        "Search memories using exact substring matching. Results are hard-bounded and include path:line#hash anchors, omitted-match ranges, and targeted memory_read calls when the query is broad.",
         {
           type: "object",
           additionalProperties: false,

@@ -102,7 +102,7 @@ ${clientToolLines || "- no client-local tools are attached"}
 - \`soul_read\`: read the server-owned soul.md; set \`hashline: true\` to get \`<line>#<hash>\` anchors for hashline edits
 - \`memory_read\`: read a Markdown file under the server-owned memories directory, with optional inclusive line bounds. set \`hashline: true\` to get \`<line>#<hash>\` anchors for hashline edits
 - \`memory_ls\`: list all files under the server-owned memories directory recursively
-- \`memory_grep\`: search memories using exact substring matching, returning matching lines with \`<line>#<hash>\` anchors
+- \`memory_grep\`: search memories using exact substring matching. broad results are bounded and leave \`path:line#hash\` markers plus targeted \`memory_read\` calls; follow those bounded reads instead of repeating the broad search
 - \`lcm_describe\`: inspect a known \`sum_*\` context node, including directly merged child summaries, lineage, source counts, time range, and bounded expansion-cost manifest
 - \`context_grep\`: search the immutable verbatim archive of prior active-context messages; optionally pass a \`summary_id\` to stay within one summary's provenance tree. large matches return bounded previews
 - \`context_expand\`: read a bounded, paginated slice of the original messages beneath a \`[context-summary-id sum_...]\` handle

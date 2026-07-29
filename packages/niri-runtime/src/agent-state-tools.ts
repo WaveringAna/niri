@@ -5,6 +5,12 @@ import path from "node:path"
 import { NIRI_HOME } from "./agent-config"
 
 const MAX_STATE_WRITE_BYTES = 256_000
+const MAX_MEMORY_GREP_MATCHES = 80
+const MAX_MEMORY_GREP_BODY_BYTES = 20_000
+const MAX_MEMORY_GREP_RESULT_BYTES = 32_000
+const MAX_MEMORY_GREP_QUERY_BYTES = 1_000
+const MAX_MEMORY_GREP_LINE_CHARS = 1_000
+const MAX_MEMORY_GREP_OMITTED_FILE_MARKERS = 24
 const MEMORY_ROOT = path.join(NIRI_HOME, "memories")
 
 const HASHLINE_ANCHOR_RE = /^(\d+)#([0-9a-f]{6})$/
@@ -448,15 +454,18 @@ export async function grepMemory(query: unknown, caseInsensitive?: unknown): Pro
   if (typeof query !== "string" || !query) {
     throw new Error("query is required")
   }
+  if (Buffer.byteLength(query, "utf8") > MAX_MEMORY_GREP_QUERY_BYTES) {
+    throw new Error(`query exceeds ${MAX_MEMORY_GREP_QUERY_BYTES} bytes`)
+  }
   const isCaseInsensitive = caseInsensitive === true
 
   await fs.mkdir(MEMORY_ROOT, { recursive: true, mode: 0o700 })
   const absoluteFiles = await getFilesRecursively(MEMORY_ROOT)
 
-  const matches: string[] = []
+  const matches: Array<{ path: string; line: number; hash: string; content: string }> = []
   const searchQuery = isCaseInsensitive ? query.toLowerCase() : query
 
-  for (const file of absoluteFiles) {
+  for (const file of absoluteFiles.sort()) {
     const relativePath = path.relative(MEMORY_ROOT, file)
     let content: string
     try {
@@ -470,7 +479,7 @@ export async function grepMemory(query: unknown, caseInsensitive?: unknown): Pro
       const line = lines[lineNum - 1]!
       const lineToSearch = isCaseInsensitive ? line.toLowerCase() : line
       if (lineToSearch.includes(searchQuery)) {
-        matches.push(`${relativePath}:${lineNum}#${memoryLineHash(line)}: ${line}`)
+        matches.push({ path: relativePath, line: lineNum, hash: memoryLineHash(line), content: line })
       }
     }
   }
@@ -478,7 +487,67 @@ export async function grepMemory(query: unknown, caseInsensitive?: unknown): Pro
   if (matches.length === 0) {
     return "(no matches found)"
   }
-  return matches.join("\n")
+
+  const fullResult = matches
+    .map((match) => `${match.path}:${match.line}#${match.hash}: ${match.content}`)
+    .join("\n")
+  if (matches.length <= MAX_MEMORY_GREP_MATCHES && Buffer.byteLength(fullResult, "utf8") <= MAX_MEMORY_GREP_RESULT_BYTES) {
+    return fullResult
+  }
+
+  const shown: typeof matches = []
+  const body: string[] = []
+  let bodyBytes = 0
+  let abbreviatedLines = 0
+  for (const match of matches) {
+    if (shown.length >= MAX_MEMORY_GREP_MATCHES) break
+    const abbreviated = match.content.length > MAX_MEMORY_GREP_LINE_CHARS
+    const content = abbreviated
+      ? `${match.content.slice(0, MAX_MEMORY_GREP_LINE_CHARS)}… [line abbreviated; use memory_read({"path":${JSON.stringify(match.path)},"start_line":${match.line},"end_line":${match.line},"hashline":true})]`
+      : match.content
+    const rendered = `${match.path}:${match.line}#${match.hash}: ${content}`
+    const renderedBytes = Buffer.byteLength(rendered, "utf8") + (body.length > 0 ? 1 : 0)
+    if (bodyBytes + renderedBytes > MAX_MEMORY_GREP_BODY_BYTES) break
+    body.push(rendered)
+    shown.push(match)
+    bodyBytes += renderedBytes
+    if (abbreviated) abbreviatedLines++
+  }
+
+  const shownSet = new Set(shown)
+  const omitted = matches.filter((match) => !shownSet.has(match))
+  const omittedByFile = new Map<string, { count: number; min: number; max: number; first: number }>()
+  for (const match of omitted) {
+    const current = omittedByFile.get(match.path)
+    if (current) {
+      current.count++
+      current.min = Math.min(current.min, match.line)
+      current.max = Math.max(current.max, match.line)
+    } else {
+      omittedByFile.set(match.path, { count: 1, min: match.line, max: match.line, first: match.line })
+    }
+  }
+
+  const header = `[memory_grep query=${JSON.stringify(query)}: showing ${shown.length} of ${matches.length} matches across ${new Set(matches.map((match) => match.path)).size} files; ${omitted.length} matches omitted; ${abbreviatedLines} shown lines abbreviated]`
+  let result = `${header}\n${body.join("\n")}\n\n[bounded memory_grep result; omitted match ranges and targeted reads:`
+  const finalHint = "\nuse a narrower memory_grep query or the memory_read calls above instead of repeating this broad search.\n]"
+  let listedFiles = 0
+  const omittedFiles = [...omittedByFile.entries()]
+    .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))
+  for (const [relativePath, range] of omittedFiles.slice(0, MAX_MEMORY_GREP_OMITTED_FILE_MARKERS)) {
+    const marker = `\n- ${relativePath}: ${range.count} omitted matches in lines ${range.min}-${range.max}; memory_read({"path":${JSON.stringify(relativePath)},"start_line":${range.first},"end_line":${Math.min(range.first + 99, range.max)},"hashline":true})`
+    if (Buffer.byteLength(result + marker + finalHint, "utf8") > MAX_MEMORY_GREP_RESULT_BYTES) break
+    result += marker
+    listedFiles++
+  }
+  if (omittedFiles.length > listedFiles) {
+    const additional = `\n- ${omittedFiles.length - listedFiles} additional files contain omitted matches; narrow the query to obtain their path:line#hash markers.`
+    if (Buffer.byteLength(result + additional + finalHint, "utf8") <= MAX_MEMORY_GREP_RESULT_BYTES) {
+      result += additional
+    }
+  }
+  result += finalHint
+  return result
 }
 
 export const __agentStateToolsTest = { memoryPath }

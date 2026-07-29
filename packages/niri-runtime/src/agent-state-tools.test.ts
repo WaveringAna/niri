@@ -139,6 +139,8 @@ test("memory read and list tools function correctly", async (t) => {
   await fs.writeFile(path.join(memoriesDir, "journal", "sectioned.md"), "# Sec 1\nContent 1\n## Sec 2\nContent 2\n", "utf8")
   await fs.writeFile(path.join(memoriesDir, "journal", "long.md"), Array.from({ length: 110 }, (_, i) => `Line ${i + 1}`).join("\n"), "utf8")
   await fs.writeFile(path.join(memoriesDir, "journal", "long_sectioned.md"), Array.from({ length: 105 }, (_, i) => `Line ${i + 1}`).concat("## Section boundary", "More content").join("\n"), "utf8")
+  await fs.writeFile(path.join(memoriesDir, "journal", "wide-a.md"), Array.from({ length: 120 }, (_, i) => `broad-needle ${i + 1} ${"x".repeat(1_500)}`).join("\n"), "utf8")
+  await fs.writeFile(path.join(memoriesDir, "journal", "wide-b.md"), Array.from({ length: 20 }, (_, i) => `broad-needle other ${i + 1}`).join("\n"), "utf8")
 
   // Write hidden files/directories to verify they are filtered out
   await fs.mkdir(path.join(memoriesDir, ".git"), { recursive: true })
@@ -155,7 +157,7 @@ test("memory read and list tools function correctly", async (t) => {
     
     // 1. Test listMemory (should filter out .git and .gitignore, but keep .legit-hidden.md)
     const filesList = await listMemory()
-    assert.equal(filesList, ".legit-hidden.md\\ncore.md\\njournal/2026-07-12.md\\njournal/long.md\\njournal/long_sectioned.md\\njournal/sectioned.md")
+    assert.equal(filesList, ".legit-hidden.md\\ncore.md\\njournal/2026-07-12.md\\njournal/long.md\\njournal/long_sectioned.md\\njournal/sectioned.md\\njournal/wide-a.md\\njournal/wide-b.md")
     
     // 2. Test readMemory whole file
     const contentAll = await readMemory("journal/2026-07-12.md")
@@ -195,12 +197,24 @@ test("memory read and list tools function correctly", async (t) => {
     // 10. Test memory_grep empty result
     const grepEmpty = await grepMemory("somethinguniqueandmissing")
     assert.equal(grepEmpty, "(no matches found)")
+    await assert.rejects(() => grepMemory("x".repeat(1_001)), /query exceeds 1000 bytes/)
 
-    // 11. Test 100-line read limit note warning
+    // 11. Broad results are bounded and leave anchors for targeted reads
+    const broadGrep = await grepMemory("broad-needle")
+    assert.ok(Buffer.byteLength(broadGrep, "utf8") <= 32_000)
+    assert.match(broadGrep, /showing \\d+ of 140 matches across 2 files; \\d+ matches omitted/)
+    assert.match(broadGrep, /journal\\/wide-a\\.md:1#[0-9a-f]{6}:/)
+    assert.match(broadGrep, /journal\\/wide-[ab]\\.md: \\d+ omitted matches in lines \\d+-\\d+/)
+    assert.ok(broadGrep.includes('memory_read({"path":"journal/wide-'))
+    assert.ok(broadGrep.includes('"start_line":'))
+    assert.ok(broadGrep.includes('"hashline":true})'))
+    assert.match(broadGrep, /use a narrower memory_grep query/)
+
+    // 12. Test 100-line read limit note warning
     const longSec = await readMemory("journal/long.md", 1)
     assert.match(longSec, /Note: Content stopped due to the 100-line read limit. To read further, call 'memory_read' with start_line=101/)
 
-    // 12. Test default 100-line range extending to next section header
+    // 13. Test default 100-line range extending to next section header
     const longSecHeader = await readMemory("journal/long_sectioned.md", 1)
     assert.match(longSecHeader, /Line 105/)
     assert.doesNotMatch(longSecHeader, /Section boundary/)
