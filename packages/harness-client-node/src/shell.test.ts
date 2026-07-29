@@ -71,6 +71,11 @@ test("shell wrapper sentinels stay internal when shell tracing is enabled", asyn
   assert.doesNotMatch(output, /_*HARNESS_(?:START|DONE)_[0-9a-f]+_*/i)
 })
 
+test("shell wrapper source stays internal when Bash verbose mode is enabled", async () => {
+  assert.equal(await runCommand("set -v; echo first", 0, 5_000), "first")
+  assert.equal(await runCommand("echo second", 0, 5_000), "second")
+})
+
 test("commands without trailing newlines do not hide output behind completion sentinels", async () => {
   assert.equal(await runCommand("printf 'bare-output'", 0, 5_000), "bare-output")
   assert.equal(await runCommand("printf '%s' '12 34'", 0, 5_000), "12 34")

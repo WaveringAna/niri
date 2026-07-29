@@ -61,7 +61,10 @@ export function cleanOutput(str: string): string {
 function removeInternalPtyControlEchoes(str: string): string {
   return str
     .split("\n")
-    .filter((line) => !/^(\+\s*)?stty -echo(?: 2> ?\/dev\/null)?$/.test(line))
+    .filter(
+      (line) =>
+        !/^(\+\s*)?(?:set \+v|stty -echo(?: 2> ?\/dev\/null)?)$/.test(line),
+    )
     .join("\n")
 }
 
@@ -267,6 +270,10 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
       session.write(
         [
           groupedCommand,
+          // A command can enable Bash verbose mode (`set -v`), which prints
+          // subsequent wrapper source without expanding the sentinel value.
+          // Disable it before emitting internal completion controls.
+          "set +v",
           "stty -echo 2>/dev/null",
           // Keep unterminated command output from sharing a line with the done
           // sentinel. The captured body is trimEnd()'d, so this is not visible.
@@ -345,6 +352,10 @@ export async function runRaw(command: string, options: RunRawOptions = {}): Prom
       if (settled) return
       session.write(
         [
+          // Reset verbose mode before the command wrapper is written. Any
+          // echoed `set +v` line occurs before the start sentinel and is
+          // discarded with other stale PTY output.
+          "set +v",
           "set +H",
           `__harness_start=${shellQuote(startSentinel)}`,
           `__harness_done=${shellQuote(endSentinel)}`,
