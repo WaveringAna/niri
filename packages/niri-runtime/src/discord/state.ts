@@ -102,6 +102,31 @@ function fullMessageText(value: unknown): string {
   return text.replace(/\n/g, "\n  ")
 }
 
+/**
+ * Render an author without collapsing a server nickname into an identity.
+ * Discord's display name is useful social context, but the account username
+ * is the stable disambiguator when two people share a familiar nickname.
+ */
+function formatBatchAuthor(row: { author_username: string | null; raw_json: string; pronouns: string | null }): string {
+  let username: string | null = null
+  let nickname: string | null = null
+  try {
+    const root = JSON.parse(row.raw_json) as Record<string, unknown>
+    const message = (root.message && typeof root.message === "object" ? root.message : root) as Record<string, unknown>
+    const author = message.author && typeof message.author === "object" ? message.author as Record<string, unknown> : null
+    const member = message.member && typeof message.member === "object" ? message.member as Record<string, unknown> : null
+    username = asString(author?.username)
+    nickname = asString(member?.display_name) ?? asString(member?.displayName) ?? asString(member?.nickname) ?? asString(member?.nick)
+  } catch {
+    // Stored display name remains a useful fallback for older/malformed rows.
+  }
+
+  const stableName = username ?? row.author_username ?? "unknown"
+  const nick = nickname && nickname !== stableName ? `, nickname: ${nickname}` : ""
+  const pronouns = row.pronouns ? ` (${row.pronouns})` : ""
+  return `@${stableName}${nick}${pronouns}`
+}
+
 function formatHumanTimestamp(value: string | null | undefined): string {
   if (!value) return "unknown time"
   const parsed = new Date(value)
@@ -429,8 +454,7 @@ export function buildDiscordBatchDigest(params?: {
 
   for (const row of visibleRecentMessages) {
     const label = channelLabel(row)
-    const pronounsSuffix = row.pronouns ? ` (${row.pronouns})` : ""
-    const author = row.author_username ? `@${row.author_username}${pronounsSuffix}` : "@unknown"
+    const author = formatBatchAuthor(row)
     const ts = formatBatchTimestamp(row.created_at)
     const replyTo = replyContextByMessageId.get(row.message_id)
     lines.push(`- source_item_id=${row.message_id} [${label}] [${ts}] ${author}${formatReplyContext(replyTo)}: ${fullMessageText(row.content)}${formatBatchImages(row.raw_json)}`)
@@ -447,8 +471,7 @@ export function buildDiscordBatchDigest(params?: {
   } else {
     for (const row of visiblePendingPreview) {
       const label = channelLabel(row)
-      const pronounsSuffix = row.pronouns ? ` (${row.pronouns})` : ""
-      const author = row.author_username ? `@${row.author_username}${pronounsSuffix}` : "@unknown"
+      const author = formatBatchAuthor(row)
       const ts = formatBatchTimestamp(row.created_at)
       const replyTo = replyContextByMessageId.get(row.message_id)
       lines.push(`- source_item_id=${row.item_id} bucket=${row.bucket} [${label}] [${ts}] ${author}${formatReplyContext(replyTo)}: ${compactText(row.content, 120)}${formatBatchImages(row.raw_json)}`)
