@@ -30,6 +30,7 @@ import {
   describeDelegatedTask,
   readDelegatedTask,
   recentDelegatedTasks,
+  recordDelegatedTaskFeedback,
   sendDelegatedTaskMessage,
   spawnDelegatedTask,
 } from "../delegation/manager"
@@ -243,6 +244,10 @@ export function buildToolHandlers(
           const message = String(args.message ?? "").trim()
           if (!taskId || !message) throw new Error("delegate send requires task_id and message")
           result = await sendDelegatedTaskMessage(taskId, message)
+        } else if (action === "feedback") {
+          const message = String(args.message ?? "").trim()
+          if (!taskId || !message) throw new Error("delegate feedback requires task_id and message")
+          result = await recordDelegatedTaskFeedback(taskId, message)
         } else if (action === "status") {
           if (!taskId) throw new Error("delegate status requires task_id")
           result = describeDelegatedTask(taskId)
@@ -255,7 +260,7 @@ export function buildToolHandlers(
           if (!taskId) throw new Error("delegate read requires task_id")
           result = readDelegatedTask(taskId, args.after_seq as number | undefined, args.limit as number | undefined)
         } else {
-          throw new Error("delegate action must be spawn, send, status, list, cancel, or read")
+          throw new Error("delegate action must be spawn, send, feedback, status, list, cancel, or read")
         }
         recordToolResult(convId, state, call, "delegate", { action, task_id: taskId || undefined }, JSON.stringify(result, null, 2))
       } catch (err) {

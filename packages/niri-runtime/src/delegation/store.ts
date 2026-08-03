@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { getDb } from "../db"
 
 export type DelegatedTaskStatus = "queued" | "running" | "needs_input" | "completed" | "failed" | "cancelled" | "interrupted"
-export type DelegatedMessageKind = "instruction" | "progress" | "question" | "answer" | "result" | "cancel" | "system"
+export type DelegatedMessageKind = "instruction" | "progress" | "question" | "answer" | "result" | "feedback" | "cancel" | "system"
 export type DelegatedSenderKind = "niri" | "subagent" | "discord-user" | "system"
 
 export type DelegatedTask = {
@@ -37,6 +37,14 @@ export type DelegatedTaskMessage = {
   discordMessageId: string | null
 }
 
+export type DelegationProfileFeedback = {
+  id: string
+  profile: string
+  taskId: string
+  content: string
+  createdAt: string
+}
+
 type TaskRow = {
   id: string
   profile: string
@@ -67,6 +75,14 @@ type MessageRow = {
   content: string
   created_at: string
   discord_message_id: string | null
+}
+
+type FeedbackRow = {
+  id: string
+  profile: string
+  task_id: string
+  content: string
+  created_at: string
 }
 
 function taskFromRow(row: TaskRow): DelegatedTask {
@@ -102,6 +118,16 @@ function messageFromRow(row: MessageRow): DelegatedTaskMessage {
     content: row.content,
     createdAt: row.created_at,
     discordMessageId: row.discord_message_id,
+  }
+}
+
+function feedbackFromRow(row: FeedbackRow): DelegationProfileFeedback {
+  return {
+    id: row.id,
+    profile: row.profile,
+    taskId: row.task_id,
+    content: row.content,
+    createdAt: row.created_at,
   }
 }
 
@@ -244,4 +270,33 @@ export function listDelegatedTaskMessages(taskId: string, options: { afterSeq?: 
     order by seq
     limit ?
   `).all(taskId, afterSeq, limit) as MessageRow[]).map(messageFromRow)
+}
+
+export function appendDelegationProfileFeedback(input: {
+  profile: string
+  taskId: string
+  content: string
+}): DelegationProfileFeedback {
+  const feedback: DelegationProfileFeedback = {
+    id: `taskfeedback_${randomUUID().replaceAll("-", "").slice(0, 20)}`,
+    profile: input.profile,
+    taskId: input.taskId,
+    content: input.content,
+    createdAt: new Date().toISOString(),
+  }
+  getDb().prepare(`
+    insert into delegation_profile_feedback (id, profile, task_id, content, created_at)
+    values (?, ?, ?, ?, ?)
+  `).run(feedback.id, feedback.profile, feedback.taskId, feedback.content, feedback.createdAt)
+  return feedback
+}
+
+export function listDelegationProfileFeedback(profile: string, limit = 100): DelegationProfileFeedback[] {
+  const capped = Math.max(1, Math.min(200, Math.trunc(limit) || 100))
+  return (getDb().prepare(`
+    select * from delegation_profile_feedback
+    where profile = ?
+    order by created_at desc, rowid desc
+    limit ?
+  `).all(profile, capped) as FeedbackRow[]).map(feedbackFromRow)
 }

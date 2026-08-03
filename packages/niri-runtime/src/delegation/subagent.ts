@@ -12,13 +12,15 @@ import { parseToolArguments } from "../runner/util"
 import type { FunctionToolCall } from "../runner/loop-shared"
 import type { LoopHooks, LoopState } from "../runner/types"
 import type { DelegationProfile } from "./config"
-import type { DelegatedTask, DelegatedTaskMessage, DelegatedMessageKind } from "./store"
+import { listDelegationProfileFeedback, type DelegatedTask, type DelegatedTaskMessage, type DelegatedMessageKind } from "./store"
+
+const PROFILE_FEEDBACK_MAX_CHARS = 12_000
 
 const TASK_MESSAGE_TOOL: ToolDefinition = {
   type: "function",
   function: {
     name: "task_message",
-    description: "Send a deliberate progress update, blocking question, or final result to Niri and the task's observable Gastown thread. Do not stream ordinary thoughts or raw command output.",
+    description: "Send a deliberate progress update, blocking question, or final result to Niri and the task's observable Gastown thread. Progress updates enter Niri's event stream, so send only meaningful milestones rather than ordinary thoughts or raw command output.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -60,6 +62,16 @@ function workerTools(profile: DelegationProfile): ToolDefinition[] {
 
 function taskSystemPrompt(task: DelegatedTask, profile: DelegationProfile): string {
   const workspace = clientTools.getWorkspace()
+  const feedbackLines: string[] = []
+  let feedbackChars = 0
+  for (const feedback of listDelegationProfileFeedback(profile.name).filter((item) => item.taskId !== task.id)) {
+    const line = `[${feedback.createdAt} · ${feedback.taskId}] ${feedback.content}`
+    const separatorChars = feedbackLines.length > 0 ? 2 : 0
+    if (feedbackChars + separatorChars + line.length > PROFILE_FEEDBACK_MAX_CHARS) break
+    feedbackLines.push(line)
+    feedbackChars += separatorChars + line.length
+  }
+  feedbackLines.reverse()
   return [
     profile.systemPrompt,
     "you are a temporary task worker operating for niri. you are not niri and you do not speak as her.",
@@ -68,6 +80,9 @@ function taskSystemPrompt(task: DelegatedTask, profile: DelegationProfile): stri
     `you have at most ${profile.maxTurns} model turns.`,
     workspace ? `your attached workspace is ${workspace.root}.` : "no workspace is currently attached.",
     "stay within the task. preserve unrelated work. report evidence and verification.",
+    feedbackLines.length > 0
+      ? `niri's durable feedback from your profile's previous tasks follows. treat it as standing guidance unless the current objective explicitly overrides it:\n\n${feedbackLines.join("\n\n")}`
+      : "niri has not recorded durable feedback for this worker profile yet.",
     "use task_message for meaningful progress, questions that block you, and your final result. do not publish private reasoning or every command.",
     "if you ask a question with task_message, you will pause until a collaborator answers in niri or the discord task thread.",
   ].filter(Boolean).join("\n\n")
@@ -260,3 +275,5 @@ export async function runDelegatedSubagent(
     await terminateShellSessions(activeShellSessions)
   }
 }
+
+export const __delegationSubagentTest = { taskSystemPrompt }

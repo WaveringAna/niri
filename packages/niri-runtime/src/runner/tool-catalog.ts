@@ -314,16 +314,16 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
     tools.push(
       functionTool(
         "delegate",
-        `Spawn and communicate with isolated task workers. Available profiles: ${options.delegationProfiles.join(", ")}. Spawn returns immediately; progress stays in the durable task transcript and Gastown thread, while questions and final results wake you. Status and list return metadata only; use read deliberately for paginated mailbox content.`,
+        `Spawn and communicate with isolated task workers. Available profiles: ${options.delegationProfiles.join(", ")}. Spawn returns immediately; deliberate progress updates, questions, and final results enter your event stream, while ordinary worker tool traffic stays in the durable task transcript and Gastown thread. Send steers a live task. Feedback records durable guidance for that worker profile, works even after completion, and also reaches the current worker when it is still active. Status and list return metadata only; use read deliberately for paginated mailbox content.`,
         {
           type: "object",
           additionalProperties: false,
           properties: {
-            action: { type: "string", enum: ["spawn", "send", "status", "list", "cancel", "read"] },
+            action: { type: "string", enum: ["spawn", "send", "feedback", "status", "list", "cancel", "read"] },
             profile: { type: "string", enum: options.delegationProfiles },
             task_id: { type: "string" },
             objective: { type: "string" },
-            message: { type: "string" },
+            message: { type: "string", description: "Live instruction for send, or durable profile guidance for feedback." },
             after_seq: { type: "integer", minimum: 0 },
             limit: { type: "integer", minimum: 1, maximum: 100 },
           },

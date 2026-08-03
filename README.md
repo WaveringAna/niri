@@ -172,7 +172,7 @@ Relative `home` and `workspace` paths resolve from the repository root.
 
 ### `delegation`
 
-Delegated task workers run fresh conversations containing only their profile prompt, objective, and explicitly allowed client tools. They cannot access Discord, memories, posture, schedules, loop control, or nested delegation. The main agent uses the asynchronous `delegate` tool to spawn, steer, inspect, and cancel them.
+Delegated task workers run fresh conversations containing only their profile prompt, objective, Niri's bounded accumulated feedback for that profile, and explicitly allowed client tools. They cannot access Discord, general memories, posture, schedules, loop control, or nested delegation. The main agent uses the asynchronous `delegate` tool to spawn, steer, inspect, give feedback to, and cancel them.
 
 ```yaml
 delegation:
@@ -199,7 +199,9 @@ delegation:
 
 `timeoutMs` is the task deadline, including time spent waiting for a collaborator's answer. Provider and client-tool calls already in flight finish cooperatively; cancellation or deadline expiry is applied immediately after they return. Any yielded shell sessions still owned by the worker are terminated when it exits. `delegate status` and `list` return bounded metadata only; full mailbox content enters Niri's context only through an explicit paginated `read`.
 
-Set `discord.gastownForumChannelId` to mirror each invocation into a Discord forum thread. Discord is an observable multiplayer surface over the durable SQLite task mailbox: every human who can write in the private server thread is equally authorized to steer the worker, while bot and webhook messages are ignored only to prevent mirror feedback loops. Ordinary replies go to the worker; mentioning Niri also wakes her with the message. Progress remains in the task transcript and thread, while blocking questions and bounded final results enter Niri's context.
+`delegate feedback` takes `task_id` and `message`. It works before or after task completion, records the message as durable guidance for that task's worker profile, and mirrors it into the task thread. An active worker also receives it immediately. Future instances of the profile receive recent feedback in chronological order, bounded to 12,000 characters in their system prompt; the complete feedback log remains durable in SQLite.
+
+Set `discord.gastownForumChannelId` to mirror each invocation into a Discord forum thread. Discord is an observable multiplayer surface over the durable SQLite task mailbox: every human who can write in the private server thread is equally authorized to steer the worker, while bot and webhook messages are ignored only to prevent mirror feedback loops. Ordinary replies go to the worker; mentioning Niri also wakes her with the message. Deliberate `task_message` progress updates, blocking questions, and bounded final results enter Niri's context; ordinary worker tool traffic remains in the task transcript and thread.
 
 Runtime tuning belongs under the first-party `runtime` section. It contains `imageMaxBytes`, tool-choice and fallback-limit options, context-compaction thresholds, `lcmSummaryBatchSize` (default `4`, the number of same-depth segments promoted into one multi-parent summary), state migration, loop limits, and `antigravity`/`codex` bridge settings. Discord batching, gateway tracing, and cooldowns are first-party fields under `discord`.
 

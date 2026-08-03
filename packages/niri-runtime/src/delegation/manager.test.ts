@@ -14,14 +14,17 @@ test("every human in a mapped Gastown thread can steer the same task", async () 
   const {
     appendDelegatedTaskMessage,
     createDelegatedTask,
+    listDelegationProfileFeedback,
     listDelegatedTaskMessages,
     updateDelegatedTask,
   } = await import("./store.js")
   const {
+    __delegationManagerTest,
     describeDelegatedTask,
     handleDiscordDelegationMessage,
     initDelegation,
     recentDelegatedTasks,
+    recordDelegatedTaskFeedback,
   } = await import("./manager.js")
   initDb()
 
@@ -62,8 +65,8 @@ test("every human in a mapped Gastown thread can steer the same task", async () 
   }), true)
   assert.equal(listDelegatedTaskMessages(task.id, { limit: 20 }).filter((message) => message.senderKind === "discord-user").length, 2)
 
-  const delivered: string[] = []
-  initDelegation((event) => delivered.push(event.content))
+  const delivered: Array<{ content: string; priority: boolean | undefined }> = []
+  initDelegation((event, options) => delivered.push({ content: event.content, priority: options?.priority }))
   updateDelegatedTask(task.id, { status: "completed", completedAt: new Date().toISOString() })
   assert.equal(await handleDiscordDelegationMessage({
     threadId: "thread-1",
@@ -74,8 +77,38 @@ test("every human in a mapped Gastown thread can steer the same task", async () 
     mentionsNiri: false,
   }), true)
   assert.equal(delivered.length, 1)
-  assert.match(delivered[0] ?? "", /gastown follow-up from callie/)
-  assert.match(delivered[0] ?? "", /task_status: completed/)
+  assert.match(delivered[0]?.content ?? "", /gastown follow-up from callie/)
+  assert.match(delivered[0]?.content ?? "", /task_status: completed/)
+
+  const progressTask = createDelegatedTask({ profile: "researcher", objective: "inspect the docs" })
+  updateDelegatedTask(progressTask.id, { status: "running" })
+  await __delegationManagerTest.publishWorkerMessage(progressTask.id, "progress", "checking the official docs")
+  assert.equal(delivered.length, 2)
+  assert.match(delivered[1]?.content ?? "", /\[delegated task progress\]/)
+  assert.match(delivered[1]?.content ?? "", new RegExp(progressTask.id))
+  assert.match(delivered[1]?.content ?? "", /checking the official docs/)
+  assert.equal(delivered[1]?.priority, false)
+
+  const feedback = await recordDelegatedTaskFeedback(task.id, "when asked for progress, report it before the result")
+  assert.equal(feedback.profile, "researcher")
+  assert.equal(feedback.taskId, task.id)
+  assert.deepEqual(listDelegationProfileFeedback("researcher").map((item) => item.content), [
+    "when asked for progress, report it before the result",
+  ])
+  assert.equal(listDelegatedTaskMessages(task.id).at(-1)?.kind, "feedback")
+
+  const nextTask = createDelegatedTask({ profile: "researcher", objective: "inspect another source" })
+  const { __delegationSubagentTest } = await import("./subagent.js")
+  const prompt = __delegationSubagentTest.taskSystemPrompt(nextTask, {
+    name: "researcher",
+    systemPrompt: "inspect first",
+    tools: ["read_file"],
+    mcpTools: [],
+    maxTurns: 30,
+  })
+  assert.match(prompt, /niri's durable feedback/)
+  assert.match(prompt, /when asked for progress, report it before the result/)
+  assert.match(prompt, new RegExp(task.id))
 
   const verbose = createDelegatedTask({ profile: "researcher", objective: "o".repeat(500) })
   updateDelegatedTask(verbose.id, { resultSummary: "r".repeat(1000), error: "e".repeat(1000) })

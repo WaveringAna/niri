@@ -31,4 +31,6 @@ test("delegation is gated and exposes only configured profile names", () => {
   assert.ok(tool)
   const profile = (tool.function.parameters.properties as Record<string, { enum?: string[] }>).profile
   assert.deepEqual(profile?.enum, ["researcher", "coder"])
+  const action = (tool.function.parameters.properties as Record<string, { enum?: string[] }>).action
+  assert.deepEqual(action?.enum, ["spawn", "send", "feedback", "status", "list", "cancel", "read"])
 })

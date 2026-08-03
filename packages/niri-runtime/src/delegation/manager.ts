@@ -2,6 +2,7 @@ import { endConversation, startConversation } from "../db"
 import type { UserMessage } from "../types"
 import { delegationConfig, findDelegationProfile, type DelegationProfile } from "./config"
 import {
+  appendDelegationProfileFeedback,
   appendDelegatedTaskMessage,
   createDelegatedTask,
   getDelegatedTask,
@@ -141,6 +142,14 @@ async function publishWorkerMessage(taskId: string, kind: Extract<DelegatedMessa
     const task = getDelegatedTask(taskId) ?? taskBefore
     const thread = task.discordThreadId && mirror ? `\nthread: ${mirror.threadUrl(task.discordThreadId)}` : ""
     deliverToMain(`[delegated task needs input]\ntask_id: ${task.id}\nworker: ${task.profile}\n\n${content}${thread}`, task, true)
+  }
+  if (kind === "progress") {
+    const task = getDelegatedTask(taskId) ?? taskBefore
+    const thread = task.discordThreadId && mirror ? `\nthread: ${mirror.threadUrl(task.discordThreadId)}` : ""
+    deliverToMain(
+      `[delegated task progress]\ntask_id: ${task.id}\nworker: ${task.profile}\n\n${truncateResult(content)}${thread}`,
+      task,
+    )
   }
   await mirrorMessage(taskId, message)
   if (kind === "question") await updateMirrorStatus(taskId)
@@ -331,6 +340,37 @@ export async function sendDelegatedTaskMessage(taskId: string, content: string):
   return message
 }
 
+export async function recordDelegatedTaskFeedback(taskId: string, content: string) {
+  const task = getDelegatedTask(taskId)
+  if (!task) throw new Error(`unknown task ${taskId}`)
+  const messageText = content.trim()
+  if (!messageText) throw new Error("delegate feedback requires a non-empty message")
+  if (messageText.length > delegationConfig.resultMaxChars) {
+    throw new Error(`delegate feedback must be at most ${delegationConfig.resultMaxChars} characters`)
+  }
+
+  const feedback = appendDelegationProfileFeedback({
+    profile: task.profile,
+    taskId: task.id,
+    content: messageText,
+  })
+  const message = appendDelegatedTaskMessage({
+    taskId: task.id,
+    senderKind: "niri",
+    senderName: "niri",
+    kind: "feedback",
+    content: messageText,
+  })
+
+  const terminal = ["completed", "failed", "cancelled", "interrupted"].includes(task.status)
+  const resumed = task.status === "needs_input"
+  if (resumed) updateDelegatedTask(task.id, { status: "running" })
+  if (!terminal) wakeInputWaiters(task.id)
+  if (resumed) await updateMirrorStatus(task.id)
+  await mirrorMessage(task.id, message)
+  return feedback
+}
+
 export async function cancelDelegatedTask(taskId: string): Promise<DelegatedTask> {
   const task = getDelegatedTask(taskId)
   if (!task) throw new Error(`unknown task ${taskId}`)
@@ -431,3 +471,5 @@ export async function handleDiscordDelegationMessage(input: {
   if (resumed) await updateMirrorStatus(task.id)
   return true
 }
+
+export const __delegationManagerTest = { publishWorkerMessage }

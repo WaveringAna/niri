@@ -235,6 +235,17 @@ export function initDb(): void {
     create index if not exists idx_delegated_task_messages_order
       on delegated_task_messages(task_id, seq);
 
+    create table if not exists delegation_profile_feedback (
+      id         text primary key,
+      profile    text not null,
+      task_id    text not null references delegated_tasks(id) on delete cascade,
+      content    text not null,
+      created_at text not null
+    );
+
+    create index if not exists idx_delegation_profile_feedback_order
+      on delegation_profile_feedback(profile, created_at desc);
+
     create table if not exists memory_documents (
       id           integer primary key autoincrement,
       path         text    not null unique,
