@@ -181,6 +181,9 @@ export async function syncDiscordMessageEmbeddingsBatch(params?: {
        left join discord_channels c on c.channel_id = m.channel_id
        left join discord_message_embedding_meta e on e.message_id = m.message_id
        where (? = '' or m.channel_id = ?)
+         -- sqlite-vec rowids are integers; synthetic/test message ids are not.
+         and m.message_id <> ''
+         and m.message_id not glob '*[^0-9]*'
          and (
            e.message_id is null
            or e.model != ?
