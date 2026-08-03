@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { Routes, type Message } from "discord.js"
 import { makeRestClient, withDiscordRestRetry } from "./rest"
 import {
@@ -62,13 +63,37 @@ function mirroredPost(task: DelegatedTask, message: DelegatedTaskMessage): strin
   return `**${heading}**\n\n${message.content}`
 }
 
+function identiconUrl(task: DelegatedTask): string {
+  const hash = createHash("md5")
+    .update(`niri-gastown:${task.profile}:${task.id}`)
+    .digest("hex")
+  return `https://www.gravatar.com/avatar/${hash}?d=identicon&f=y&s=128`
+}
+
+function identityEmbed(task: DelegatedTask, label: string) {
+  const color = createHash("sha256")
+    .update(`niri-gastown:${task.profile}:${task.id}`)
+    .digest()
+    .readUIntBE(0, 3)
+  return {
+    author: {
+      name: label,
+      icon_url: identiconUrl(task),
+    },
+    color,
+  }
+}
+
 function forumThreadRequest(forumChannelId: string, task: DelegatedTask) {
   return {
     route: Routes.threads(forumChannelId),
     body: {
       name: threadName(task),
       auto_archive_duration: 1440,
-      message: { content: truncate(initialPost(task), 2000) },
+      message: {
+        content: truncate(initialPost(task), 2000),
+        embeds: [identityEmbed(task, `${task.profile} · ${task.id}`)],
+      },
     },
   }
 }
@@ -89,10 +114,15 @@ function buildMirror(): DelegationMirror {
 
     async postMessage(task, message) {
       if (!task.discordThreadId) return
-      for (const content of chunks(mirroredPost(task, message))) {
+      for (const [index, content] of chunks(mirroredPost(task, message)).entries()) {
         await withDiscordRestRetry(`mirror ${message.id}`, () => rest.post(
           Routes.channelMessages(task.discordThreadId!),
-          { body: { content } },
+          {
+            body: {
+              content,
+              ...(index === 0 ? { embeds: [identityEmbed(task, `${task.profile} · ${message.kind}`)] } : {}),
+            },
+          },
         ))
       }
     },
@@ -152,4 +182,4 @@ export async function handleGastownMessage(message: Message): Promise<boolean> {
   })
 }
 
-export const __gastownTest = { forumThreadRequest, chunks }
+export const __gastownTest = { forumThreadRequest, chunks, identiconUrl, identityEmbed }

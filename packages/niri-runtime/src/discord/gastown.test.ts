@@ -40,8 +40,25 @@ test("Gastown forum creation uses Discord's forum-thread route and starter messa
         "",
         "every human member of this private server is equally authorized to observe and steer this task. ordinary replies go to the worker; mention niri to include her too.",
       ].join("\n"),
+      embeds: [{
+        author: {
+          name: "researcher · task_123",
+          icon_url: __gastownTest.identiconUrl(task),
+        },
+        color: __gastownTest.identityEmbed(task, "ignored").color,
+      }],
     },
   })
+})
+
+test("Gastown task identicons are deterministic and task-specific", () => {
+  const url = new URL(__gastownTest.identiconUrl(task))
+  assert.equal(url.hostname, "www.gravatar.com")
+  assert.equal(url.searchParams.get("d"), "identicon")
+  assert.equal(url.searchParams.get("f"), "y")
+  assert.equal(url.searchParams.get("s"), "128")
+  assert.equal(__gastownTest.identiconUrl(task), __gastownTest.identiconUrl({ ...task }))
+  assert.notEqual(__gastownTest.identiconUrl(task), __gastownTest.identiconUrl({ ...task, id: "task_456" }))
 })
 
 test("Gastown mirrors split Discord messages without losing content", () => {
