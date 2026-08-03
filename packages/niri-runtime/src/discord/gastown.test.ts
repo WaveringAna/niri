@@ -22,32 +22,43 @@ const task: DelegatedTask = {
   contextSize: 0,
 }
 
-test("Gastown forum creation uses Discord's forum-thread route and starter message", () => {
-  const request = __gastownTest.forumThreadRequest("forum-123", task)
-  assert.equal(request.route, "/channels/forum-123/threads")
+test("Gastown forum creation executes a webhook as the task worker", () => {
+  const request = __gastownTest.webhookThreadRequest({ id: "hook-123", token: "secret-token" }, task)
+  assert.equal(request.route, "/webhooks/hook-123/secret-token")
+  assert.equal(request.query.get("wait"), "true")
   assert.deepEqual(request.body, {
-    name: "[researcher] inspect the harness and report evidence",
-    auto_archive_duration: 1440,
-    message: {
-      content: [
-        "**researcher · task_123**",
-        "status: running",
-        "requested by: niri",
-        "",
-        "**objective**",
-        "inspect the harness",
-        "and report evidence",
-        "",
-        "every human member of this private server is equally authorized to observe and steer this task. ordinary replies go to the worker; mention niri to include her too.",
-      ].join("\n"),
-      embeds: [{
-        author: {
-          name: "researcher · task_123",
-          icon_url: __gastownTest.identiconUrl(task),
-        },
-        color: __gastownTest.identityEmbed(task, "ignored").color,
-      }],
-    },
+    username: "researcher",
+    avatar_url: __gastownTest.identiconUrl(task),
+    thread_name: "[researcher] inspect the harness and report evidence",
+    content: [
+      "task: task_123",
+      "status: running",
+      "requested by: niri",
+      "",
+      "**objective**",
+      "inspect the harness",
+      "and report evidence",
+      "",
+      "every human member of this private server is equally authorized to observe and steer this task. ordinary replies go to the worker; mention niri to include her too.",
+    ].join("\n"),
+    allowed_mentions: { parse: [] },
+  })
+})
+
+test("Gastown worker updates execute in the existing thread", () => {
+  const request = __gastownTest.webhookMessageRequest(
+    { id: "hook-123", token: "secret-token" },
+    { ...task, discordThreadId: "thread-456" },
+    "**result**\n\ndone",
+  )
+  assert.equal(request.route, "/webhooks/hook-123/secret-token")
+  assert.equal(request.query.get("wait"), "true")
+  assert.equal(request.query.get("thread_id"), "thread-456")
+  assert.deepEqual(request.body, {
+    username: "researcher",
+    avatar_url: __gastownTest.identiconUrl(task),
+    content: "**result**\n\ndone",
+    allowed_mentions: { parse: [] },
   })
 })
 

@@ -9,7 +9,13 @@ import {
 import { getDelegatedTaskByThread, type DelegatedTask, type DelegatedTaskMessage } from "../delegation/store"
 
 const FORUM_CHANNEL_ID = process.env.DISCORD_GASTOWN_FORUM_CHANNEL_ID?.trim() || ""
+const GASTOWN_WEBHOOK_NAME = "niri gastown workers"
 let guildId: string | null = null
+
+type GastownWebhook = {
+  id: string
+  token: string
+}
 
 function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, Math.max(0, max - 1))}…`
@@ -45,7 +51,7 @@ function chunks(content: string): string[] {
 
 function initialPost(task: DelegatedTask): string {
   return [
-    `**${task.profile} · ${task.id}**`,
+    `task: ${task.id}`,
     `status: ${task.status}`,
     `requested by: ${task.createdByName || task.createdByKind}`,
     "",
@@ -57,9 +63,8 @@ function initialPost(task: DelegatedTask): string {
 }
 
 function mirroredPost(task: DelegatedTask, message: DelegatedTaskMessage): string {
-  const heading = message.senderKind === "subagent"
-    ? `${task.profile} · ${message.kind}`
-    : `${message.senderName} → ${task.profile} · ${message.kind}`
+  if (message.senderKind === "subagent") return `**${message.kind}**\n\n${message.content}`
+  const heading = `${message.senderName} → ${task.profile} · ${message.kind}`
   return `**${heading}**\n\n${message.content}`
 }
 
@@ -70,60 +75,88 @@ function identiconUrl(task: DelegatedTask): string {
   return `https://www.gravatar.com/avatar/${hash}?d=identicon&f=y&s=128`
 }
 
-function identityEmbed(task: DelegatedTask, label: string) {
-  const color = createHash("sha256")
-    .update(`niri-gastown:${task.profile}:${task.id}`)
-    .digest()
-    .readUIntBE(0, 3)
+function webhookIdentity(task: DelegatedTask) {
   return {
-    author: {
-      name: label,
-      icon_url: identiconUrl(task),
-    },
-    color,
+    username: truncate(task.profile, 80),
+    avatar_url: identiconUrl(task),
   }
 }
 
-function forumThreadRequest(forumChannelId: string, task: DelegatedTask) {
+function webhookThreadRequest(webhook: GastownWebhook, task: DelegatedTask) {
   return {
-    route: Routes.threads(forumChannelId),
+    route: Routes.webhook(webhook.id, webhook.token),
+    query: new URLSearchParams({ wait: "true" }),
     body: {
-      name: threadName(task),
-      auto_archive_duration: 1440,
-      message: {
-        content: truncate(initialPost(task), 2000),
-        embeds: [identityEmbed(task, `${task.profile} · ${task.id}`)],
-      },
+      ...webhookIdentity(task),
+      thread_name: threadName(task),
+      content: truncate(initialPost(task), 2000),
+      allowed_mentions: { parse: [] },
     },
   }
 }
 
-function buildMirror(): DelegationMirror {
+function webhookMessageRequest(webhook: GastownWebhook, task: DelegatedTask, content: string) {
+  return {
+    route: Routes.webhook(webhook.id, webhook.token),
+    query: new URLSearchParams({ wait: "true", thread_id: task.discordThreadId! }),
+    body: {
+      ...webhookIdentity(task),
+      content,
+      allowed_mentions: { parse: [] },
+    },
+  }
+}
+
+async function getOrCreateGastownWebhook(rest: ReturnType<typeof makeRestClient>): Promise<GastownWebhook> {
+  const listed = await withDiscordRestRetry("list Gastown webhooks", () => rest.get(
+    Routes.channelWebhooks(FORUM_CHANNEL_ID),
+  )) as Array<{ id?: unknown; token?: unknown; name?: unknown; type?: unknown }>
+  const existing = listed.find((item) => (
+    item.name === GASTOWN_WEBHOOK_NAME && item.type === 1 && typeof item.id === "string" && typeof item.token === "string"
+  ))
+  if (existing && typeof existing.id === "string" && typeof existing.token === "string") {
+    return { id: existing.id, token: existing.token }
+  }
+
+  const created = await withDiscordRestRetry("create Gastown webhook", () => rest.post(
+    Routes.channelWebhooks(FORUM_CHANNEL_ID),
+    { body: { name: GASTOWN_WEBHOOK_NAME } },
+  )) as { id?: unknown; token?: unknown }
+  if (typeof created.id !== "string" || typeof created.token !== "string" || !created.token) {
+    throw new Error("Discord did not return a usable Gastown webhook token")
+  }
+  return { id: created.id, token: created.token }
+}
+
+function buildMirror(webhook: GastownWebhook): DelegationMirror {
   const rest = makeRestClient()
   return {
     async createThread(task) {
       if (!FORUM_CHANNEL_ID) return null
-      const request = forumThreadRequest(FORUM_CHANNEL_ID, task)
+      const request = webhookThreadRequest(webhook, task)
       const response = await withDiscordRestRetry(`create Gastown thread for ${task.id}`, () => rest.post(
         request.route,
-        { body: request.body },
-      )) as { id?: unknown; guild_id?: unknown }
+        { body: request.body, query: request.query },
+      )) as { channel_id?: unknown; guild_id?: unknown }
       if (typeof response.guild_id === "string") guildId = response.guild_id
-      return typeof response.id === "string" ? response.id : null
+      return typeof response.channel_id === "string" ? response.channel_id : null
     },
 
     async postMessage(task, message) {
       if (!task.discordThreadId) return
-      for (const [index, content] of chunks(mirroredPost(task, message)).entries()) {
-        await withDiscordRestRetry(`mirror ${message.id}`, () => rest.post(
-          Routes.channelMessages(task.discordThreadId!),
-          {
-            body: {
-              content,
-              ...(index === 0 ? { embeds: [identityEmbed(task, `${task.profile} · ${message.kind}`)] } : {}),
-            },
-          },
-        ))
+      for (const content of chunks(mirroredPost(task, message))) {
+        if (message.senderKind === "subagent") {
+          const request = webhookMessageRequest(webhook, task, content)
+          await withDiscordRestRetry(`mirror ${message.id}`, () => rest.post(
+            request.route,
+            { body: request.body, query: request.query },
+          ))
+        } else {
+          await withDiscordRestRetry(`mirror ${message.id}`, () => rest.post(
+            Routes.channelMessages(task.discordThreadId!),
+            { body: { content, allowed_mentions: { parse: [] } } },
+          ))
+        }
       }
     },
 
@@ -150,11 +183,13 @@ export async function installGastownMirror(): Promise<void> {
   try {
     const forum = await withDiscordRestRetry("resolve Gastown forum", () => rest.get(Routes.channel(FORUM_CHANNEL_ID))) as { guild_id?: unknown }
     if (typeof forum.guild_id === "string") guildId = forum.guild_id
+    const webhook = await getOrCreateGastownWebhook(rest)
+    setDelegationMirror(buildMirror(webhook))
+    console.log(`[gastown] delegation webhook mirror enabled in forum ${FORUM_CHANNEL_ID}`)
   } catch (err) {
-    console.warn(`[gastown] failed to resolve forum ${FORUM_CHANNEL_ID}: ${err instanceof Error ? err.message : String(err)}`)
+    setDelegationMirror(null)
+    console.warn(`[gastown] failed to enable webhook mirror in forum ${FORUM_CHANNEL_ID}: ${err instanceof Error ? err.message : String(err)}`)
   }
-  setDelegationMirror(buildMirror())
-  console.log(`[gastown] delegation mirror enabled in forum ${FORUM_CHANNEL_ID}`)
 }
 
 export function uninstallGastownMirror(): void {
@@ -182,4 +217,4 @@ export async function handleGastownMessage(message: Message): Promise<boolean> {
   })
 }
 
-export const __gastownTest = { forumThreadRequest, chunks, identiconUrl, identityEmbed }
+export const __gastownTest = { webhookThreadRequest, webhookMessageRequest, chunks, identiconUrl, webhookIdentity }
