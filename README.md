@@ -185,13 +185,13 @@ delegation:
       model: gpt-5.6-luna
       systemPrompt: Inspect first and report exact evidence.
       tools: [shell, read_file]
-      mcpTools: [web_extract__web_search, web_extract__web_summarize, web_extract__web_preview, web_extract__web_extract]
+      mcpTools: [web_extract__web_search, web_extract__web_query, web_extract__web_summarize, web_extract__web_extract]
       maxTurns: 30
     - name: coder
       model: gpt-5.6-luna
       systemPrompt: Make the smallest correct change and verify it.
       tools: [shell, read_file, edit_file]
-      mcpTools: [web_extract__web_search, web_extract__web_summarize, web_extract__web_preview, web_extract__web_extract]
+      mcpTools: [web_extract__web_search, web_extract__web_query, web_extract__web_summarize, web_extract__web_extract]
       maxTurns: 40
 ```
 

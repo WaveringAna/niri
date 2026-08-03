@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer"
+import { isDeepStrictEqual } from "node:util"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
@@ -185,6 +186,16 @@ function formatContentPart(part: Record<string, unknown>): string {
   return JSON.stringify(part, null, 2)
 }
 
+function containsEquivalentStructuredContent(parts: string[], structuredContent: Record<string, unknown>): boolean {
+  return parts.some((part) => {
+    try {
+      return isDeepStrictEqual(JSON.parse(part), structuredContent)
+    } catch {
+      return false
+    }
+  })
+}
+
 export async function callMcpTool(name: string, args: Record<string, unknown>): Promise<string> {
   const owner = toolOwners.get(name)
   if (!owner) throw new Error(`unknown MCP tool ${name}`)
@@ -196,7 +207,9 @@ export async function callMcpTool(name: string, args: Record<string, unknown>): 
 
   if ("toolResult" in result) return JSON.stringify(result.toolResult, null, 2)
   const parts = result.content.map((part) => formatContentPart(part as unknown as Record<string, unknown>))
-  if (result.structuredContent) parts.push(JSON.stringify(result.structuredContent, null, 2))
+  if (result.structuredContent && !containsEquivalentStructuredContent(parts, result.structuredContent)) {
+    parts.push(JSON.stringify(result.structuredContent, null, 2))
+  }
   const content = parts.filter(Boolean).join("\n\n") || "(empty MCP tool result)"
   return result.isError ? `error: ${content}` : content
 }
@@ -218,4 +231,4 @@ export async function stopMcpServers(): Promise<void> {
   }))
 }
 
-export const __mcpTest = { formatContentPart, httpHeaders, publicToolName }
+export const __mcpTest = { containsEquivalentStructuredContent, formatContentPart, httpHeaders, publicToolName }

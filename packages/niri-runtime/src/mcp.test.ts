@@ -18,6 +18,13 @@ test("MCP stdio servers register namespaced tools and receive calls", async (t) 
       description: "Echo a value",
       inputSchema: { value: z.string() },
     }, async ({ value }) => ({ content: [{ type: "text", text: "echo:" + value }] }));
+    server.registerTool("structured", {
+      description: "Return matching text and structured content",
+      inputSchema: { value: z.string() },
+    }, async ({ value }) => ({
+      content: [{ type: "text", text: JSON.stringify({ value }) }],
+      structuredContent: { value },
+    }));
     await server.connect(new StdioServerTransport());
   `
 
@@ -31,9 +38,19 @@ test("MCP stdio servers register namespaced tools and receive calls", async (t) 
 
   assert.deepEqual(
     getMcpToolDefinitions().map((tool) => tool.function.name),
-    ["fixture__echo_value"],
+    ["fixture__echo_value", "fixture__structured"],
   )
   assert.equal(await callMcpTool("fixture__echo_value", { value: "hello" }), "echo:hello")
+  assert.equal(await callMcpTool("fixture__structured", { value: "hello" }), '{"value":"hello"}')
+})
+
+test("equivalent MCP text and structured content are recognized across key order", () => {
+  assert.equal(__mcpTest.containsEquivalentStructuredContent([
+    JSON.stringify({ nested: { b: 2, a: 1 }, ok: true }),
+  ], {
+    ok: true,
+    nested: { a: 1, b: 2 },
+  }), true)
 })
 
 test("MCP public tool names are bounded and normalized", () => {

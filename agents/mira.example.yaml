@@ -58,13 +58,13 @@ delegation:
       model: gpt-5.6-luna
       systemPrompt: Inspect first, preserve unrelated work, and report evidence with exact paths.
       tools: [shell, read_file]
-      mcpTools: [web_extract__web_search, web_extract__web_summarize, web_extract__web_preview, web_extract__web_extract]
+      mcpTools: [web_extract__web_search, web_extract__web_query, web_extract__web_summarize, web_extract__web_extract]
       maxTurns: 30
     - name: coder
       model: gpt-5.6-luna
       systemPrompt: Make the smallest correct change, then run focused verification and report every changed file.
       tools: [shell, read_file, edit_file]
-      mcpTools: [web_extract__web_search, web_extract__web_summarize, web_extract__web_preview, web_extract__web_extract]
+      mcpTools: [web_extract__web_search, web_extract__web_query, web_extract__web_summarize, web_extract__web_extract]
       maxTurns: 40
 
 # Named webhook endpoints live on the server at
