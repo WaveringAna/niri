@@ -18,7 +18,7 @@ import {
   configureNodeToolRuntime,
   type NodeToolRuntimeOptions,
 } from "./config.js"
-import { editFile, readBlobChunk, readFile, readImageForModel, runCommand } from "./tools.js"
+import { editFile, readBlobChunk, readFile, readImageForModel, runCommand, writeFile } from "./tools.js"
 import { closeShellSessions } from "./shell.js"
 
 export type NodeToolHostOptions = {
@@ -27,7 +27,7 @@ export type NodeToolHostOptions = {
   runtime?: NodeToolRuntimeOptions
 }
 
-const ALL_CAPABILITIES: ToolCapability[] = ["shell", "read_file", "edit_file", "image_tool", "read_blob"]
+const ALL_CAPABILITIES: ToolCapability[] = ["shell", "read_file", "write_file", "edit_file", "image_tool", "read_blob"]
 
 export function parseToolCapabilities(value?: string): ToolCapability[] {
   const raw = value?.trim()
@@ -158,6 +158,15 @@ export class NodeToolHost implements ClientToolHost {
           typeof args.timeout_ms === "number" ? args.timeout_ms : undefined,
         )
         return output || "(empty file)"
+      }
+      case "write_file": {
+        const result = await writeFile(
+          String(args.path ?? ""),
+          String(args.content ?? ""),
+          typeof args.timeout_ms === "number" ? args.timeout_ms : undefined,
+        )
+        if (!result.ok) throw new Error(result.message)
+        return result.message
       }
       case "edit_file": {
         const result = await editFile(

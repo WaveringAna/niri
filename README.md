@@ -22,7 +22,7 @@ The niri server reads every `.yaml` and `.yml` file in `agents/`. Files ending i
 npm run start:tool-host
 ```
 
-The tool host listens on `0.0.0.0:3002` and runs `shell`, `read_file`, `edit_file`, and `image_tool` from its workspace root. It also exposes a chunked `read_blob` operation, which the agent runtime uses internally to attach tool-host files to Discord messages.
+The tool host listens on `0.0.0.0:3002` and runs `shell`, `read_file`, `write_file`, `edit_file`, and `image_tool` from its workspace root. It also exposes a chunked `read_blob` operation, which the agent runtime uses internally to attach tool-host files to Discord messages.
 
 ## Recommended topology
 
@@ -190,12 +190,12 @@ delegation:
     - name: coder
       model: gpt-5.6-luna
       systemPrompt: Make the smallest correct change and verify it.
-      tools: [shell, read_file, edit_file]
+      tools: [shell, read_file, write_file, edit_file]
       mcpTools: [web_extract__web_search, web_extract__web_query, web_extract__web_summarize, web_extract__web_extract]
       maxTurns: 40
 ```
 
-`tools` is a required, non-empty allowlist containing only `shell`, `read_file`, `edit_file`, and `image_tool`. An empty list never means all tools. `model` optionally overrides the main agent's configured model name for that profile. `mcpTools` is a separate explicit allowlist of namespaced MCP tools; workers never inherit the main agent's MCP catalog implicitly. At most one profile with `edit_file` runs at once against the attached workspace.
+`tools` is a required, non-empty allowlist containing only `shell`, `read_file`, `write_file`, `edit_file`, and `image_tool`. An empty list never means all tools. `model` optionally overrides the main agent's configured model name for that profile. `mcpTools` is a separate explicit allowlist of namespaced MCP tools; workers never inherit the main agent's MCP catalog implicitly. At most one profile with `write_file` or `edit_file` runs at once against the attached workspace.
 
 `timeoutMs` is the task deadline, including time spent waiting for a collaborator's answer. Provider and client-tool calls already in flight finish cooperatively; cancellation or deadline expiry is applied immediately after they return. Any yielded shell sessions still owned by the worker are terminated when it exits. `delegate status` and `list` return bounded metadata only; full mailbox content enters Niri's context only through an explicit paginated `read`.
 

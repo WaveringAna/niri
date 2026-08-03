@@ -1,4 +1,4 @@
-export const CLIENT_TOOL_NAMES = ["shell", "read_file", "edit_file", "image_tool", "read_blob"] as const
+export const CLIENT_TOOL_NAMES = ["shell", "read_file", "write_file", "edit_file", "image_tool", "read_blob"] as const
 
 export type ClientToolName = (typeof CLIENT_TOOL_NAMES)[number]
 export type ToolCapability = ClientToolName

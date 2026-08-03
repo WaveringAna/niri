@@ -25,3 +25,10 @@ test("client catalog exposes only the attached capabilities", () => {
   assert.deepEqual(parameters.properties?.action?.enum, ["start", "poll", "terminate"])
   assert.equal(parameters.properties?.session_id?.type, "string")
 })
+
+test("write_file is create-only in the model-facing catalog", () => {
+  const [tool] = createClientToolCatalog({ clientCapabilities: ["write_file"] })
+  assert.equal(tool?.function.name, "write_file")
+  assert.match(tool?.function.description ?? "", /fails if the path already exists/i)
+  assert.deepEqual(tool?.function.parameters.required, ["path", "content"])
+})

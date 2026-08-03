@@ -89,9 +89,9 @@ function hasAlreadyBeenNudged(conversation: Message[], tool: string, filePath: s
 async function executeClientText(
   hooks: Pick<LoopHooks, "clientTools">,
   ctx: Parameters<ToolHandler>[0],
-  tool: "shell" | "read_file" | "edit_file",
+  tool: "shell" | "read_file" | "write_file" | "edit_file",
 ): Promise<string> {
-  if (tool === "read_file" || tool === "edit_file") {
+  if (tool === "read_file" || tool === "write_file" || tool === "edit_file") {
     const filePath = String(ctx.args.path ?? "").toLowerCase()
     if (filePath.includes("soul.md") || filePath.includes("memories/") || filePath.includes("memories\\")) {
       if (!hasAlreadyBeenNudged(ctx.state.conversation, tool, filePath)) {
@@ -363,6 +363,17 @@ export function buildToolHandlers(
         run: () => executeClientText(hooks, ctx, "read_file"),
         emitEvent: emitClientToolEvents,
         emptyFallback: "(empty file)",
+      }),
+
+    write_file: (ctx) =>
+      runStandardTool(ctx, {
+        name: "write_file",
+        logArgKeys: ["path", "timeout_ms"] as const,
+        runArgKeys: [] as const,
+        run: () => executeClientText(hooks, ctx, "write_file"),
+        emitArgKeys: ["path"] as const,
+        emitEvent: emitClientToolEvents,
+        previewChars: 0,
       }),
 
     edit_file: (ctx) =>

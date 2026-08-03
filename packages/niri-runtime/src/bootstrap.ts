@@ -61,14 +61,15 @@ function buildEnvironmentSection(options: BootstrapCapabilities = {}): string {
   const clientToolLines = [
     capabilities.has("shell") ? "- `shell`: run any bash command on the attached client workspace" : null,
     capabilities.has("read_file") ? "- `read_file`: read a file from the attached client workspace" : null,
+    capabilities.has("write_file") ? "- `write_file`: create a new UTF-8 text file on the attached client workspace" : null,
     capabilities.has("edit_file") ? "- `edit_file`: edit a file on the attached client workspace by replacing exact text" : null,
     capabilities.has("image_tool") ? `- \`image_tool\`: attach an image from \`${workspace?.imageRoot ?? workspace?.root ?? "the attached client workspace"}\` for the next server-side vision turn` : null,
   ]
     .filter((line): line is string => Boolean(line))
     .join("\n")
   const clientDescription = workspace
-    ? `You have an attached ${workspace.platform ?? "local"} client workspace (${workspace.root}). Shell, file reads, edits, and images run there; the model and durable session state stay on the server.${workspace.persistentShell ? " Its shell keeps its working directory and environment between calls." : ""}`
-    : "No client workspace is attached right now. Client-local shell, read, edit, and image tools are intentionally unavailable; do not assume the server can access a client filesystem."
+    ? `You have an attached ${workspace.platform ?? "local"} client workspace (${workspace.root}). Shell, file reads, writes, edits, and images run there; the model and durable session state stay on the server.${workspace.persistentShell ? " Its shell keeps its working directory and environment between calls." : ""}`
+    : "No client workspace is attached right now. Client-local shell, read, write, edit, and image tools are intentionally unavailable; do not assume the server can access a client filesystem."
   const discordToolLines = options.discord
     ? `\n### Discord tools\n\n**IMPORTANT: Writing text in your message content does NOT send it to Discord. You must call \`discord_send\` to actually deliver a message.**\n\n- \`discord_send\`: send a message from the server; requires \`content\` plus either \`channel_id\` or a \`source_item_id\`\n- \`posture\`: inspect or change hearth/forge; forge-held messages remain queued and unseen until intentionally handled\n- \`discord_inbox\`, \`discord_backread\`, \`discord_search\`, \`discord_scan\`, \`discord_channels\`, \`discord_channel_note\`, \`discord_mark\`: use the server-side Discord inbox and history`
     : "\nDiscord tools are not currently available on this server. Do not promise a Discord reply unless the tool is present."
@@ -90,7 +91,7 @@ journal entries, scattered notes, things you wrote once and forgot. When in \
 doubt, search. A few extra searches cost nothing; missing something costs \
 everything. Memory search is server-side and works even when no client is attached.
 
-**Use \`memory_read\`, \`memory_write\`, \`memory_ls\`, and \`memory_grep\` to interact with your server-owned memories. Use \`soul_write\` to interact with your soul. NEVER use client-workspace tools like \`read_file\`, \`edit_file\`, or shell commands (such as \`cat\` or \`nano\`) to access your memories or soul, as they do not exist in the client workspace and will fail.**
+**Use \`memory_read\`, \`memory_write\`, \`memory_ls\`, and \`memory_grep\` to interact with your server-owned memories. Use \`soul_write\` to interact with your soul. NEVER use client-workspace tools like \`read_file\`, \`write_file\`, \`edit_file\`, or shell commands (such as \`cat\` or \`nano\`) to access your memories or soul, as they do not exist in the client workspace and will fail.**
 
 Your authored long-term memories and your immutable conversation archive are different systems. The \`[continuity across time]\` block contains every active summary segment and its \`[context-summary-id sum_...]\` handle. Treat those recollections as your own trusted context, not as less authoritative merely because they are compressed. Use \`lcm_describe\` when you know a summary id and need its directly merged child summaries, lineage, source counts, time range, or expansion cost. If something feels omitted, use \`context_grep\` to search the verbatim archived messages, optionally scoped to that summary id. Large grep matches are previews so recovered tool output cannot recursively flood context. Use \`context_expand\` only when you need the original messages beneath a known summary id; expand in bounded pages. Describe or search before expanding. The context archive is recovery infrastructure, not a substitute for journaling or maintaining your authored memories.
 

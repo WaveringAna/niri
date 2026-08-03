@@ -454,6 +454,107 @@ export async function readFile(filePath: string, startLine = 1, endLine?: number
   return header + content
 }
 
+/** Create a new UTF-8 file without following a final-path symlink or replacing an existing file. */
+export async function writeFile(filePath: string, content: string, timeoutMs?: number): Promise<EditResult> {
+  const raw = String(filePath ?? "").trim()
+  if (!raw) return { ok: false, message: "path is required" }
+  const bytes = Buffer.byteLength(content, "utf8")
+  const limit = localFileLimitBytes()
+  if (bytes > limit) return { ok: false, message: `content is too large to write safely (${bytes} > ${limit} bytes)` }
+
+  const opTimeoutMs = normalizeTimeoutMs(timeoutMs, DEFAULT_FILE_TIMEOUT_MS)
+
+  if (!USE_DOCKER_SHELL) {
+    const requested = path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(await currentWorkingDirectory(opTimeoutMs), raw)
+    let resolvedPath: string
+    try {
+      const parent = await withTimeout(fs.realpath(path.dirname(requested)), opTimeoutMs, "file parent resolution")
+      resolvedPath = path.join(parent, path.basename(requested))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return { ok: false, message: `could not resolve parent for ${filePath}: ${message}` }
+    }
+
+    let handle: Awaited<ReturnType<typeof fs.open>> | undefined
+    let created = false
+    try {
+      handle = await withTimeout(fs.open(resolvedPath, "wx", 0o666), opTimeoutMs, "file create")
+      created = true
+      await withTimeout(handle.writeFile(content, "utf8"), opTimeoutMs, "file write")
+      await withTimeout(handle.sync(), opTimeoutMs, "file sync")
+      await handle.close()
+      handle = undefined
+      return { ok: true, message: `created ${filePath} (${bytes} bytes)` }
+    } catch (err) {
+      await handle?.close().catch(() => {})
+      if (created) await fs.rm(resolvedPath, { force: true }).catch(() => {})
+      const message = err instanceof Error ? err.message : String(err)
+      return { ok: false, message: `could not create ${filePath}: ${message}` }
+    }
+  }
+
+  const payload = wrappedBase64(JSON.stringify({ path: raw, content }))
+  const payloadToken = `HARNESS_WRITE_PAYLOAD_${randomBytes(8).toString("hex").toUpperCase()}`
+  const payloadPath = `/tmp/harness-write-${randomBytes(8).toString("hex")}.b64`
+  const py = [
+    "import base64, json, os, sys",
+    "def out(obj):",
+    "    print(json.dumps(obj, ensure_ascii=False))",
+    "with open(sys.argv[1], 'r', encoding='ascii') as f:",
+    "    payload = json.loads(base64.b64decode(f.read()).decode('utf-8'))",
+    "requested = os.path.abspath(payload.get('path', ''))",
+    "content = payload.get('content', '')",
+    "max_bytes = int(sys.argv[2])",
+    "encoded = content.encode('utf-8')",
+    "if not payload.get('path', '').strip():",
+    "    out({'ok': False, 'message': 'path is required'})",
+    "    raise SystemExit(0)",
+    "if len(encoded) > max_bytes:",
+    "    out({'ok': False, 'message': f'content is too large to write safely ({len(encoded)} > {max_bytes} bytes)'})",
+    "    raise SystemExit(0)",
+    "parent = os.path.realpath(os.path.dirname(requested))",
+    "path = os.path.join(parent, os.path.basename(requested))",
+    "flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL",
+    "if hasattr(os, 'O_NOFOLLOW'): flags |= os.O_NOFOLLOW",
+    "fd = None",
+    "created = False",
+    "try:",
+    "    fd = os.open(path, flags, 0o666)",
+    "    created = True",
+    "    with os.fdopen(fd, 'wb') as f:",
+    "        fd = None",
+    "        f.write(encoded)",
+    "        f.flush()",
+    "        os.fsync(f.fileno())",
+    "except Exception as e:",
+    "    if fd is not None: os.close(fd)",
+    "    if created:",
+    "        try: os.unlink(path)",
+    "        except FileNotFoundError: pass",
+    "    out({'ok': False, 'message': f'could not create {path}: {e}'})",
+    "    raise SystemExit(0)",
+    "out({'ok': True, 'path': path, 'bytes': len(encoded)})",
+  ].join("\n")
+
+  const rawResult = await runRaw(
+    [
+      `cat > ${shellQuote(payloadPath)} << '${payloadToken}'`,
+      payload,
+      payloadToken,
+      pythonCommand(py, [payloadPath, String(limit)]),
+      `rm -f ${shellQuote(payloadPath)}`,
+    ].join("\n"),
+    { timeoutMs: opTimeoutMs },
+  )
+  try {
+    const parsed = JSON.parse(rawResult.trim()) as { ok?: boolean; message?: string; bytes?: number }
+    if (!parsed.ok) return { ok: false, message: parsed.message ?? `write failed for ${filePath}` }
+    return { ok: true, message: `created ${filePath} (${parsed.bytes ?? bytes} bytes)` }
+  } catch {
+    return { ok: false, message: `write failed for ${filePath}: ${rawResult.trim() || "unknown error"}` }
+  }
+}
+
 // Docker edits stay in-container so large file bodies never cross the PTY.
 export async function editFile(filePath: string, oldText: string, newText: string, timeoutMs?: number): Promise<EditResult> {
   if (oldText.length === 0) {

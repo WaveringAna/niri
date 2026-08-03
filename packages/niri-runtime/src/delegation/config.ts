@@ -1,4 +1,4 @@
-export type DelegationToolName = "shell" | "read_file" | "edit_file" | "image_tool"
+export type DelegationToolName = "shell" | "read_file" | "write_file" | "edit_file" | "image_tool"
 
 export type DelegationProfile = {
   name: string
@@ -17,7 +17,7 @@ export type DelegationConfig = {
   profiles: DelegationProfile[]
 }
 
-const KNOWN_TOOLS = new Set<DelegationToolName>(["shell", "read_file", "edit_file", "image_tool"])
+const KNOWN_TOOLS = new Set<DelegationToolName>(["shell", "read_file", "write_file", "edit_file", "image_tool"])
 
 function positiveInteger(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback

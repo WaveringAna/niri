@@ -73,6 +73,25 @@ test("native edits replace atomically and preserve file permissions", async () =
   }
 })
 
+test("write_file creates a new file and never replaces an existing path", async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "harness-host-write-"))
+  const file = path.join(workspace, "created.md")
+  const host = new NodeToolHost({ capabilities: ["write_file"], workspace: { root: workspace } })
+  try {
+    const created = await host.execute(invocation("write_file", { path: file, content: "first\n" }))
+    assert.equal(created.status, "ok")
+    assert.equal(await fs.readFile(file, "utf8"), "first\n")
+
+    const refused = await host.execute(invocation("write_file", { path: file, content: "second\n" }))
+    assert.equal(refused.status, "error")
+    assert.match(refused.output ?? "", /could not create/)
+    assert.equal(await fs.readFile(file, "utf8"), "first\n")
+  } finally {
+    await host.stop()
+    await fs.rm(workspace, { recursive: true, force: true })
+  }
+})
+
 test("a second host makes the previous process-global runtime fail closed", async () => {
   const firstRoot = await fs.mkdtemp(path.join(os.tmpdir(), "harness-host-first-"))
   const secondRoot = await fs.mkdtemp(path.join(os.tmpdir(), "harness-host-second-"))

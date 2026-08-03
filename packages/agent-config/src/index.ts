@@ -50,7 +50,7 @@ export type DelegationProfileConfig = {
   name: string
   model?: string
   systemPrompt?: string
-  tools: Array<"shell" | "read_file" | "edit_file" | "image_tool">
+  tools: Array<"shell" | "read_file" | "write_file" | "edit_file" | "image_tool">
   mcpTools?: string[]
   maxTurns?: number
 }
@@ -312,7 +312,7 @@ function parseDelegation(value: unknown, label: string): DelegationConfig | unde
 
   const rawProfiles = item.profiles ?? []
   if (!Array.isArray(rawProfiles)) throw new Error(`${label}.profiles must be an array`)
-  const knownTools = new Set(["shell", "read_file", "edit_file", "image_tool"])
+  const knownTools = new Set(["shell", "read_file", "write_file", "edit_file", "image_tool"])
   const names = new Set<string>()
   const profiles = rawProfiles.map((raw, index): DelegationProfileConfig => {
     const profileLabel = `${label}.profiles[${index}]`
@@ -324,7 +324,7 @@ function parseDelegation(value: unknown, label: string): DelegationConfig | unde
     if (names.has(name)) throw new Error(`${label}.profiles has duplicate name ${name}`)
     names.add(name)
     if (!Array.isArray(profile.tools) || profile.tools.length === 0 || profile.tools.some((tool) => typeof tool !== "string" || !knownTools.has(tool))) {
-      throw new Error(`${profileLabel}.tools must be a non-empty array of shell, read_file, edit_file, or image_tool`)
+      throw new Error(`${profileLabel}.tools must be a non-empty array of shell, read_file, write_file, edit_file, or image_tool`)
     }
     let mcpTools: string[] | undefined
     if (profile.mcpTools !== undefined) {

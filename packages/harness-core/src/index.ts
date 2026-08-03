@@ -92,6 +92,25 @@ export function createClientToolCatalog(options: ClientToolCatalogOptions = {}):
     )
   }
 
+  if (capabilities.has("write_file")) {
+    tools.push(
+      functionTool(
+        "write_file",
+        "Create a new UTF-8 text file in the attached client workspace. Fails if the path already exists; use edit_file for existing files.",
+        {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            path: { type: "string" },
+            content: { type: "string" },
+            timeout_ms: { type: "integer", minimum: 1000, maximum: 600000 },
+          },
+          required: ["path", "content"],
+        },
+      ),
+    )
+  }
+
   if (capabilities.has("edit_file")) {
     tools.push(
       functionTool(

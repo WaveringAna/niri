@@ -156,7 +156,11 @@ async function publishWorkerMessage(taskId: string, kind: Extract<DelegatedMessa
 }
 
 function activeWriterExists(): boolean {
-  return [...activeTasks.values()].some((active) => active.profile.tools.includes("edit_file"))
+  return [...activeTasks.values()].some((active) => profileCanWrite(active.profile))
+}
+
+function profileCanWrite(profile: DelegationProfile): boolean {
+  return profile.tools.includes("write_file") || profile.tools.includes("edit_file")
 }
 
 function nextRunnableTask(): { task: DelegatedTask; profile: DelegationProfile } | null {
@@ -167,7 +171,7 @@ function nextRunnableTask(): { task: DelegatedTask; profile: DelegationProfile }
       updateDelegatedTask(task.id, { status: "failed", completedAt: new Date().toISOString(), error: `profile ${task.profile} is no longer configured` })
       continue
     }
-    if (profile.tools.includes("edit_file") && writerActive) continue
+    if (profileCanWrite(profile) && writerActive) continue
     return { task, profile }
   }
   return null

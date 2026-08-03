@@ -162,3 +162,21 @@ delegation:
 
   assert.throws(() => parseAgentFile(file), /non-empty array/)
 })
+
+test("delegation coder profiles accept write_file alongside shell and edits", async (t) => {
+  const file = await withYaml(`
+client: local
+delegation:
+  profiles:
+    - name: coder
+      tools: [shell, read_file, write_file, edit_file]
+`)
+  t.after(() => fs.rm(path.dirname(file), { recursive: true, force: true }))
+
+  assert.deepEqual(parseAgentFile(file).delegation?.profiles[0]?.tools, [
+    "shell",
+    "read_file",
+    "write_file",
+    "edit_file",
+  ])
+})
