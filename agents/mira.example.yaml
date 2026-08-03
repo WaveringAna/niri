@@ -42,6 +42,30 @@ discord:
   batchMaxMessages: 40
   cooldownChannels: "channelId,2000,0400"
   cooldownTz: America/New_York
+  # Optional private Discord forum where delegated tasks become multiplayer threads.
+  # Every human member who can access the forum is equally authorized to steer tasks.
+  gastownForumChannelId: "123456789012345678"
+
+# Task workers get fresh context and only the client tools explicitly listed here.
+# They cannot access Discord, memories, scheduling, posture, or nested delegation.
+delegation:
+  enabled: true
+  maxConcurrent: 2
+  timeoutMs: 1800000
+  resultMaxChars: 6000
+  profiles:
+    - name: researcher
+      model: gpt-5.6-luna
+      systemPrompt: Inspect first, preserve unrelated work, and report evidence with exact paths.
+      tools: [shell, read_file]
+      mcpTools: [web_extract__web_search, web_extract__web_summarize, web_extract__web_preview, web_extract__web_extract]
+      maxTurns: 30
+    - name: coder
+      model: gpt-5.6-luna
+      systemPrompt: Make the smallest correct change, then run focused verification and report every changed file.
+      tools: [shell, read_file, edit_file]
+      mcpTools: [web_extract__web_search, web_extract__web_summarize, web_extract__web_preview, web_extract__web_extract]
+      maxTurns: 40
 
 # Named webhook endpoints live on the server at
 # POST /agents/<agent-id>/trigger/webhook/<name>. HMAC-SHA256 is calculated

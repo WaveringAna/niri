@@ -25,6 +25,14 @@ import type { ToolHandler } from "./loop-shared"
 import { pushToolMessage, recordToolResult, runStandardTool, toolError } from "./loop-tool-runtime"
 import { loadAgentSummaryContext, parseImageDetail, saveRestSnapshot, summarizeConversationViaLLMWithProvenance } from "./util"
 import type { LoopHooks } from "./types"
+import {
+  cancelDelegatedTask,
+  describeDelegatedTask,
+  readDelegatedTask,
+  recentDelegatedTasks,
+  sendDelegatedTaskMessage,
+  spawnDelegatedTask,
+} from "../delegation/manager"
 
 const DEFAULT_WAIT_THEN_CONTINUE_MS = 10_000
 const MAX_TOOL_TIMEOUT_MS = 10 * 60_000
@@ -215,8 +223,47 @@ function formatDiscordSendResult(result: Record<string, unknown>): string {
   return "sent!"
 }
 
-export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record<string, ToolHandler> {
+export function buildToolHandlers(
+  hooks: Pick<LoopHooks, "clientTools">,
+  options: { emitClientToolEvents?: boolean } = {},
+): Record<string, ToolHandler> {
+  const emitClientToolEvents = options.emitClientToolEvents !== false
   return {
+    delegate: async ({ convId, state, call, args }) => {
+      const action = String(args.action ?? "").trim()
+      const taskId = String(args.task_id ?? "").trim()
+      try {
+        let result: unknown
+        if (action === "spawn") {
+          const profile = String(args.profile ?? "").trim()
+          const objective = String(args.objective ?? "").trim()
+          if (!profile || !objective) throw new Error("delegate spawn requires profile and objective")
+          result = spawnDelegatedTask(profile, objective)
+        } else if (action === "send") {
+          const message = String(args.message ?? "").trim()
+          if (!taskId || !message) throw new Error("delegate send requires task_id and message")
+          result = await sendDelegatedTaskMessage(taskId, message)
+        } else if (action === "status") {
+          if (!taskId) throw new Error("delegate status requires task_id")
+          result = describeDelegatedTask(taskId)
+        } else if (action === "list") {
+          result = recentDelegatedTasks(args.limit as number | undefined)
+        } else if (action === "cancel") {
+          if (!taskId) throw new Error("delegate cancel requires task_id")
+          result = await cancelDelegatedTask(taskId)
+        } else if (action === "read") {
+          if (!taskId) throw new Error("delegate read requires task_id")
+          result = readDelegatedTask(taskId, args.after_seq as number | undefined, args.limit as number | undefined)
+        } else {
+          throw new Error("delegate action must be spawn, send, status, list, cancel, or read")
+        }
+        recordToolResult(convId, state, call, "delegate", { action, task_id: taskId || undefined }, JSON.stringify(result, null, 2))
+      } catch (err) {
+        recordToolResult(convId, state, call, "delegate", { action, task_id: taskId || undefined }, toolError(err))
+      }
+      return {}
+    },
+
     wait_then_continue: async ({ convId, state, hooks, call, args }) => {
       const timeoutMs = normalizeTimeoutMs(args.timeout_ms, DEFAULT_WAIT_THEN_CONTINUE_MS)
       recordToolResult(
@@ -296,9 +343,10 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
     shell: (ctx) =>
       runStandardTool(ctx, {
         name: "shell",
-        logArgKeys: ["command", "timeout_ms"] as const,
+        logArgKeys: ["action", "command", "session_id", "timeout_ms"] as const,
         runArgKeys: [] as const,
         run: () => executeClientText(hooks, ctx, "shell"),
+        emitEvent: emitClientToolEvents,
         emptyFallback: "(no output)",
       }),
 
@@ -308,6 +356,7 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
         logArgKeys: ["path", "start_line", "end_line", "timeout_ms"] as const,
         runArgKeys: [] as const,
         run: () => executeClientText(hooks, ctx, "read_file"),
+        emitEvent: emitClientToolEvents,
         emptyFallback: "(empty file)",
       }),
 
@@ -318,6 +367,7 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
         runArgKeys: [] as const,
         run: () => executeClientText(hooks, ctx, "edit_file"),
         emitArgKeys: ["path"] as const,
+        emitEvent: emitClientToolEvents,
         previewChars: 0,
       }),
 
@@ -522,11 +572,13 @@ export function buildToolHandlers(hooks: Pick<LoopHooks, "clientTools">): Record
         state.conversation.push(imageMessage)
         logMessage(convId, "user", `[image_tool] ${note}\npath=${image.path}\ndetail=${detail}`)
       } catch (err) {
-        result = recordToolResult(convId, state, call, "image_tool", { path: args.path, detail: args.detail }, toolError(err))
+        result = emitClientToolEvents
+          ? recordToolResult(convId, state, call, "image_tool", { path: args.path, detail: args.detail }, toolError(err))
+          : pushToolMessage(convId, state, call, toolError(err))
         return {}
       }
 
-      emit({ type: "tool", name: "image_tool", args: { path: args.path, detail: args.detail }, result })
+      if (emitClientToolEvents) emit({ type: "tool", name: "image_tool", args: { path: args.path, detail: args.detail }, result })
       return {}
     },
 

@@ -5,6 +5,12 @@ export type FunctionToolCall = OpenAI.Chat.ChatCompletionMessageToolCall & { typ
 
 export type ToolArgs = {
   command?: string
+  session_id?: string
+  task_id?: string
+  profile?: string
+  objective?: string
+  message?: string
+  after_seq?: number
   query?: string
   max_lines?: number
   timeout_ms?: number

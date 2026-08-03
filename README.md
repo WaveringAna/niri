@@ -121,6 +121,7 @@ Managed agents started by the niri server keep using loopback HTTP and need no i
 | `embedding` | object | no | — |
 | `summary` | object | no | — |
 | `discord` | object | no | — |
+| `delegation` | object | no | —; named isolated task workers and concurrency limits |
 | `mcp` | object keyed by MCP server name | no | `{}` |
 | `worker` | object | no | —; compatibility name for agent-runtime placement |
 | `server` | object | no | —; niri-server connection for a standalone agent |
@@ -167,6 +168,38 @@ Relative `home` and `workspace` paths resolve from the repository root.
 | `posture_bypass.channels` | array of Discord channel ids |
 | `scanChannelIds` | comma-separated string |
 | `wakeOnEvent` | boolean |
+| `gastownForumChannelId` | Discord forum-channel id; each delegated task is mirrored into a multiplayer thread |
+
+### `delegation`
+
+Delegated task workers run fresh conversations containing only their profile prompt, objective, and explicitly allowed client tools. They cannot access Discord, memories, posture, schedules, loop control, or nested delegation. The main agent uses the asynchronous `delegate` tool to spawn, steer, inspect, and cancel them.
+
+```yaml
+delegation:
+  enabled: true
+  maxConcurrent: 2
+  timeoutMs: 1800000
+  resultMaxChars: 6000
+  profiles:
+    - name: researcher
+      model: gpt-5.6-luna
+      systemPrompt: Inspect first and report exact evidence.
+      tools: [shell, read_file]
+      mcpTools: [web_extract__web_search, web_extract__web_summarize, web_extract__web_preview, web_extract__web_extract]
+      maxTurns: 30
+    - name: coder
+      model: gpt-5.6-luna
+      systemPrompt: Make the smallest correct change and verify it.
+      tools: [shell, read_file, edit_file]
+      mcpTools: [web_extract__web_search, web_extract__web_summarize, web_extract__web_preview, web_extract__web_extract]
+      maxTurns: 40
+```
+
+`tools` is a required, non-empty allowlist containing only `shell`, `read_file`, `edit_file`, and `image_tool`. An empty list never means all tools. `model` optionally overrides the main agent's configured model name for that profile. `mcpTools` is a separate explicit allowlist of namespaced MCP tools; workers never inherit the main agent's MCP catalog implicitly. At most one profile with `edit_file` runs at once against the attached workspace.
+
+`timeoutMs` is the task deadline, including time spent waiting for a collaborator's answer. Provider and client-tool calls already in flight finish cooperatively; cancellation or deadline expiry is applied immediately after they return. Any yielded shell sessions still owned by the worker are terminated when it exits. `delegate status` and `list` return bounded metadata only; full mailbox content enters Niri's context only through an explicit paginated `read`.
+
+Set `discord.gastownForumChannelId` to mirror each invocation into a Discord forum thread. Discord is an observable multiplayer surface over the durable SQLite task mailbox: every human who can write in the private server thread is equally authorized to steer the worker, while bot and webhook messages are ignored only to prevent mirror feedback loops. Ordinary replies go to the worker; mentioning Niri also wakes her with the message. Progress remains in the task transcript and thread, while blocking questions and bounded final results enter Niri's context.
 
 Runtime tuning belongs under the first-party `runtime` section. It contains `imageMaxBytes`, tool-choice and fallback-limit options, context-compaction thresholds, `lcmSummaryBatchSize` (default `4`, the number of same-depth segments promoted into one multi-parent summary), state migration, loop limits, and `antigravity`/`codex` bridge settings. Discord batching, gateway tracing, and cooldowns are first-party fields under `discord`.
 

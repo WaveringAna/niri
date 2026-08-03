@@ -86,3 +86,11 @@ Tunnels are raw byte pipes: each accepted loopback TCP socket opens one QUIC BiS
 3. The model calls exactly one tool per turn: memory/soul tools, Discord tools, tool-host tools, MCP tools, `schedule`, or loop control (`wait`, `wait_then_continue`, `rest`).
 4. Events stream to the agent's outbox (`worker_events` in `niri.db`, retaining its compatibility-era table name), mirrored by the niri server for the UI.
 5. `rest` ends the session with a durable snapshot; the next trigger starts a fresh one with a rest summary.
+
+### Delegated tasks and Gastown
+
+Delegated task workers are not full agent runtimes. Niri remains the sole persistent persona; each worker receives a fresh task-only conversation, one configured profile prompt, an optional profile-specific model, and explicit allowlists of attached-client and namespaced MCP tools. Workers do not inherit tools implicitly. Worker transcripts and mailbox messages live in `delegated_tasks` and `delegated_task_messages` inside the agent's `niri.db`, outside the main conversation and LCM frontier.
+
+`delegate spawn` returns immediately. The runtime executes queued workers with a concurrency bound and a single-writer lease, wakes the main agent for blocking questions and bounded final results, and leaves ordinary progress outside her active context. Runtime restarts mark in-flight work interrupted rather than silently losing its apparent state.
+
+When `discord.gastownForumChannelId` is configured, the runtime creates one Discord forum thread per task. Discord mirrors the durable mailbox and accepts multiplayer steering from every human able to write in that private thread; it is not the source of truth and has no per-user or per-role ACL layer. Bot and webhook messages are excluded only to prevent feedback loops.

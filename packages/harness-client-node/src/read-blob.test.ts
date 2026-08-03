@@ -5,10 +5,8 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { configureNodeToolRuntime } from "./config.js"
-import { closeBash } from "./shell.js"
 import { readBlobChunk } from "./tools.js"
 
-test.after(() => closeBash())
 
 type BlobChunkResult = {
   data: string

@@ -16,4 +16,12 @@ test("client catalog exposes only the attached capabilities", () => {
   assert.equal(byName.has("read_file"), false)
   assert.equal(byName.has("edit_file"), false)
   assert.match(byName.get("image_tool")?.function.description ?? "", /\/Users\/mira\/project\/images/)
+  const shell = byName.get("shell")
+  assert.match(shell?.function.description ?? "", /session_id/)
+  assert.doesNotMatch(shell?.function.description ?? "", /stateful/)
+  const parameters = shell?.function.parameters as {
+    properties?: Record<string, { enum?: unknown; type?: unknown }>
+  }
+  assert.deepEqual(parameters.properties?.action?.enum, ["start", "poll", "terminate"])
+  assert.equal(parameters.properties?.session_id?.type, "string")
 })

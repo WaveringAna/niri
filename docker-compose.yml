@@ -9,7 +9,7 @@ services:
     container_name: ${NIRI_CONTAINER:-niri}
     restart: unless-stopped
     ports:
-      - "3001:3001"
+      - "3004:3001"
     user: "${AGENT_UID:-1000}:${AGENT_GID:-1000}"
     working_dir: /workspace
     volumes:

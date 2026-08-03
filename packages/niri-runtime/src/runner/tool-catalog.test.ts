@@ -21,3 +21,14 @@ test("Discord and client tools are independently gated", () => {
   assert.equal(names.includes("discord_mark"), true)
   assert.equal(names.includes("posture"), true)
 })
+
+test("delegation is gated and exposes only configured profile names", () => {
+  const disabled = createNiriToolCatalog().map((tool) => tool.function.name)
+  assert.equal(disabled.includes("delegate"), false)
+
+  const tool = createNiriToolCatalog({ delegationProfiles: ["researcher", "coder"] })
+    .find((candidate) => candidate.function.name === "delegate")
+  assert.ok(tool)
+  const profile = (tool.function.parameters.properties as Record<string, { enum?: string[] }>).profile
+  assert.deepEqual(profile?.enum, ["researcher", "coder"])
+})

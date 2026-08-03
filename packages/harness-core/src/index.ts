@@ -56,16 +56,17 @@ export function createClientToolCatalog(options: ClientToolCatalogOptions = {}):
     tools.push(
       functionTool(
         "shell",
-        "Execute a bash command in the attached client workspace. The shell is stateful, so working-directory and environment changes persist on that client.",
+        "Execute a bash command in a fresh non-interactive process. If it is still running after timeout_ms, it remains alive and returns a session_id; use action=poll to keep checking it or action=terminate to stop it explicitly.",
         {
           type: "object",
           additionalProperties: false,
           properties: {
-            command: { type: "string" },
-            max_lines: { type: "integer", minimum: 1, description: "Maximum lines to return." },
-            timeout_ms: { type: "integer", minimum: 1000, maximum: 600000 },
+            action: { type: "string", enum: ["start", "poll", "terminate"], description: "Start a command (default), poll a running session, or explicitly terminate it." },
+            command: { type: "string", description: "Bash command; required for action=start." },
+            session_id: { type: "string", description: "Shell session id; required for action=poll or action=terminate." },
+            max_lines: { type: "integer", minimum: 1, description: "Maximum output lines to return." },
+            timeout_ms: { type: "integer", minimum: 1000, maximum: 600000, description: "How long to wait for exit before yielding a resumable session." },
           },
-          required: ["command"],
         },
       ),
     )

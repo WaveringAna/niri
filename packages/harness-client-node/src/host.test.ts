@@ -25,7 +25,7 @@ test("Docker mode requires both container name and user", () => {
   )
 })
 
-test("the advertised workspace is the persistent shell's initial directory", async () => {
+test("every shell call starts in the advertised workspace", async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "harness-host-cwd-"))
   const realWorkspace = await fs.realpath(workspace)
   const host = new NodeToolHost({ capabilities: ["shell"], workspace: { id: "test", root: workspace } })
@@ -34,6 +34,7 @@ test("the advertised workspace is the persistent shell's initial directory", asy
     assert.equal(result.status, "ok")
     assert.equal(result.output, realWorkspace)
     assert.equal(host.getWorkspace().root, realWorkspace)
+    assert.equal(host.getWorkspace().persistentShell, false)
   } finally {
     await host.stop()
     await fs.rm(workspace, { recursive: true, force: true })

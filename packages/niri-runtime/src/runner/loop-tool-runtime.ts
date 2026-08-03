@@ -25,6 +25,7 @@ type StandardToolSpec<
   run: (...values: ArgTuple<RunKeys>) => Promise<string>
   emptyFallback?: string
   emitArgKeys?: EmitKeys
+  emitEvent?: boolean
   previewChars?: number
 }
 
@@ -120,7 +121,8 @@ export async function runStandardTool<
   console.log(`[${spec.name} result]`, preview)
   const content = raw || spec.emptyFallback || raw
   const emitArgs = spec.emitArgKeys ? pickArgsByKeys(ctx.args, spec.emitArgKeys) : ctx.args
-  recordToolResult(ctx.convId, ctx.state, ctx.call, spec.name, emitArgs, content)
+  if (spec.emitEvent === false) pushToolMessage(ctx.convId, ctx.state, ctx.call, content)
+  else recordToolResult(ctx.convId, ctx.state, ctx.call, spec.name, emitArgs, content)
   return {}
 }
 

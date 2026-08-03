@@ -109,3 +109,56 @@ discord:
     }),
   )
 })
+
+test("agentSettings exposes delegation profiles and the Gastown forum", async (t) => {
+  const file = await withYaml(`
+client: local
+discord:
+  gastownForumChannelId: "123456789012345678"
+delegation:
+  enabled: true
+  maxConcurrent: 2
+  timeoutMs: 1800000
+  resultMaxChars: 6000
+  profiles:
+    - name: researcher
+      model: gpt-5.6-luna
+      systemPrompt: inspect first and report evidence
+      tools: [shell, read_file]
+      mcpTools: [web_extract__web_search, web_extract__web_summarize, web_extract__web_preview, web_extract__web_extract]
+      maxTurns: 30
+`)
+  t.after(() => fs.rm(path.dirname(file), { recursive: true, force: true }))
+
+  const config = parseAgentFile(file)
+  assert.equal(config.discord?.gastownForumChannelId, "123456789012345678")
+  assert.deepEqual(config.delegation?.profiles, [{
+    name: "researcher",
+    model: "gpt-5.6-luna",
+    systemPrompt: "inspect first and report evidence",
+    tools: ["shell", "read_file"],
+    mcpTools: [
+      "web_extract__web_search",
+      "web_extract__web_summarize",
+      "web_extract__web_preview",
+      "web_extract__web_extract",
+    ],
+    maxTurns: 30,
+  }])
+  const settings = agentSettings(config)
+  assert.equal(settings.DISCORD_GASTOWN_FORUM_CHANNEL_ID, "123456789012345678")
+  assert.deepEqual(JSON.parse(settings.NIRI_DELEGATION_CONFIG ?? ""), config.delegation)
+})
+
+test("delegation profiles require explicit client-tool allowlists", async (t) => {
+  const file = await withYaml(`
+client: local
+delegation:
+  profiles:
+    - name: everything
+      tools: []
+`)
+  t.after(() => fs.rm(path.dirname(file), { recursive: true, force: true }))
+
+  assert.throws(() => parseAgentFile(file), /non-empty array/)
+})

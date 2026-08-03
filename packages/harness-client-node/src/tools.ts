@@ -3,7 +3,6 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import type { ClientImageArtifact } from "@mira/harness-protocol"
 import {
-  DEFAULT_COMMAND_TIMEOUT_MS,
   DEFAULT_FILE_TIMEOUT_MS,
   IMAGE_MAX_BYTES,
   IMAGE_ROOT,
@@ -14,29 +13,19 @@ import {
   normalizeTimeoutMs,
   resolveMaxLines,
 } from "./config.js"
-import { currentWorkingDirectory, runOneOff, runRaw } from "./shell.js"
+import { currentWorkingDirectory, runRaw, runShellSession, type ShellSessionAction } from "./shell.js"
 import type { EditResult, ImageToolPayload } from "./types.js"
 
-function invokesSudo(command: string): boolean {
-  return /(^|[;&|({]\s*)sudo(\s|$)/.test(String(command ?? ""))
+export type RunCommandInput = {
+  action?: ShellSessionAction
+  command?: string
+  sessionId?: string
+  maxLines?: number
+  timeoutMs?: number
 }
 
-export async function runCommand(command: string, maxLines?: number, timeoutMs?: number): Promise<string> {
+function boundedCommandOutput(raw: string, command: string, maxLines?: number): string {
   const cap = resolveMaxLines(command, maxLines)
-  const opTimeoutMs = normalizeTimeoutMs(timeoutMs, DEFAULT_COMMAND_TIMEOUT_MS)
-  const raw = invokesSudo(command)
-    ? await runOneOff(command, await currentWorkingDirectory(opTimeoutMs), { timeoutMs: opTimeoutMs })
-    : await runRaw(command, {
-        timeoutMs: opTimeoutMs,
-        // Always detach stdin from the PTY. The agent cannot type into a prompt,
-        // so an interactive child (clack/inquirer prompts, pagers, REPLs) would
-        // only consume the trailing completion sentinels still buffered in the
-        // PTY — poisoning completion detection and flooding the session with
-        // prompt redraw garbage. /dev/null gives such children immediate EOF
-        // so they abort cleanly and bash reaches the end sentinel.
-        redirectStdinToDevNull: true,
-      })
-
   if (cap === 0) return raw
 
   const lines = raw.split("\n")
@@ -47,12 +36,48 @@ export async function runCommand(command: string, maxLines?: number, timeoutMs?:
     return line
   })
 
-  if (processedLines.length <= cap) {
-    return processedLines.join("\n")
-  }
-
+  if (processedLines.length <= cap) return processedLines.join("\n")
   const kept = processedLines.slice(-cap)
   return `[truncated — showing last ${cap} of ${lines.length} lines]\n${kept.join("\n")}`
+}
+
+export async function runCommand(input: RunCommandInput): Promise<string>
+export async function runCommand(command: string, maxLines?: number, timeoutMs?: number): Promise<string>
+export async function runCommand(
+  inputOrCommand: RunCommandInput | string,
+  maxLines?: number,
+  timeoutMs?: number,
+): Promise<string> {
+  const input: RunCommandInput = typeof inputOrCommand === "string"
+    ? {
+        command: inputOrCommand,
+        ...(maxLines !== undefined ? { maxLines } : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      }
+    : inputOrCommand
+  const action = input.action ?? "start"
+  const command = String(input.command ?? "")
+  const result = await runShellSession({
+    action,
+    command,
+    ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+  })
+  const output = boundedCommandOutput(result.output, command, input.maxLines)
+
+  if (result.status === "running") {
+    const state = result.terminationRequested ? "termination requested" : "still running"
+    const note = `[shell session ${result.sessionId} is ${state}; call shell with action="poll" and session_id="${result.sessionId}" to check it${result.terminationRequested ? "." : `, or action="terminate" to stop it.`}]`
+    return output ? `${output}\n${note}` : note
+  }
+
+  if (action !== "start") {
+    const detail = result.signal ? `signal ${result.signal}` : `code ${result.exitCode ?? "unknown"}`
+    const note = `[shell session ${result.sessionId} ${result.status} with ${detail}.]`
+    return output ? `${output}\n${note}` : note
+  }
+
+  return output
 }
 
 function normalizeImagePath(filePath: string): string {

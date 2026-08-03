@@ -10,6 +10,7 @@ import {
 import { handleDiscordIngress } from "./pipeline"
 import { getPosture, POSTURE_DEFINITIONS, subscribePosture, type Posture } from "./posture"
 import { subscribeRunnerPresence, type RunnerPresence } from "../runner/presence"
+import { handleGastownMessage, installGastownMirror, isGastownThread, uninstallGastownMirror } from "./gastown"
 
 function asEnabled(value: string | undefined, fallback: boolean): boolean {
   if (typeof value !== "string") return fallback
@@ -210,6 +211,7 @@ export async function startDiscordGateway(): Promise<DiscordGatewayHandle | null
     if (!rawFallback) return
     const d = packet.d ?? {}
     const channelId = asString(d.channel_id)
+    if (channelId && isGastownThread(channelId)) return
     const guildId = asString(d.guild_id)
     const channelType = asNumber(d.channel_type)
     const cachedChannel = channelId ? client.channels.cache.get(channelId) : null
@@ -250,8 +252,9 @@ export async function startDiscordGateway(): Promise<DiscordGatewayHandle | null
     }
   })
 
-  client.on(Events.MessageCreate, (message) => {
+  client.on(Events.MessageCreate, async (message) => {
     try {
+      if (await handleGastownMessage(message)) return
       const payload = buildIngressPayload(message)
       const result = handleDiscordIngress(payload)
       if (trace) {
@@ -271,9 +274,11 @@ export async function startDiscordGateway(): Promise<DiscordGatewayHandle | null
   })
 
   await client.login(token)
+  await installGastownMirror()
 
   return {
     stop: async () => {
+      uninstallGastownMirror()
       unsubscribePresence?.()
       unsubscribePosture?.()
       await client.destroy()

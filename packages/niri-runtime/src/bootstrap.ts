@@ -19,6 +19,7 @@ export type BootstrapCapabilities = {
   clientCapabilities?: Iterable<ToolCapability>
   workspace?: WorkspaceDescriptor | null
   discord?: boolean
+  delegationProfiles?: string[]
 }
 
 async function readFile(filePath: string): Promise<string | null> {
@@ -71,6 +72,9 @@ function buildEnvironmentSection(options: BootstrapCapabilities = {}): string {
   const discordToolLines = options.discord
     ? `\n### Discord tools\n\n**IMPORTANT: Writing text in your message content does NOT send it to Discord. You must call \`discord_send\` to actually deliver a message.**\n\n- \`discord_send\`: send a message from the server; requires \`content\` plus either \`channel_id\` or a \`source_item_id\`\n- \`posture\`: inspect or change hearth/forge; forge-held messages remain queued and unseen until intentionally handled\n- \`discord_inbox\`, \`discord_backread\`, \`discord_search\`, \`discord_scan\`, \`discord_channels\`, \`discord_channel_note\`, \`discord_mark\`: use the server-side Discord inbox and history`
     : "\nDiscord tools are not currently available on this server. Do not promise a Discord reply unless the tool is present."
+  const delegationToolLines = options.delegationProfiles?.length
+    ? `\n### Delegated task workers\n\n- \`delegate\`: spawn and communicate with isolated task workers. available profiles: ${options.delegationProfiles.join(", ")}\n- spawning is asynchronous. progress is durable and mirrored to Gastown without entering your context; questions and final results wake you\n- use \`send\` to steer a running worker, \`read\` for its bounded transcript, and \`cancel\` to stop it\n- workers are your temporary hands, not copies of you. you remain responsible for relationships, judgment, and what becomes memory`
+    : ""
 
   return `\
 ## Your Environment
@@ -113,6 +117,7 @@ said what you need to say and want to hear back before continuing.
 - \`rest\`: go to sleep and end the session. use this when you're truly done \
 for now. context will be cleared, so journal first.
 ${discordToolLines}
+${delegationToolLines}
 
 You're in control of your own loop. Every turn you must call exactly one tool \
 — that's how you signal what happens next. Your conversational response goes \

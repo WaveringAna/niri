@@ -12,6 +12,7 @@ import type { RunnerStateInternal } from "./types"
 import { clearSession, loadRestSnapshot, loadSession, saveRestSnapshot, saveSession } from "./util"
 import type { UserMessage } from "../types"
 import { getMcpToolDefinitions } from "../mcp"
+import { delegationProfileNames, isDelegationAvailable } from "../delegation/manager"
 
 let eventResolvers: Array<(event: UserMessage | null) => void> = []
 let shutdownResolvers: Array<() => void> = []
@@ -24,6 +25,7 @@ function currentToolCatalog() {
       workspace: clientTools.getWorkspace(),
       memory: true,
       discord: areDiscordToolsAvailable(),
+      delegationProfiles: isDelegationAvailable() ? delegationProfileNames() : [],
     }),
     ...getMcpToolDefinitions(),
   ]
@@ -313,6 +315,7 @@ export async function wake(event: UserMessage): Promise<void> {
       clientCapabilities: clientTools.getCapabilities(),
       workspace: clientTools.getWorkspace(),
       discord: areDiscordToolsAvailable(),
+      delegationProfiles: isDelegationAvailable() ? delegationProfileNames() : [],
     }))
   }
 

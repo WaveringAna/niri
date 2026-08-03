@@ -10,6 +10,7 @@ export type NiriToolCatalogOptions = {
   workspace?: WorkspaceDescriptor | null
   memory?: boolean
   discord?: boolean
+  delegationProfiles?: string[]
 }
 
 const functionTool = (name: string, description: string, parameters: JsonSchema): ToolDefinition => ({
@@ -304,6 +305,29 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
             note: { type: "string" },
           },
           required: ["channel_id", "note"],
+        },
+      ),
+    )
+  }
+
+  if (options.delegationProfiles?.length) {
+    tools.push(
+      functionTool(
+        "delegate",
+        `Spawn and communicate with isolated task workers. Available profiles: ${options.delegationProfiles.join(", ")}. Spawn returns immediately; progress stays in the durable task transcript and Gastown thread, while questions and final results wake you. Status and list return metadata only; use read deliberately for paginated mailbox content.`,
+        {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            action: { type: "string", enum: ["spawn", "send", "status", "list", "cancel", "read"] },
+            profile: { type: "string", enum: options.delegationProfiles },
+            task_id: { type: "string" },
+            objective: { type: "string" },
+            message: { type: "string" },
+            after_seq: { type: "integer", minimum: 0 },
+            limit: { type: "integer", minimum: 1, maximum: 100 },
+          },
+          required: ["action"],
         },
       ),
     )

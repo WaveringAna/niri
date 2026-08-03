@@ -15,6 +15,7 @@ import { startIrohLink, stopIrohLink } from "./iroh-link"
 import { startScheduler } from "./scheduler"
 import { clientTools } from "./client"
 import { startMcpServers, stopMcpServers } from "./mcp"
+import { initDelegation, stopDelegation } from "./delegation/manager"
 
 const PORT = Number.parseInt(process.env.PORT ?? "3000", 10)
 const WORKER_HOST = process.env.NIRI_WORKER_HOST?.trim() || "127.0.0.1"
@@ -60,6 +61,10 @@ async function main() {
     console.warn("[discord gateway] startup failed:", err)
   }
   setDiscordToolsAvailable(Boolean(discordGateway))
+  initDelegation((event, options) => {
+    if (isRunning()) enqueueEvent(event, options)
+    else void wake(event)
+  })
 
   let shuttingDown = false
   let restartRequested = false
@@ -123,6 +128,7 @@ async function main() {
 
     const cleanup = async () => {
       discordEmbeddingBackfill.stop()
+      stopDelegation()
       if (discordGateway) await discordGateway.stop()
       setDiscordToolsAvailable(false)
       await clientTools.stop()

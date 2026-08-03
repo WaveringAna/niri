@@ -18,8 +18,8 @@ import {
   configureNodeToolRuntime,
   type NodeToolRuntimeOptions,
 } from "./config.js"
-import { closeBash, openBash } from "./shell.js"
 import { editFile, readBlobChunk, readFile, readImageForModel, runCommand } from "./tools.js"
+import { closeShellSessions } from "./shell.js"
 
 export type NodeToolHostOptions = {
   capabilities?: Iterable<ToolCapability>
@@ -81,7 +81,7 @@ export class NodeToolHost implements ClientToolHost {
       home: CLIENT_HOME,
       imageRoot: IMAGE_ROOT,
       platform: options.workspace?.platform?.trim() || process.platform,
-      persistentShell: this.capabilities.includes("shell"),
+      persistentShell: false,
     }
   }
 
@@ -96,12 +96,11 @@ export class NodeToolHost implements ClientToolHost {
   async start(): Promise<void> {
     if (this.started) return
     this.assertActiveRuntime()
-    if (this.capabilities.includes("shell")) await openBash()
     this.started = true
   }
 
   async stop(): Promise<void> {
-    if (this.runtimeGeneration === NODE_TOOL_RUNTIME_GENERATION) closeBash()
+    if (this.runtimeGeneration === NODE_TOOL_RUNTIME_GENERATION) await closeShellSessions()
     this.started = false
   }
 
@@ -142,11 +141,13 @@ export class NodeToolHost implements ClientToolHost {
   private async executeTool(tool: ClientToolName, args: Record<string, unknown>): Promise<string | ClientImageArtifact> {
     switch (tool) {
       case "shell": {
-        const output = await runCommand(
-          String(args.command ?? ""),
-          typeof args.max_lines === "number" ? args.max_lines : undefined,
-          typeof args.timeout_ms === "number" ? args.timeout_ms : undefined,
-        )
+        const output = await runCommand({
+          action: args.action === "poll" || args.action === "terminate" ? args.action : "start",
+          ...(typeof args.command === "string" ? { command: args.command } : {}),
+          ...(typeof args.session_id === "string" ? { sessionId: args.session_id } : {}),
+          ...(typeof args.max_lines === "number" ? { maxLines: args.max_lines } : {}),
+          ...(typeof args.timeout_ms === "number" ? { timeoutMs: args.timeout_ms } : {}),
+        })
         return output || "(no output)"
       }
       case "read_file": {

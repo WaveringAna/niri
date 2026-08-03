@@ -196,6 +196,45 @@ export function initDb(): void {
       updated_at text not null
     );
 
+    create table if not exists delegated_tasks (
+      id                text primary key,
+      profile           text not null,
+      objective         text not null,
+      status            text not null,
+      created_by_kind   text not null,
+      created_by_id     text,
+      created_by_name   text,
+      created_at        text not null,
+      started_at        text,
+      completed_at      text,
+      result_summary    text,
+      error             text,
+      discord_thread_id text unique,
+      cancel_requested  integer not null default 0,
+      token_count       integer not null default 0,
+      context_size      integer not null default 0
+    );
+
+    create index if not exists idx_delegated_tasks_status
+      on delegated_tasks(status, created_at);
+
+    create table if not exists delegated_task_messages (
+      id                 text primary key,
+      task_id            text not null references delegated_tasks(id) on delete cascade,
+      seq                integer not null,
+      sender_kind        text not null,
+      sender_id          text,
+      sender_name        text not null,
+      kind               text not null,
+      content            text not null,
+      created_at         text not null,
+      discord_message_id text unique,
+      unique(task_id, seq)
+    );
+
+    create index if not exists idx_delegated_task_messages_order
+      on delegated_task_messages(task_id, seq);
+
     create table if not exists memory_documents (
       id           integer primary key autoincrement,
       path         text    not null unique,

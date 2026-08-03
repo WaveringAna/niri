@@ -120,6 +120,7 @@ export function applyUsage(
   state: LoopState,
   usage: OpenAI.Completions.CompletionUsage | undefined,
   timing: Pick<CompletionTurnResult, "elapsedMs" | "tokensPerSecond"> = {},
+  options: { emitEvent?: boolean } = {},
 ): void {
   if (!usage) return
   state.tokenCount += usage.total_tokens
@@ -134,16 +135,18 @@ export function applyUsage(
   console.log(
     `[tokens] +${usage.total_tokens} total=${state.tokenCount} input=${usage.prompt_tokens} output=${usage.completion_tokens}${cache ? ` ${cache}` : ""}${rate}`,
   )
-  emit({
-    type: "usage",
-    promptTokens: usage.prompt_tokens,
-    cachedPromptTokens,
-    cacheWriteTokens,
-    completionTokens: usage.completion_tokens,
-    totalTokens: usage.total_tokens,
-    elapsedMs: timing.elapsedMs,
-    tokensPerSecond: timing.tokensPerSecond,
-  })
+  if (options.emitEvent !== false) {
+    emit({
+      type: "usage",
+      promptTokens: usage.prompt_tokens,
+      cachedPromptTokens,
+      cacheWriteTokens,
+      completionTokens: usage.completion_tokens,
+      totalTokens: usage.total_tokens,
+      elapsedMs: timing.elapsedMs,
+      tokensPerSecond: timing.tokensPerSecond,
+    })
+  }
   recordMetric({ type: "usage", usage })
 }
 
@@ -661,11 +664,12 @@ async function createPrimaryCompletion(
   options: {
     toolChoice?: "required" | "auto" | "none"
     emitEvents?: boolean
+    model?: string
   } = {},
 ): Promise<CompletionTurnResult> {
   if (USE_ANTHROPIC) {
     return createAnthropicCompletion({
-      model: ANTHROPIC_MODEL,
+      model: options.model ?? ANTHROPIC_MODEL,
       messages,
       tools,
       tool_choice: options.toolChoice ?? PRIMARY_TOOL_CHOICE,
@@ -673,7 +677,7 @@ async function createPrimaryCompletion(
   }
 
   const request: CompletionRequest = {
-    model: MODEL,
+    model: options.model ?? MODEL,
     messages,
     tools,
     tool_choice: options.toolChoice ?? PRIMARY_TOOL_CHOICE,
@@ -713,6 +717,27 @@ async function createPrimaryCompletion(
       }
       throw err
     }
+  }
+}
+
+/** Runs one task-local completion without main-session recall, compaction, or stream emission. */
+export async function fetchIsolatedCompletion(
+  messages: OpenAI.Chat.ChatCompletionMessageParam[],
+  toolDefinitions: ToolDefinition[],
+  toolChoice: "required" | "auto" | "none" = "auto",
+  options: { model?: string } = {},
+): Promise<CompletionTurnResult> {
+  const tools = toolDefinitions as OpenAI.Chat.ChatCompletionTool[]
+  if (USE_FALLBACK) {
+    return createFallbackCompletion(sanitizeMessages(messages), tools, { toolChoice, emitEvents: false })
+  }
+
+  try {
+    return await createPrimaryCompletion(sanitizeMessages(messages), tools, { toolChoice, emitEvents: false, model: options.model })
+  } catch (err) {
+    if (!shouldFallback(err)) throw err
+    console.warn(`[delegation] primary failed (${errorSummary(err)}); using fallback for isolated task`)
+    return createFallbackCompletion(sanitizeMessages(messages), tools, { toolChoice, emitEvents: false })
   }
 }
 

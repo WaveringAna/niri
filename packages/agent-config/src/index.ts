@@ -43,6 +43,24 @@ export type DiscordConfig = {
   batchMaxMessages?: number
   cooldownChannels?: string
   cooldownTz?: string
+  gastownForumChannelId?: string
+}
+
+export type DelegationProfileConfig = {
+  name: string
+  model?: string
+  systemPrompt?: string
+  tools: Array<"shell" | "read_file" | "edit_file" | "image_tool">
+  mcpTools?: string[]
+  maxTurns?: number
+}
+
+export type DelegationConfig = {
+  enabled?: boolean
+  maxConcurrent?: number
+  timeoutMs?: number
+  resultMaxChars?: number
+  profiles: DelegationProfileConfig[]
 }
 
 /** Named webhook endpoint configuration. */
@@ -113,6 +131,7 @@ export type AgentFile = {
   embedding?: OpenAiProviderConfig & { dimensions?: number }
   summary?: OpenAiProviderConfig
   discord?: DiscordConfig
+  delegation?: DelegationConfig
   webhooks?: Record<string, WebhookConfig>
   runtime?: RuntimeConfig
   mcp?: Record<string, McpServerConfig>
@@ -134,6 +153,7 @@ export const AGENT_KEYS = new Set<string>([
   "embedding",
   "summary",
   "discord",
+  "delegation",
   "webhooks",
   "runtime",
   "mcp",
@@ -156,6 +176,8 @@ export const RESERVED_SETTINGS = new Set<string>([
   "NIRI_HOME",
   "NIRI_MANAGED_WORKER",
   "NIRI_MCP_CONFIG",
+  "NIRI_DELEGATION_CONFIG",
+  "DISCORD_GASTOWN_FORUM_CHANNEL_ID",
   "NIRI_RESTART_COMMAND",
   "NIRI_RESTART_CWD",
   "NIRI_WORKER_HOST",
@@ -243,7 +265,7 @@ function parseProvider(value: unknown, label: string, allowProvider: boolean, ex
 function parseDiscord(value: unknown, label: string): DiscordConfig | undefined {
   if (value === undefined) return undefined
   const item = object(value, label)
-  const allowed = new Set(["token", "enabled", "botUserId", "dmWhitelist", "posture_bypass", "scanChannelIds", "wakeOnEvent", "gatewayTrace", "gatewayRawFallback", "batchIntervalMs", "batchOnlyConfigured", "pendingAutoSeenMinutes", "batchScan", "batchMaxMessages", "cooldownChannels", "cooldownTz"])
+  const allowed = new Set(["token", "enabled", "botUserId", "dmWhitelist", "posture_bypass", "scanChannelIds", "wakeOnEvent", "gatewayTrace", "gatewayRawFallback", "batchIntervalMs", "batchOnlyConfigured", "pendingAutoSeenMinutes", "batchScan", "batchMaxMessages", "cooldownChannels", "cooldownTz", "gastownForumChannelId"])
   const unknown = Object.keys(item).filter((key) => !allowed.has(key))
   if (unknown.length > 0) throw new Error(`${label} has unknown keys: ${unknown.join(", ")}`)
   const postureBypass = item.posture_bypass === undefined ? undefined : object(item.posture_bypass, `${label}.posture_bypass`)
@@ -277,6 +299,56 @@ function parseDiscord(value: unknown, label: string): DiscordConfig | undefined 
     ...(item.batchMaxMessages !== undefined ? { batchMaxMessages: optionalInteger(item.batchMaxMessages, `${label}.batchMaxMessages`) } : {}),
     ...(optionalString(item.cooldownChannels, `${label}.cooldownChannels`) ? { cooldownChannels: String(item.cooldownChannels).trim() } : {}),
     ...(optionalString(item.cooldownTz, `${label}.cooldownTz`) ? { cooldownTz: String(item.cooldownTz).trim() } : {}),
+    ...(optionalString(item.gastownForumChannelId, `${label}.gastownForumChannelId`) ? { gastownForumChannelId: String(item.gastownForumChannelId).trim() } : {}),
+  }
+}
+
+function parseDelegation(value: unknown, label: string): DelegationConfig | undefined {
+  if (value === undefined) return undefined
+  const item = object(value, label)
+  const allowed = new Set(["enabled", "maxConcurrent", "timeoutMs", "resultMaxChars", "profiles"])
+  const unknown = Object.keys(item).filter((key) => !allowed.has(key))
+  if (unknown.length > 0) throw new Error(`${label} has unknown keys: ${unknown.join(", ")}`)
+
+  const rawProfiles = item.profiles ?? []
+  if (!Array.isArray(rawProfiles)) throw new Error(`${label}.profiles must be an array`)
+  const knownTools = new Set(["shell", "read_file", "edit_file", "image_tool"])
+  const names = new Set<string>()
+  const profiles = rawProfiles.map((raw, index): DelegationProfileConfig => {
+    const profileLabel = `${label}.profiles[${index}]`
+    const profile = object(raw, profileLabel)
+    const profileUnknown = Object.keys(profile).filter((key) => !["name", "model", "systemPrompt", "tools", "mcpTools", "maxTurns"].includes(key))
+    if (profileUnknown.length > 0) throw new Error(`${profileLabel} has unknown keys: ${profileUnknown.join(", ")}`)
+    const name = optionalString(profile.name, `${profileLabel}.name`)
+    if (!name || !/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error(`${profileLabel}.name must match [a-zA-Z0-9_-]+`)
+    if (names.has(name)) throw new Error(`${label}.profiles has duplicate name ${name}`)
+    names.add(name)
+    if (!Array.isArray(profile.tools) || profile.tools.length === 0 || profile.tools.some((tool) => typeof tool !== "string" || !knownTools.has(tool))) {
+      throw new Error(`${profileLabel}.tools must be a non-empty array of shell, read_file, edit_file, or image_tool`)
+    }
+    let mcpTools: string[] | undefined
+    if (profile.mcpTools !== undefined) {
+      if (!Array.isArray(profile.mcpTools) || profile.mcpTools.length === 0 || profile.mcpTools.some((tool) => typeof tool !== "string" || !/^[a-zA-Z0-9_-]+__[a-zA-Z0-9_-]+$/.test(tool) || tool.length > 64)) {
+        throw new Error(`${profileLabel}.mcpTools must be a non-empty array of namespaced MCP tool names`)
+      }
+      mcpTools = [...new Set(profile.mcpTools)] as string[]
+    }
+    return {
+      name,
+      ...(profile.model !== undefined ? { model: optionalString(profile.model, `${profileLabel}.model`) } : {}),
+      tools: [...new Set(profile.tools)] as DelegationProfileConfig["tools"],
+      ...(mcpTools ? { mcpTools } : {}),
+      ...(profile.systemPrompt !== undefined ? { systemPrompt: optionalString(profile.systemPrompt, `${profileLabel}.systemPrompt`) } : {}),
+      ...(profile.maxTurns !== undefined ? { maxTurns: optionalInteger(profile.maxTurns, `${profileLabel}.maxTurns`) } : {}),
+    }
+  })
+
+  return {
+    profiles,
+    ...(item.enabled !== undefined ? { enabled: optionalBoolean(item.enabled, `${label}.enabled`) } : {}),
+    ...(item.maxConcurrent !== undefined ? { maxConcurrent: optionalInteger(item.maxConcurrent, `${label}.maxConcurrent`) } : {}),
+    ...(item.timeoutMs !== undefined ? { timeoutMs: optionalInteger(item.timeoutMs, `${label}.timeoutMs`, 1000) } : {}),
+    ...(item.resultMaxChars !== undefined ? { resultMaxChars: optionalInteger(item.resultMaxChars, `${label}.resultMaxChars`, 1000) } : {}),
   }
 }
 
@@ -515,6 +587,7 @@ export function parseAgentFile(filePath: string): AgentFile {
     ...(embedding ? { embedding } : {}),
     ...(item.summary !== undefined ? { summary: parseProvider(item.summary, `${filePath}.summary`, false) } : {}),
     ...(item.discord !== undefined ? { discord: parseDiscord(item.discord, `${filePath}.discord`) } : {}),
+    ...(item.delegation !== undefined ? { delegation: parseDelegation(item.delegation, `${filePath}.delegation`) } : {}),
     ...(item.webhooks !== undefined ? { webhooks: parseWebhooks(item.webhooks, `${filePath}.webhooks`) } : {}),
     ...(item.runtime !== undefined ? { runtime: parseRuntime(item.runtime, `${filePath}.runtime`) } : {}),
     ...(item.mcp !== undefined ? { mcp: parseMcp(item.mcp, `${filePath}.mcp`) } : {}),
@@ -578,6 +651,7 @@ export function agentSettings(config: AgentFile): Record<string, string> {
   if (discord?.batchMaxMessages !== undefined) settings.DISCORD_BATCH_MAX_MESSAGES = String(discord.batchMaxMessages)
   if (discord?.cooldownChannels) settings.COOLDOWN_CHANNELS = discord.cooldownChannels
   if (discord?.cooldownTz) settings.COOLDOWN_TZ = discord.cooldownTz
+  if (discord?.gastownForumChannelId) settings.DISCORD_GASTOWN_FORUM_CHANNEL_ID = discord.gastownForumChannelId
   const runtime = config.runtime
   if (runtime?.imageMaxBytes !== undefined) settings.IMAGE_TOOL_MAX_BYTES = String(runtime.imageMaxBytes)
   if (runtime?.primaryToolChoice) settings.PRIMARY_TOOL_CHOICE = runtime.primaryToolChoice
@@ -596,6 +670,7 @@ export function agentSettings(config: AgentFile): Record<string, string> {
   if (runtime?.codex?.port !== undefined) settings.CODEX_BRIDGE_PORT = String(runtime.codex.port)
   if (runtime?.codex?.model) settings.CODEX_BRIDGE_MODEL = runtime.codex.model
   if (runtime?.codex?.reasoningEffort) settings.CODEX_BRIDGE_REASONING_EFFORT = runtime.codex.reasoningEffort
+  if (config.delegation) settings.NIRI_DELEGATION_CONFIG = JSON.stringify(config.delegation)
   if (config.mcp && Object.keys(config.mcp).length > 0) settings.NIRI_MCP_CONFIG = JSON.stringify(config.mcp)
   if (config.server?.iroh?.ticket) settings.NIRI_SERVER_IROH_TICKET = config.server.iroh.ticket
   if (config.server?.iroh?.token) settings.NIRI_SERVER_IROH_TOKEN = config.server.iroh.token

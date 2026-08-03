@@ -40,7 +40,7 @@ const METRIC_TYPE_ALIASES: Record<string, MetricListType> = {
   "prompt-response": "response",
   completion: "response",
 }
-const TRIGGER_SOURCES = new Set(["discord", "bsky", "webhook", "cron", "chat"])
+const TRIGGER_SOURCES = new Set(["discord", "bsky", "webhook", "cron", "chat", "delegation"])
 
 function parseMetricTypes(raw: string | undefined): MetricListType[] | undefined {
   if (!raw?.trim()) return undefined

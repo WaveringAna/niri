@@ -5,8 +5,7 @@
   "license": "MIT",
   "type": "module",
   "files": [
-    "dist",
-    "postinstall.mjs"
+    "dist"
   ],
   "bin": {
     "harness-tool-host": "./dist/cli.js",
@@ -29,8 +28,7 @@
   },
   "dependencies": {
     "@mira/harness-core": "0.1.0",
-    "@mira/harness-protocol": "0.1.0",
-    "node-pty": "^1.1.0"
+    "@mira/harness-protocol": "0.1.0"
   },
   "publishConfig": { "access": "public" },
   "engines": { "node": ">=20" },
