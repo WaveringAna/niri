@@ -202,18 +202,17 @@ export async function pipeBiStreamToSocket(stream: BiStream, socket: net.Socket)
  * and pump it to a freshly-opened TCP socket on `127.0.0.1:port` (where the
  * worker's Fastify listens). Resolves once the pump completes for that stream.
  */
-export async function openSocketStream(connection: Connection, port: number): Promise<void> {
-  const stream = await connection.acceptBi()
+export async function pipeBiStreamToPort(stream: BiStream, port: number, host = "127.0.0.1"): Promise<void> {
   const { promise, resolve, reject } = deferred<net.Socket>()
-  const s = net.connect(port, "127.0.0.1")
-  const onError = (err: NodeJS.ErrnoException) => reject(err)
-  s.once("connect", () => {
-    s.off("error", onError)
-    resolve(s)
-  })
-  s.once("error", onError)
-  const socket = await promise
-  void pipeBiStreamToSocket(stream, socket)
+  const socket = net.connect(port, host)
+  const onError = (error: NodeJS.ErrnoException) => reject(error)
+  socket.once("connect", () => { socket.off("error", onError); resolve(socket) })
+  socket.once("error", onError)
+  void pipeBiStreamToSocket(stream, await promise)
+}
+
+export async function openSocketStream(connection: Connection, port: number, host = "127.0.0.1"): Promise<void> {
+  return pipeBiStreamToPort(await connection.acceptBi(), port, host)
 }
 
 export interface DialIdentity {

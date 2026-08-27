@@ -12,7 +12,7 @@ import { getPosture, POSTURE_DEFINITIONS, subscribePosture, type Posture } from 
 import { subscribeRunnerPresence, type RunnerPresence } from "../runner/presence"
 import { handleGastownMessage, installGastownMirror, isGastownThread, uninstallGastownMirror } from "./gastown"
 
-function asEnabled(value: string | undefined, fallback: boolean): boolean {
+export function asEnabled(value: string | undefined, fallback: boolean): boolean {
   if (typeof value !== "string") return fallback
   const normalized = value.trim().toLowerCase()
   if (!normalized) return fallback

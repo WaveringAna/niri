@@ -81,7 +81,6 @@ export type RuntimeConfig = {
   contextCompactMinNewMessages?: number
   lcmSummaryBatchSize?: number
   migrateLegacyState?: boolean
-  maxTurns?: number
   antigravity?: { enabled?: boolean; port?: number; binaryPath?: string }
   codex?: { enabled?: boolean; port?: number; model?: string; reasoningEffort?: string }
 }
@@ -382,7 +381,7 @@ function parseWebhooks(value: unknown, label: string): Record<string, WebhookCon
 function parseRuntime(value: unknown, label: string): RuntimeConfig | undefined {
   if (value === undefined) return undefined
   const item = object(value, label)
-  const allowed = new Set(["imageMaxBytes", "primaryToolChoice", "fallbackToolChoice", "fallbackEnforceContextLimit", "contextCompactTriggerTokens", "contextCompactHardTriggerTokens", "contextCompactMinNewMessages", "lcmSummaryBatchSize", "migrateLegacyState", "maxTurns", "antigravity", "codex"])
+  const allowed = new Set(["imageMaxBytes", "primaryToolChoice", "fallbackToolChoice", "fallbackEnforceContextLimit", "contextCompactTriggerTokens", "contextCompactHardTriggerTokens", "contextCompactMinNewMessages", "lcmSummaryBatchSize", "migrateLegacyState", "antigravity", "codex"])
   const unknown = Object.keys(item).filter((key) => !allowed.has(key))
   if (unknown.length) throw new Error(`${label} has unknown keys: ${unknown.join(", ")}`)
   const parseBridge = (raw: unknown, bridgeLabel: string, extra: string[]): Record<string, unknown> | undefined => {
@@ -404,7 +403,6 @@ function parseRuntime(value: unknown, label: string): RuntimeConfig | undefined 
     ...(item.contextCompactMinNewMessages !== undefined ? { contextCompactMinNewMessages: optionalInteger(item.contextCompactMinNewMessages, `${label}.contextCompactMinNewMessages`) } : {}),
     ...(item.lcmSummaryBatchSize !== undefined ? { lcmSummaryBatchSize: optionalInteger(item.lcmSummaryBatchSize, `${label}.lcmSummaryBatchSize`) } : {}),
     ...(item.migrateLegacyState !== undefined ? { migrateLegacyState: optionalBoolean(item.migrateLegacyState, `${label}.migrateLegacyState`) } : {}),
-    ...(item.maxTurns !== undefined ? { maxTurns: optionalInteger(item.maxTurns, `${label}.maxTurns`) } : {}),
     ...(antigravity ? { antigravity: { ...(antigravity.enabled !== undefined ? { enabled: optionalBoolean(antigravity.enabled, `${label}.antigravity.enabled`) } : {}), ...(antigravity.port !== undefined ? { port: optionalInteger(antigravity.port, `${label}.antigravity.port`) } : {}), ...(antigravity.binaryPath !== undefined ? { binaryPath: optionalString(antigravity.binaryPath, `${label}.antigravity.binaryPath`) } : {}) } } : {}),
     ...(codex ? { codex: { ...(codex.enabled !== undefined ? { enabled: optionalBoolean(codex.enabled, `${label}.codex.enabled`) } : {}), ...(codex.port !== undefined ? { port: optionalInteger(codex.port, `${label}.codex.port`) } : {}), ...(codex.model !== undefined ? { model: optionalString(codex.model, `${label}.codex.model`) } : {}), ...(codex.reasoningEffort !== undefined ? { reasoningEffort: optionalString(codex.reasoningEffort, `${label}.codex.reasoningEffort`) } : {}) } } : {}),
   }
@@ -662,7 +660,6 @@ export function agentSettings(config: AgentFile): Record<string, string> {
   if (runtime?.contextCompactMinNewMessages !== undefined) settings.CONTEXT_COMPACT_MIN_NEW_MESSAGES = String(runtime.contextCompactMinNewMessages)
   if (runtime?.lcmSummaryBatchSize !== undefined) settings.LCM_SUMMARY_BATCH_SIZE = String(runtime.lcmSummaryBatchSize)
   if (runtime?.migrateLegacyState !== undefined) settings.NIRI_MIGRATE_LEGACY_STATE = String(runtime.migrateLegacyState)
-  if (runtime?.maxTurns !== undefined) settings.RUNNER_MAX_TURNS = String(runtime.maxTurns)
   if (runtime?.antigravity?.enabled !== undefined) settings.ANTIGRAVITY_BRIDGE_ENABLED = String(runtime.antigravity.enabled)
   if (runtime?.antigravity?.port !== undefined) settings.ANTIGRAVITY_BRIDGE_PORT = String(runtime.antigravity.port)
   if (runtime?.antigravity?.binaryPath) settings.ANTIGRAVITY_BINARY_PATH = runtime.antigravity.binaryPath

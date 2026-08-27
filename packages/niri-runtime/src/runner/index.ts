@@ -6,7 +6,7 @@ import { endConversation, logMessage, startConversation } from "../db"
 import { emit } from "../stream"
 import { runLoop } from "./loop"
 import { setRunnerPresence } from "./presence"
-import { createNiriToolCatalog } from "./tool-catalog"
+import { createNiriToolCatalog, modelFacingClientCapabilities } from "./tool-catalog"
 import { archiveContextMessages, normalizeActiveContextSummaryDepths } from "./context-store"
 import type { RunnerStateInternal } from "./types"
 import { clearSession, loadRestSnapshot, loadSession, saveRestSnapshot, saveSession } from "./util"
@@ -21,7 +21,7 @@ const PROCESS_STARTED_AT = new Date().toISOString()
 function currentToolCatalog() {
   return [
     ...createNiriToolCatalog({
-      clientCapabilities: clientTools.getCapabilities(),
+      clientCapabilities: modelFacingClientCapabilities(clientTools.getCapabilities()),
       workspace: clientTools.getWorkspace(),
       memory: true,
       discord: areDiscordToolsAvailable(),
@@ -312,7 +312,7 @@ export async function wake(event: UserMessage): Promise<void> {
   } else {
     autoSeeDiscordEvent(event)
     state.conversation = normalizeActiveContextSummaryDepths(await buildBootstrap(event, await loadRestSnapshot(), {
-      clientCapabilities: clientTools.getCapabilities(),
+      clientCapabilities: modelFacingClientCapabilities(clientTools.getCapabilities()),
       workspace: clientTools.getWorkspace(),
       discord: areDiscordToolsAvailable(),
       delegationProfiles: isDelegationAvailable() ? delegationProfileNames() : [],

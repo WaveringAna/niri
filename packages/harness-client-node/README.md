@@ -10,7 +10,7 @@ harness-tool-host
 
 The previous `harness-tool-client` binary remains as an alias.
 
-It listens on `0.0.0.0:3002` and uses the tool-host user's home directory as its workspace. Optional flags are `--host`, `--port`, `--workspace`, and `--capabilities`. The file tools separate creation from mutation: `write_file` creates a new path and refuses existing files, while `edit_file` replaces one exact occurrence in an existing file.
+It listens on `0.0.0.0:3002` and uses the tool-host user's home directory as its workspace. Optional flags are `--host`, `--port`, `--workspace`, and `--capabilities`. The file tools separate creation from mutation: `write_file` creates a new path and refuses existing files, while `read_file` can return `<line>#<hash>` anchors and `edit_file` replaces or deletes the anchored line or range.
 
 ```ts
 import { NodeToolHost, ToolClientHttpServer } from "@mira/harness-client-node"

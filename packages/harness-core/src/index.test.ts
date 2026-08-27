@@ -32,3 +32,20 @@ test("write_file is create-only in the model-facing catalog", () => {
   assert.match(tool?.function.description ?? "", /fails if the path already exists/i)
   assert.deepEqual(tool?.function.parameters.required, ["path", "content"])
 })
+
+test("workspace reads and edits expose the shared hashline contract", () => {
+  const tools = createClientToolCatalog({ clientCapabilities: ["python", "read_file", "edit_file"] })
+  const byName = Object.fromEntries(tools.map((tool) => [tool.function.name, tool]))
+  const python = byName.python
+  assert.match(python?.function.description ?? "", /read\(path, start_line=1, end_line=None, hashline=False\)/)
+  assert.match(python?.function.description ?? "", /edit\(path, target, content\)/)
+  assert.match(python?.function.description ?? "", /niri\.whoami\(\)/)
+  assert.match(python?.function.description ?? "", /niri\.budget\(\)/)
+
+  const read = byName.read_file
+  assert.equal((read?.function.parameters as { properties?: Record<string, { type?: unknown }> }).properties?.hashline?.type, "boolean")
+
+  const edit = byName.edit_file
+  assert.deepEqual(edit?.function.parameters.required, ["path", "target", "content"])
+  assert.match(edit?.function.description ?? "", /hashline/i)
+})

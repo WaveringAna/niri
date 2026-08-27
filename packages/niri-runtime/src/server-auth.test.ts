@@ -1,6 +1,14 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { createServer } from "./server"
+import { createServer, discordBatchEnabled } from "./server"
+
+test("disabled Discord configuration remains disabled with an inherited token", () => {
+  assert.equal(discordBatchEnabled({ DISCORD_GATEWAY_ENABLED: "false", DISCORD_BOT_TOKEN: "inherited-token" }), false)
+  assert.equal(discordBatchEnabled({ DISCORD_GATEWAY_ENABLED: "0", DISCORD_BOT_TOKEN: "inherited-token" }), false)
+  assert.equal(discordBatchEnabled({ DISCORD_GATEWAY_ENABLED: "no", DISCORD_BOT_TOKEN: "inherited-token" }), false)
+  assert.equal(discordBatchEnabled({ DISCORD_BOT_TOKEN: "inherited-token" }), true)
+  assert.equal(discordBatchEnabled({ DISCORD_GATEWAY_ENABLED: "true" }), false)
+})
 
 test("worker routes need no bearer token and do not enable permissive CORS", async () => {
   const app = createServer()

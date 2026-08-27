@@ -6,6 +6,7 @@ import type { ControlCommand } from "./awp/types"
 import { wake, isRunning, isWaitingForEvent, enqueueEvent, getRunnerStatus } from "./runner/index"
 import { buildDiscordBatchDigest, scanDiscordChannels } from "./discord/state"
 import { handleDiscordIngress } from "./discord/pipeline"
+import { asEnabled } from "./discord/gateway"
 import { getPosture } from "./discord/posture"
 import { fromBsky } from "./triggers/bsky"
 import { fromCron } from "./triggers/cron"
@@ -18,6 +19,7 @@ import type { MetricListType } from "./metrics"
 import type { UserMessage } from "./types"
 import { activeContextSummaries, describeContextSummary } from "./runner/context-store"
 import { loadSession } from "./runner/util"
+import { dispatchHostRpc, HOST_RPC_BODY_LIMIT_BYTES } from "./host-rpc"
 
 const DISCORD_BATCH_INTERVAL_MS = Math.max(
   1_000,
@@ -40,6 +42,11 @@ const METRIC_TYPE_ALIASES: Record<string, MetricListType> = {
   "prompt-response": "response",
   completion: "response",
 }
+
+export function discordBatchEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return asEnabled(env.DISCORD_GATEWAY_ENABLED, true) && Boolean(env.DISCORD_BOT_TOKEN?.trim())
+}
+
 const TRIGGER_SOURCES = new Set(["discord", "bsky", "webhook", "cron", "chat", "delegation"])
 
 function parseMetricTypes(raw: string | undefined): MetricListType[] | undefined {
@@ -106,7 +113,7 @@ export function createServer(options: { requestRestart?: (reason?: string) => vo
     }
   }
 
-  const hasDiscordToken = Boolean(process.env.DISCORD_BOT_TOKEN?.trim())
+  const hasDiscordToken = discordBatchEnabled()
   if (hasDiscordToken) {
     discordBatchTimer = setInterval(() => {
       void runDiscordBatch()
@@ -147,6 +154,11 @@ export function createServer(options: { requestRestart?: (reason?: string) => vo
     void wake(event)
     return true
   }
+
+  app.post("/host-rpc", { bodyLimit: HOST_RPC_BODY_LIMIT_BYTES }, async (req, reply) => {
+    const response = await dispatchHostRpc(req.body, req.headers.authorization)
+    return reply.code(response.statusCode).send(response.body)
+  })
 
   app.get("/awp/status", async () => ({
     agentId: AGENT_ID,

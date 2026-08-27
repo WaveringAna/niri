@@ -17,8 +17,8 @@ export type ToolArgs = {
   path?: string
   start_line?: number
   end_line?: number
-  old_text?: string
-  new_text?: string
+  hashline?: boolean
+  target?: string
   note?: string
   detail?: string
   limit?: number

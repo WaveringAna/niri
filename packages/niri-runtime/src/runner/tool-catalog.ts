@@ -29,6 +29,17 @@ const POSTURE_TOOL_DESCRIPTION = [
   "forge status: forge. bio: \"building and tending to something. your messages are safe — i'll find them when i come back.\"",
 ].join(" ")
 
+
+const LEGACY_WORKSPACE_TOOLS = new Set<ToolCapability>(["shell", "read_file", "write_file", "edit_file", "read_blob"])
+
+/** Prefer the programmable workspace interface while retaining an explicit migration escape hatch. */
+export function modelFacingClientCapabilities(capabilities: Iterable<ToolCapability>): ToolCapability[] {
+  const all=[...new Set(capabilities)]
+  const legacyEnabled=(process.env.NIRI_LEGACY_WORKSPACE_TOOLS ?? "").trim().toLowerCase() === "true"
+  if(legacyEnabled || !all.includes("python")) return all
+  return all.filter((capability)=>!LEGACY_WORKSPACE_TOOLS.has(capability))
+}
+
 export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): ToolDefinition[] {
   const tools = createClientToolCatalog(options)
 

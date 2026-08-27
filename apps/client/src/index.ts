@@ -3,7 +3,7 @@ import os from "node:os"
 import { randomUUID } from "node:crypto"
 import { setTimeout as sleep } from "node:timers/promises"
 import { NodeToolHost, ToolClientHttpServer, parseToolCapabilities } from "@mira/harness-client-node"
-import { bindEndpoint, dialControlPlane, loadOrCreateSecretKey, openSocketStream } from "@niri/iroh-transport"
+import { bindEndpoint, dialControlPlane, loadOrCreateSecretKey, openSocketStream, startConnectionTunnel, type ConnectionTunnel } from "@niri/iroh-transport"
 import type { Connection, Endpoint } from "@number0/iroh"
 
 function argument(name: string): string | undefined {
@@ -25,11 +25,12 @@ const RECONNECT_MAX_MS = 30_000
  * control plane's tunnel reaches this client through NATs, so the client
  * never needs a public listener. Retries with exponential backoff.
  */
-async function runIrohLink(endpoint: Endpoint, port: number, signal: AbortSignal): Promise<void> {
+async function runIrohLink(endpoint: Endpoint, port: number, host: NodeToolHost, signal: AbortSignal): Promise<void> {
   let firstSuccess = true
   let delay = RECONNECT_MIN_MS
   while (!signal.aborted) {
     let connection: Connection | null = null
+    let reverseTunnel: ConnectionTunnel | null = null
     try {
       connection = await dialControlPlane({
         endpoint,
@@ -44,6 +45,10 @@ async function runIrohLink(endpoint: Endpoint, port: number, signal: AbortSignal
         console.log(`[tool-client] reconnected to control plane over iroh`)
       }
       delay = RECONNECT_MIN_MS
+      // Client-opened streams carry nested Python -> runtime HTTP independently
+      // of the server-opened stream currently running the outer Python call.
+      reverseTunnel = await startConnectionTunnel(connection)
+      host.setHostRpcEndpoint(reverseTunnel.url)
 
       const closedP = connection.closed()
       while (!signal.aborted) {
@@ -59,6 +64,8 @@ async function runIrohLink(endpoint: Endpoint, port: number, signal: AbortSignal
       await sleep(delay)
       delay = Math.min(RECONNECT_MAX_MS, delay * 2)
     } finally {
+      host.setHostRpcEndpoint(null)
+      await reverseTunnel?.close().catch(() => {})
       connection?.close(0n, [])
     }
   }
@@ -73,6 +80,9 @@ async function main(): Promise<void> {
   const host = new NodeToolHost({
     capabilities: parseToolCapabilities(argument("--capabilities")),
     workspace: { id: path.basename(workspaceRoot) || "workspace", root: workspaceRoot },
+    ...(!irohEnabled && (argument("--host-rpc-url") ?? process.env.NIRI_HOST_RPC_URL)?.trim()
+      ? { hostRpcEndpoint: (argument("--host-rpc-url") ?? process.env.NIRI_HOST_RPC_URL)!.trim() }
+      : {}),
   })
   const client = new ToolClientHttpServer({
     host,
@@ -102,7 +112,7 @@ async function main(): Promise<void> {
   if (irohEnabled) {
     const secret = await loadOrCreateSecretKey(path.join(os.homedir(), ".niri-client", "iroh.secret"))
     linkEndpoint = await bindEndpoint(secret)
-    void runIrohLink(linkEndpoint, address.port, linkAbort.signal)
+    void runIrohLink(linkEndpoint, address.port, host, linkAbort.signal)
   }
 }
 

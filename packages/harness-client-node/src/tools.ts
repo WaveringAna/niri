@@ -14,6 +14,7 @@ import {
   resolveMaxLines,
 } from "./config.js"
 import { currentWorkingDirectory, runRaw, runShellSession, type ShellSessionAction } from "./shell.js"
+import { annotateHashlines, applyHashlineEdit } from "./hashline.js"
 import type { EditResult, ImageToolPayload } from "./types.js"
 
 export type RunCommandInput = {
@@ -416,7 +417,7 @@ function wrappedBase64(str: string): string {
   return Buffer.from(str, "utf8").toString("base64").match(/.{1,76}/g)?.join("\n") ?? ""
 }
 
-export async function readFile(filePath: string, startLine = 1, endLine?: number, timeoutMs?: number): Promise<string> {
+export async function readFile(filePath: string, startLine = 1, endLine?: number, timeoutMs?: number, hashline = false): Promise<string> {
   const start = Math.max(1, Math.trunc(Number(startLine)) || 1)
   const end = endLine !== undefined ? Math.max(start, Math.trunc(Number(endLine)) || start) : undefined
   const opTimeoutMs = normalizeTimeoutMs(timeoutMs, DEFAULT_FILE_TIMEOUT_MS)
@@ -432,7 +433,8 @@ export async function readFile(filePath: string, startLine = 1, endLine?: number
     if (lines.at(-1) === "") lines.pop()
     const totalLines = lines.length
     const effectiveEnd = end ?? Math.min(start + 99, totalLines > 0 ? totalLines : start + 99)
-    const selected = lines.slice(start - 1, effectiveEnd).join("\n")
+    const selectedLines = lines.slice(start - 1, effectiveEnd)
+    const selected = hashline ? annotateHashlines(selectedLines, start) : selectedLines.join("\n")
     const rangeStr = `lines ${start}–${effectiveEnd}`
     const totalStr = totalLines > 0 ? ` of ${totalLines} total` : ""
     return `[${filePath}  ${rangeStr}${totalStr}]\n${selected}`
@@ -446,12 +448,15 @@ export async function readFile(filePath: string, startLine = 1, endLine?: number
   const effectiveEnd = end ?? Math.min(start + 99, totalLines > 0 ? totalLines : start + 99)
 
   const content = await runRaw(`sed -n '${start},${effectiveEnd}p' ${quoted} 2>&1`, { timeoutMs: opTimeoutMs })
+  const selectedLines = content.split("\n")
+  if (selectedLines.at(-1) === "") selectedLines.pop()
+  const selected = hashline ? annotateHashlines(selectedLines, start) : content
 
   const rangeStr = `lines ${start}–${effectiveEnd}`
   const totalStr = totalLines > 0 ? ` of ${totalLines} total` : ""
   const header = `[${filePath}  ${rangeStr}${totalStr}]\n`
 
-  return header + content
+  return header + selected
 }
 
 /** Create a new UTF-8 file without following a final-path symlink or replacing an existing file. */
@@ -556,43 +561,41 @@ export async function writeFile(filePath: string, content: string, timeoutMs?: n
 }
 
 // Docker edits stay in-container so large file bodies never cross the PTY.
-export async function editFile(filePath: string, oldText: string, newText: string, timeoutMs?: number): Promise<EditResult> {
-  if (oldText.length === 0) {
-    return { ok: false, message: "old_text must not be empty" }
-  }
+export async function editFile(filePath: string, target: string, content: string, timeoutMs?: number): Promise<EditResult> {
+  if (!target.trim()) return { ok: false, message: "target must not be empty" }
 
   const opTimeoutMs = normalizeTimeoutMs(timeoutMs, DEFAULT_FILE_TIMEOUT_MS)
 
   if (!USE_DOCKER_SHELL) {
     const resolvedPath = await resolveLocalPath(filePath, opTimeoutMs)
-    let content: string
-    let mode: number
+    let snapshot: { content: string; mode: number }
     try {
-      const snapshot = await readBoundedLocalFile(resolvedPath, opTimeoutMs)
-      content = snapshot.content
-      mode = snapshot.mode
+      snapshot = await readBoundedLocalFile(resolvedPath, opTimeoutMs)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       return { ok: false, message: `could not read ${filePath}: ${message}` }
     }
 
-    const count = content.split(oldText).length - 1
-    if (count === 0) return { ok: false, message: `old_text not found in ${filePath}` }
-    if (count > 1) return { ok: false, message: `old_text found ${count} times in ${filePath} — must be unique` }
+    let updated: { result: string; startLine: number; endLine: number }
+    try {
+      updated = applyHashlineEdit(snapshot.content, target, content)
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) }
+    }
 
     const temporary = path.join(path.dirname(resolvedPath), `.${path.basename(resolvedPath)}.${randomBytes(8).toString("hex")}.tmp`)
     try {
       const current = await readBoundedLocalFile(resolvedPath, opTimeoutMs)
-      if (current.content !== content) return { ok: false, message: `file changed before edit could be applied: ${filePath}` }
-      const handle = await fs.open(temporary, "wx", mode)
+      if (current.content !== snapshot.content) return { ok: false, message: `file changed before edit could be applied: ${filePath}` }
+      const handle = await fs.open(temporary, "wx", snapshot.mode)
       try {
-        await handle.writeFile(content.replace(oldText, newText), "utf8")
+        await handle.writeFile(updated.result, "utf8")
         await handle.sync()
       } finally {
         await handle.close()
       }
       await fs.rename(temporary, resolvedPath)
-      await fs.chmod(resolvedPath, mode)
+      await fs.chmod(resolvedPath, snapshot.mode)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       return { ok: false, message: `could not write ${filePath}: ${message}` }
@@ -600,30 +603,45 @@ export async function editFile(filePath: string, oldText: string, newText: strin
       await fs.rm(temporary, { force: true })
     }
 
-    const linesDelta = newText.split("\n").length - oldText.split("\n").length
-    const sign = linesDelta >= 0 ? "+" : ""
+    const replacementLines = content.length === 0 ? 0 : (content.endsWith("\n") ? content.slice(0, -1) : content).split("\n").length
+    const linesDelta = replacementLines - (updated.endLine - updated.startLine + 1)
     return {
       ok: true,
-      message: `edited ${filePath} (${sign}${linesDelta} lines)`,
+      message: `edited ${filePath} (replaced lines ${updated.startLine}–${updated.endLine}; ${linesDelta >= 0 ? "+" : ""}${linesDelta} lines)`,
     }
   }
 
-  const payload = wrappedBase64(JSON.stringify({ path: filePath, old_text: oldText, new_text: newText }))
+  const payload = wrappedBase64(JSON.stringify({ path: filePath, target, content }))
   const payloadToken = `HARNESS_EDIT_PAYLOAD_${randomBytes(8).toString("hex").toUpperCase()}`
   const payloadPath = `/tmp/harness-edit-${randomBytes(8).toString("hex")}.b64`
 
   const py = [
-    "import base64, json, os, sys, tempfile",
+    "import base64, hashlib, json, os, re, sys, tempfile",
     "def out(obj):",
     "    print(json.dumps(obj, ensure_ascii=False))",
+    "def line_hash(line):",
+    "    return hashlib.sha256(line.encode('utf-8')).hexdigest()[:6]",
+    "def resolve(lines, anchor, label):",
+    "    match = re.fullmatch(r'(\\d+)#([0-9a-f]{6})', anchor.strip())",
+    "    if not match:",
+    "        raise ValueError(f\"invalid {label} anchor '{anchor}': expected the form <line>#<hash>, e.g. 12#a1b2c3 (re-read with hashline enabled)\")",
+    "    hinted, wanted = int(match.group(1)), match.group(2)",
+    "    if 1 <= hinted <= len(lines) and line_hash(lines[hinted - 1]) == wanted:",
+    "        return hinted",
+    "    matches = [index + 1 for index, line in enumerate(lines) if line_hash(line) == wanted]",
+    "    if len(matches) == 1:",
+    "        return matches[0]",
+    "    if not matches:",
+    "        raise ValueError(f\"hashline {label} anchor '{anchor}' not found: the file changed since it was read; re-read with hashline enabled\")",
+    "    raise ValueError(f\"hashline {label} anchor '{anchor}' is ambiguous (matches lines {', '.join(map(str, matches))}); re-read with hashline enabled and use a range\")",
     "with open(sys.argv[1], 'r', encoding='ascii') as f:",
     "    payload = json.loads(base64.b64decode(f.read()).decode('utf-8'))",
     "path = os.path.realpath(payload.get('path', ''))",
-    "old = payload.get('old_text', '')",
-    "new = payload.get('new_text', '')",
+    "target = payload.get('target', '').strip()",
+    "replacement = payload.get('content', '')",
     "max_bytes = int(sys.argv[2])",
-    "if old == '':",
-    "    out({'ok': False, 'message': 'old_text must not be empty'})",
+    "if not target:",
+    "    out({'ok': False, 'message': 'target must not be empty'})",
     "    raise SystemExit(0)",
     "try:",
     "    original_stat = os.stat(path)",
@@ -631,25 +649,40 @@ export async function editFile(filePath: string, oldText: string, newText: strin
     "        out({'ok': False, 'message': f'file is too large to edit safely ({original_stat.st_size} > {max_bytes} bytes)'})",
     "        raise SystemExit(0)",
     "    with open(path, 'r', encoding='utf-8') as f:",
-    "        content = f.read()",
+    "        original = f.read()",
     "except FileNotFoundError:",
     "    out({'ok': False, 'message': f'could not read {path}: file not found'})",
     "    raise SystemExit(0)",
     "except Exception as e:",
     "    out({'ok': False, 'message': f'could not read {path}: {e}'})",
     "    raise SystemExit(0)",
-    "count = content.count(old)",
-    "if count == 0:",
-    "    out({'ok': False, 'message': f'old_text not found in {path}'})",
+    "try:",
+    "    dash = target.find('-')",
+    "    start_anchor = target if dash == -1 else target[:dash]",
+    "    end_anchor = target if dash == -1 else target[dash + 1:]",
+    "    had_trailing_newline = original.endswith('\\n')",
+    "    lines = original.split('\\n')",
+    "    if lines and lines[-1] == '':",
+    "        lines.pop()",
+    "    start = resolve(lines, start_anchor, 'start')",
+    "    end = resolve(lines, end_anchor, 'end')",
+    "    if start > end:",
+    "        raise ValueError(f'hashline range is inverted after resolving anchors (start line {start}, end line {end})')",
+    "    if not replacement:",
+    "        replacement_lines = []",
+    "    elif replacement.endswith('\\n'):",
+    "        replacement_lines = replacement[:-1].split('\\n')",
+    "    else:",
+    "        replacement_lines = replacement.split('\\n')",
+    "    lines[start - 1:end] = replacement_lines",
+    "    updated = '\\n'.join(lines) + ('\\n' if had_trailing_newline else '')",
+    "except ValueError as e:",
+    "    out({'ok': False, 'message': str(e)})",
     "    raise SystemExit(0)",
-    "if count > 1:",
-    "    out({'ok': False, 'message': f'old_text found {count} times in {path} — must be unique'})",
-    "    raise SystemExit(0)",
-    "updated = content.replace(old, new, 1)",
     "temporary = None",
     "try:",
     "    with open(path, 'r', encoding='utf-8') as f:",
-    "        if f.read() != content:",
+    "        if f.read() != original:",
     "            out({'ok': False, 'message': f'file changed before edit could be applied: {path}'})",
     "            raise SystemExit(0)",
     "    fd, temporary = tempfile.mkstemp(prefix='.' + os.path.basename(path) + '.', suffix='.tmp', dir=os.path.dirname(os.path.abspath(path)))",
@@ -667,7 +700,7 @@ export async function editFile(filePath: string, oldText: string, newText: strin
     "    if temporary:",
     "        try: os.unlink(temporary)",
     "        except FileNotFoundError: pass",
-    "out({'ok': True})",
+    "out({'ok': True, 'start_line': start, 'end_line': end})",
   ].join("\n")
 
   const raw = await runRaw(
@@ -681,21 +714,20 @@ export async function editFile(filePath: string, oldText: string, newText: strin
     { timeoutMs: opTimeoutMs },
   )
 
-  let parsed: { ok?: boolean; message?: string } | null = null
+  let parsed: { ok?: boolean; message?: string; start_line?: number; end_line?: number }
   try {
-    parsed = JSON.parse(raw.trim()) as { ok?: boolean; message?: string }
+    parsed = JSON.parse(raw.trim()) as { ok?: boolean; message?: string; start_line?: number; end_line?: number }
   } catch {
     return { ok: false, message: `edit failed for ${filePath}: ${raw.trim() || "unknown error"}` }
   }
+  if (!parsed.ok) return { ok: false, message: parsed.message ?? `edit failed for ${filePath}` }
 
-  if (!parsed.ok) {
-    return { ok: false, message: parsed.message ?? `edit failed for ${filePath}` }
-  }
-
-  const linesDelta = newText.split("\n").length - oldText.split("\n").length
-  const sign = linesDelta >= 0 ? "+" : ""
+  const startLine = Number(parsed.start_line)
+  const endLine = Number(parsed.end_line)
+  const replacementLines = content.length > 0 ? content.split("\n").length : 0
+  const linesDelta = replacementLines - (endLine - startLine + 1)
   return {
     ok: true,
-    message: `edited ${filePath} (${sign}${linesDelta} lines)`,
+    message: `edited ${filePath} (replaced lines ${startLine}–${endLine}; ${linesDelta >= 0 ? "+" : ""}${linesDelta} lines)`,
   }
 }

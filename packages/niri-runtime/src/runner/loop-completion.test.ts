@@ -133,3 +133,22 @@ test("content-filter recovery redacts discord body but keeps routing context", (
   assert.doesNotMatch(String(state.conversation[0]?.content), /blocked body text/)
   assert.match(String(state.conversation[1]?.content), /blocked by z\.ai/)
 })
+
+test("a provider that rejects a forced tool_choice is only asked once per process", () => {
+  const { effectiveToolChoice, rememberForcedToolChoiceRejection, resetForcedToolChoiceMemory } = __completionTest
+  resetForcedToolChoiceMemory()
+  try {
+    assert.equal(effectiveToolChoice("https://api.deepseek.com", "deepseek-v4-flash", "required"), "required")
+
+    rememberForcedToolChoiceRejection("https://api.deepseek.com", "deepseek-v4-flash")
+    assert.equal(effectiveToolChoice("https://api.deepseek.com", "deepseek-v4-flash", "required"), "auto")
+
+    // The downgrade is scoped to the endpoint+model that actually refused it.
+    assert.equal(effectiveToolChoice("https://api.deepseek.com", "deepseek-v4-other", "required"), "required")
+    assert.equal(effectiveToolChoice("https://openrouter.ai/api/v1", "deepseek-v4-flash", "required"), "required")
+    // "none" is a deliberate no-tools turn, not a forced one, so it is never rewritten.
+    assert.equal(effectiveToolChoice("https://api.deepseek.com", "deepseek-v4-flash", "none"), "none")
+  } finally {
+    resetForcedToolChoiceMemory()
+  }
+})

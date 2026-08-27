@@ -52,6 +52,24 @@ export function createClientToolCatalog(options: ClientToolCatalogOptions = {}):
   const imageRoot = options.workspace?.imageRoot || options.workspace?.root || "the attached client workspace"
   const tools: ToolDefinition[] = []
 
+  if (capabilities.has("python")) {
+    tools.push(
+      functionTool(
+        "python",
+        "Execute Python in a persistent client-workspace REPL. Variables, imports, functions, parsed data, cwd, and background asyncio tasks persist across calls; top-level await works. Use Python for orchestration, parsing, loops, and reusable state, but run project tests, scripts, CLIs, and dependency checks through the project's native environment with sh(). Preloaded synchronous helpers: read(path, start_line=1, end_line=None, hashline=False); edit(path, target, content), where target is a <line>#<hash> anchor or inclusive anchor range returned by read(..., hashline=True), and empty content deletes it; sh(command), with sh.poll/sh.terminate for resumable commands; out.size/out.tail/out.grep for the previous cell's retained output. niri.whoami() and niri.deadline() are synchronous. Every other niri server API is a coroutine and must be awaited, including niri.budget(), memory, soul, context, schedule, aliases, and Discord methods. Use help(niri) and help(niri.memory) for signatures. Prefer one composed Python call over separate legacy workspace calls.",
+        {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            action: { type: "string", enum: ["execute", "reset"] },
+            code: { type: "string", description: "Python source; required for execute." },
+            timeout_ms: { type: "integer", minimum: 1000, maximum: 600000 },
+          },
+        },
+      ),
+    )
+  }
+
   if (capabilities.has("shell")) {
     tools.push(
       functionTool(
@@ -76,7 +94,7 @@ export function createClientToolCatalog(options: ClientToolCatalogOptions = {}):
     tools.push(
       functionTool(
         "read_file",
-        "Read a file resolved by the attached client, with optional inclusive line bounds.",
+        "Read a bounded file slice. Set hashline=true to prefix each line with a <line>#<hash> anchor for edit_file.",
         {
           type: "object",
           additionalProperties: false,
@@ -84,6 +102,7 @@ export function createClientToolCatalog(options: ClientToolCatalogOptions = {}):
             path: { type: "string" },
             start_line: { type: "integer", minimum: 1 },
             end_line: { type: "integer", minimum: 1 },
+            hashline: { type: "boolean", description: "Prefix each returned line with its hashline edit anchor. Default false." },
             timeout_ms: { type: "integer", minimum: 1000, maximum: 600000 },
           },
           required: ["path"],
@@ -115,17 +134,17 @@ export function createClientToolCatalog(options: ClientToolCatalogOptions = {}):
     tools.push(
       functionTool(
         "edit_file",
-        "Replace one exact text occurrence in a file resolved by the attached client.",
+        "Replace or delete one hashline-anchored line or inclusive range in a file resolved by the attached client.",
         {
           type: "object",
           additionalProperties: false,
           properties: {
             path: { type: "string" },
-            old_text: { type: "string", minLength: 1 },
-            new_text: { type: "string" },
+            target: { type: "string", description: "A '<line>#<hash>' anchor or inclusive '<line>#<hash>-<line>#<hash>' range returned by read_file with hashline=true." },
+            content: { type: "string", description: "Replacement text. Empty content deletes the addressed line or range." },
             timeout_ms: { type: "integer", minimum: 1000, maximum: 600000 },
           },
-          required: ["path", "old_text", "new_text"],
+          required: ["path", "target", "content"],
         },
       ),
     )

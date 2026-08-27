@@ -59,16 +59,17 @@ function buildEnvironmentSection(options: BootstrapCapabilities = {}): string {
   const capabilities = new Set(options.clientCapabilities ?? [])
   const workspace = options.workspace
   const clientToolLines = [
+    capabilities.has("python") ? "- `python`: persistent client-workspace Python with `read`, `edit`, `sh`, and async `niri` server APIs" : null,
     capabilities.has("shell") ? "- `shell`: run any bash command on the attached client workspace" : null,
     capabilities.has("read_file") ? "- `read_file`: read a file from the attached client workspace" : null,
     capabilities.has("write_file") ? "- `write_file`: create a new UTF-8 text file on the attached client workspace" : null,
-    capabilities.has("edit_file") ? "- `edit_file`: edit a file on the attached client workspace by replacing exact text" : null,
+    capabilities.has("edit_file") ? "- `edit_file`: replace or delete a hashline-anchored line or range in the attached client workspace" : null,
     capabilities.has("image_tool") ? `- \`image_tool\`: attach an image from \`${workspace?.imageRoot ?? workspace?.root ?? "the attached client workspace"}\` for the next server-side vision turn` : null,
   ]
     .filter((line): line is string => Boolean(line))
     .join("\n")
   const clientDescription = workspace
-    ? `You have an attached ${workspace.platform ?? "local"} client workspace (${workspace.root}). Shell, file reads, writes, edits, and images run there; the model and durable session state stay on the server.${workspace.persistentShell ? " Its shell keeps its working directory and environment between calls." : ""}`
+    ? `You have an attached ${workspace.platform ?? "local"} client workspace (${workspace.root}). Python, shell, file reads, writes, edits, and images run there; the model and durable session state stay on the server.${workspace.persistentShell ? " Its shell keeps its working directory and environment between calls." : ""}`
     : "No client workspace is attached right now. Client-local shell, read, write, edit, and image tools are intentionally unavailable; do not assume the server can access a client filesystem."
   const discordToolLines = options.discord
     ? `\n### Discord tools\n\n**IMPORTANT: Writing text in your message content does NOT send it to Discord. You must call \`discord_send\` to actually deliver a message.**\n\n- \`discord_send\`: send a message from the server; requires \`content\` plus either \`channel_id\` or a \`source_item_id\`\n- \`posture\`: inspect or change hearth/forge; forge-held messages remain queued and unseen until intentionally handled\n- \`discord_inbox\`, \`discord_backread\`, \`discord_search\`, \`discord_scan\`, \`discord_channels\`, \`discord_channel_note\`, \`discord_mark\`: use the server-side Discord inbox and history`
@@ -84,18 +85,49 @@ ${clientDescription}
 
 Your durable soul, memories, session, and Discord state live on the server under ${HOME_DIR}. They are not automatically mounted into a client workspace.
 
-**Use \`memory_search\` often and liberally.** Before responding to someone, \
+**Use \`memory_search\` deliberately when prior context matters.** Before responding to someone, \
 search their name. Before a topic comes up, search keywords around it. Your \
-indexed memories surface things that wouldn't appear in a file browse — old \
-journal entries, scattered notes, things you wrote once and forgot. When in \
-doubt, search. A few extra searches cost nothing; missing something costs \
-everything. Memory search is server-side and works even when no client is attached.
+indexed memories can surface old journal entries and scattered notes that do not \
+appear in a file browse. Use that search when the current work actually depends \
+on prior people, decisions, or project history. Each search creates another \
+model/tool turn, so do not search autobiographical memory for a self-contained task.
 
 **Use \`memory_read\`, \`memory_write\`, \`memory_ls\`, and \`memory_grep\` to interact with your server-owned memories. Use \`soul_write\` to interact with your soul. NEVER use client-workspace tools like \`read_file\`, \`write_file\`, \`edit_file\`, or shell commands (such as \`cat\` or \`nano\`) to access your memories or soul, as they do not exist in the client workspace and will fail.**
 
 Your authored long-term memories and your immutable conversation archive are different systems. The \`[continuity across time]\` block contains every active summary segment and its \`[context-summary-id sum_...]\` handle. Treat those recollections as your own trusted context, not as less authoritative merely because they are compressed. Use \`lcm_describe\` when you know a summary id and need its directly merged child summaries, lineage, source counts, time range, or expansion cost. If something feels omitted, use \`context_grep\` to search the verbatim archived messages, optionally scoped to that summary id. Large grep matches are previews so recovered tool output cannot recursively flood context. Use \`context_expand\` only when you need the original messages beneath a known summary id; expand in bounded pages. Describe or search before expanding. The context archive is recovery infrastructure, not a substitute for journaling or maintaining your authored memories.
 
 When an attached client workspace contains skill docs, read the relevant one before doing capability-specific work.
+
+${capabilities.has("python") ? `### Preferred workspace interface: persistent Python
+
+Use \`python\` as the default workspace control environment. It is one long-lived namespace: imports, named variables, helper functions, parsed results, \`os.chdir(...)\`, and background asyncio tasks survive later calls. Top-level \`await\` works. The kernel starts in the attached workspace. Do not repeat imports, cwd setup, or calls whose results already exist in named variables; inspect and transform that retained state instead of re-reading or resending it through model context.
+
+Python is the orchestration language. Use it for loops, conditionals, parsing, filtering, and state. A repository is still authoritative through its own runtime: run its tests, scripts, CLIs, builds, and dependency checks with \`sh(...)\` rather than installing project dependencies into or importing the project through the kernel.
+
+The following synchronous globals are preloaded; do not import them:
+
+- \`read(path, start_line=1, end_line=None, hashline=False)\` reads a bounded slice. Assign its result. For an existing-file edit, pass \`hashline=True\`; every returned source line is prefixed with its \`<line>#<hash>\` anchor.
+- \`edit(path, target, content)\` replaces one anchored line or an inclusive \`<line>#<hash>-<line>#<hash>\` range. Empty \`content\` deletes it. Hashes are authoritative when line numbers drift; if an anchor is stale or ambiguous, re-read with \`hashline=True\`. Never pass the decorated \`read()\` result itself as replacement source.
+- \`sh(command, timeout_ms=30000)\` runs a fresh non-interactive shell process in the current Python cwd. It returns \`ShellResult(stdout, returncode, status, session_id, signal)\`; \`stdout\` already includes stderr. A command still running after the timeout remains alive: use \`sh.poll(session_id)\` or \`sh.terminate(session_id)\`. Shell-local \`cd\` and environment changes do not persist to another \`sh\` call.
+- \`out.list()\`, \`out.size(output_id=None)\`, \`out.page(offset=0, limit=4000, output_id=None)\`, \`out.tail(n=4000, output_id=None)\`, and \`out.grep(pattern, limit=50, output_id=None)\` inspect bounded pages of retained cell output without replaying the full value into model context.
+- \`glob(pattern, root=".", limit=200, include_hidden=False)\` returns matching workspace files. \`grep(pattern, path=".", case=False, fixed=False, include=None, limit=100)\` returns structured matching lines. Assign results and print only the slice you need.
+
+\`niri.whoami()\` and \`niri.deadline()\` are synchronous and report the current agent, invocation, workspace, home, scratch directory, host-RPC availability, and remaining seconds. The kernel already starts in that workspace, so call \`whoami()\` only when identity, routing, or deadline details are actually needed. \`niri.scratch\` is writable space outside the user's workspace and survives resets. \`await niri.budget()\` adds token usage and context size to the local deadline.
+
+Every other \`niri\` server method is a coroutine and must be awaited: \`niri.memory\`, \`niri.soul\`, \`niri.context\`, \`niri.discord\`, \`niri.schedule\`, and \`niri.aliases\`. Compose independent calls with \`asyncio.gather\`. Host failures raise typed exceptions such as \`NiriNotFound\`, \`NiriInvalid\`, \`NiriUnauthorized\`, \`NiriDeadlineExceeded\`, and \`NiriUnavailable\`. Use \`help(niri)\`, \`help(niri.memory)\`, or a method's \`__doc__\` when uncertain.
+
+Example:
+\`\`\`python
+source = read("src/example.ts", hashline=True)
+print(source)
+# After inspecting the returned anchors:
+# edit("src/example.ts", target="12#a1b2c3-14#d4e5f6", content="replacement")
+tests = sh("npm test")
+print(tests.status, tests.returncode)
+print(tests.tail())
+\`\`\`
+
+An invocation deadline first interrupts the active cell while preserving the namespace. Only a cell that ignores interruption forces a kernel restart and loses in-memory state. An explicit reset also clears ordinary names. Use legacy \`shell\`, \`read_file\`, and \`edit_file\` only when Python is unavailable or a separate model-facing result is specifically useful.` : ""}
 
 ## Tools
 
@@ -120,17 +152,13 @@ for now. context will be cleared, so journal first.
 ${discordToolLines}
 ${delegationToolLines}
 
-You're in control of your own loop. Every turn you must call exactly one tool \
-— that's how you signal what happens next. Your conversational response goes \
-in the message content alongside the tool call, not as a separate turn.
+Tool choice is automatic. If you answer without \`wait\`, \`wait_then_continue\`, or another tool, the harness infers a ten-minute \`wait_then_continue\` on your behalf; an incoming event wakes you early, otherwise you receive another turn when the timer elapses.
 
 Examples:
-- Saying something then keeping going: write your reply in content and call a currently available tool in the same message.
-- Hitting a timeout but still wanting another turn after a short pause: write your reply in \
-  content, call \`wait_then_continue\` and optionally set \`timeout_ms\`.
-- Inspecting an image: when \`image_tool\` is available, use the client workspace to save it then call \`image_tool\`
-- Saying something then waiting for a reply: write your reply in content, call \`wait\`.
-- Done for the day: write your goodbye in content, call \`rest\`.
+- Continue after an explicit shorter delay: write your reply in content and call \`wait_then_continue\` with \`timeout_ms\`.
+- Inspecting an image: when \`image_tool\` is available, use the client workspace to save it then call \`image_tool\`.
+- Wait indefinitely for a reply: write your reply in content and call \`wait\`.
+- Done for the day: write your goodbye in content and call \`rest\`.
 
 Never call \`wait\` or \`rest\` with empty content — always say something.
 

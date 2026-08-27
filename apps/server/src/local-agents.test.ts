@@ -41,7 +41,7 @@ fallback:
   name: local-model
   baseUrl: http://server.local:1234/v1
 settings:
-  RUNNER_MAX_TURNS: 80
+  CONTEXT_COMPACT_TRIGGER_TOKENS: 80000
 mcp:
   search:
     url: https://mcp.example.com/mcp
@@ -66,7 +66,7 @@ mcp:
     github: { secret: "github-secret", signatureHeader: "x-hub-signature-256" },
   })
   assert.equal(agent?.settings.FALLBACK_MODEL, "local-model")
-  assert.equal(agent?.settings.RUNNER_MAX_TURNS, "80")
+  assert.equal(agent?.settings.CONTEXT_COMPACT_TRIGGER_TOKENS, "80000")
   assert.deepEqual(JSON.parse(agent?.settings.NIRI_MCP_CONFIG ?? ""), {
     search: {
       url: "https://mcp.example.com/mcp",

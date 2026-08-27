@@ -1,7 +1,9 @@
-import { createHash, randomUUID } from "node:crypto"
+import { randomUUID } from "node:crypto"
 import { constants } from "node:fs"
 import fs from "node:fs/promises"
 import path from "node:path"
+import { applyHashlineEdit, hashlineLineHash as memoryLineHash } from "../../harness-client-node/src/hashline"
+export { applyHashlineEdit, hashlineLineHash as memoryLineHash } from "../../harness-client-node/src/hashline"
 import { NIRI_HOME } from "./agent-config"
 
 const MAX_STATE_WRITE_BYTES = 256_000
@@ -13,67 +15,6 @@ const MAX_MEMORY_GREP_LINE_CHARS = 1_000
 const MAX_MEMORY_GREP_OMITTED_FILE_MARKERS = 24
 const MEMORY_ROOT = path.join(NIRI_HOME, "memories")
 
-const HASHLINE_ANCHOR_RE = /^(\d+)#([0-9a-f]{6})$/
-
-/** Short content hash used for hashline anchors (6 hex chars of sha256). */
-export function memoryLineHash(line: string): string {
-  return createHash("sha256").update(line, "utf8").digest("hex").slice(0, 6)
-}
-
-function resolveHashlineAnchor(lines: string[], anchor: string, label: string): number {
-  const match = HASHLINE_ANCHOR_RE.exec(anchor.trim())
-  if (!match) {
-    throw new Error(`invalid ${label} anchor '${anchor}': expected the form <line>#<hash>, e.g. 12#a1b2c3 (re-read with hashline enabled)`)
-  }
-  const hintedLine = Number.parseInt(match[1]!, 10)
-  const hash = match[2]!
-
-  if (hintedLine >= 1 && hintedLine <= lines.length && memoryLineHash(lines[hintedLine - 1]!) === hash) {
-    return hintedLine
-  }
-
-  const matches: number[] = []
-  for (let i = 0; i < lines.length; i++) {
-    if (memoryLineHash(lines[i]!) === hash) matches.push(i + 1)
-  }
-  if (matches.length === 1) return matches[0]!
-  if (matches.length === 0) {
-    throw new Error(`hashline ${label} anchor '${anchor}' not found: the file changed since it was read; re-read with hashline enabled`)
-  }
-  throw new Error(`hashline ${label} anchor '${anchor}' is ambiguous (matches lines ${matches.join(", ")}); re-read with hashline enabled and use a range`)
-}
-
-/**
- * Applies a hashline edit to file content. The target is `<line>#<hash>` for a
- * single line or `<line>#<hash>-<line>#<hash>` for an inclusive range. Hashes
- * are authoritative: a stale line number is corrected when the hash matches
- * exactly one line. Empty content deletes the addressed lines.
- *
- * @returns The edited content and the 1-indexed inclusive range replaced.
- */
-export function applyHashlineEdit(
-  existing: string,
-  target: string,
-  content: string,
-): { result: string; startLine: number; endLine: number } {
-  const trimmed = target.trim()
-  const dashIndex = trimmed.indexOf("-")
-  const startAnchor = dashIndex === -1 ? trimmed : trimmed.slice(0, dashIndex)
-  const endAnchor = dashIndex === -1 ? trimmed : trimmed.slice(dashIndex + 1)
-
-  const lines = existing.split("\n")
-  if (lines.at(-1) === "") lines.pop()
-
-  const start = resolveHashlineAnchor(lines, startAnchor, "start")
-  const end = resolveHashlineAnchor(lines, endAnchor, "end")
-  if (start > end) {
-    throw new Error(`hashline range is inverted after resolving anchors (start line ${start}, end line ${end})`)
-  }
-
-  const replacement = content.length > 0 ? content.split("\n") : []
-  lines.splice(start - 1, end - start + 1, ...replacement)
-  return { result: lines.join("\n") + "\n", startLine: start, endLine: end }
-}
 
 function validateMarkdown(content: string): void {
   const headerMatch = /^#{1,6}[^\s#\r\n]/m.test(content)

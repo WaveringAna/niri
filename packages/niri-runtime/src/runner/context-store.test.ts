@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { initDb } from "../db"
+import { contextDescribe, contextExpand, ServiceError } from "../server-native-services"
 import type { Message } from "../types"
 import {
   archiveContextMessages,
@@ -15,6 +16,17 @@ import {
 } from "./context-store"
 
 initDb()
+
+test("native context services type unknown summaries as not found", async () => {
+  await assert.rejects(
+    contextDescribe({ id: `missing-description-${Date.now()}` }),
+    (error: unknown) => error instanceof ServiceError && error.code === "not_found" && /unknown context summary/.test(error.message),
+  )
+  await assert.rejects(
+    contextExpand({ summary_id: `missing-expansion-${Date.now()}` }),
+    (error: unknown) => error instanceof ServiceError && error.code === "not_found" && /unknown context summary/.test(error.message),
+  )
+})
 
 test("immutable context archive preserves exact messages and supports literal search", () => {
   const marker = `lossless-search-${Date.now()}`

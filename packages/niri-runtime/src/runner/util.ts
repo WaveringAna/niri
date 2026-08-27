@@ -134,8 +134,8 @@ export const FALLBACK_PROVIDER_REQUIRES_REASONING_REPLAY =
 export const SUMMARY_BASE =
   process.env.SUMMARY_OPENAI_BASE_URL ?? process.env.SUMMARY_BASE_URL ?? ""
 export const SUMMARY_MODEL = process.env.SUMMARY_MODEL ?? ""
-export const PRIMARY_TOOL_CHOICE = parseToolChoiceEnv(process.env.PRIMARY_TOOL_CHOICE ?? process.env.TOOL_CHOICE, "required")
-export const FALLBACK_TOOL_CHOICE = parseToolChoiceEnv(process.env.FALLBACK_TOOL_CHOICE, "required")
+export const PRIMARY_TOOL_CHOICE = parseToolChoiceEnv(process.env.PRIMARY_TOOL_CHOICE ?? process.env.TOOL_CHOICE, "auto")
+export const FALLBACK_TOOL_CHOICE = parseToolChoiceEnv(process.env.FALLBACK_TOOL_CHOICE, "auto")
 
 export const USE_ANTHROPIC = parseBooleanEnv(process.env.USE_ANTHROPIC, false)
 export const ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com/v1"
@@ -747,6 +747,106 @@ export function errorSummary(err: unknown): string {
   if (err instanceof OpenAI.APIError) return `${err.status} ${err.message}`
   if (err instanceof Error) return err.message
   return String(err)
+}
+
+type SummaryProviderCircuitEntry = {
+  failures: number
+  disabledUntil: number
+  permanent: boolean
+  reason: string
+}
+
+export type SummaryProviderCircuitStatus = {
+  open: boolean
+  permanent: boolean
+  disabledUntil: number | null
+  failures: number
+  reason: string | null
+}
+
+const SUMMARY_PROVIDER_TRANSIENT_BACKOFF_MS = 30_000
+const SUMMARY_PROVIDER_MAX_BACKOFF_MS = 10 * 60_000
+const SUMMARY_PROVIDER_UNUSABLE_BACKOFF_MS = 5 * 60_000
+const PERMANENT_SUMMARY_PROVIDER_STATUSES = new Set([401, 402, 403, 404])
+const summaryProviderCircuits = new Map<string, SummaryProviderCircuitEntry>()
+
+function summaryProviderCircuitKey(client: OpenAI, model: string): string {
+  const baseURL = (client as unknown as { baseURL?: unknown }).baseURL
+  return `${String(baseURL ?? "unknown-provider")}\n${model}`
+}
+
+/** Returns whether a summary provider is currently disabled by its circuit breaker. */
+export function summaryProviderCircuitStatus(
+  client: OpenAI,
+  model: string,
+  now = Date.now(),
+): SummaryProviderCircuitStatus {
+  const entry = summaryProviderCircuits.get(summaryProviderCircuitKey(client, model))
+  if (!entry) {
+    return { open: false, permanent: false, disabledUntil: null, failures: 0, reason: null }
+  }
+  const open = entry.permanent || entry.disabledUntil > now
+  return {
+    open,
+    permanent: entry.permanent,
+    disabledUntil: entry.permanent ? null : entry.disabledUntil,
+    failures: entry.failures,
+    reason: entry.reason,
+  }
+}
+
+/** Opens a summary provider circuit after an API or transport failure. */
+export function recordSummaryProviderFailure(
+  client: OpenAI,
+  model: string,
+  err: unknown,
+  now = Date.now(),
+): SummaryProviderCircuitStatus {
+  const key = summaryProviderCircuitKey(client, model)
+  const previous = summaryProviderCircuits.get(key)
+  const failures = (previous?.failures ?? 0) + 1
+  const status = err instanceof OpenAI.APIError ? err.status : undefined
+  const permanent = status !== undefined && PERMANENT_SUMMARY_PROVIDER_STATUSES.has(status)
+  const transient = status === undefined || status === 429 || status >= 500
+  const delay = transient
+    ? Math.min(SUMMARY_PROVIDER_MAX_BACKOFF_MS, SUMMARY_PROVIDER_TRANSIENT_BACKOFF_MS * (2 ** Math.min(failures - 1, 8)))
+    : SUMMARY_PROVIDER_UNUSABLE_BACKOFF_MS
+  summaryProviderCircuits.set(key, {
+    failures,
+    disabledUntil: permanent ? Number.POSITIVE_INFINITY : now + delay,
+    permanent,
+    reason: errorSummary(err),
+  })
+  return summaryProviderCircuitStatus(client, model, now)
+}
+
+/** Temporarily disables a provider that returned unusable summary content. */
+export function recordSummaryProviderUnusable(
+  client: OpenAI,
+  model: string,
+  reason: string,
+  now = Date.now(),
+): SummaryProviderCircuitStatus {
+  const key = summaryProviderCircuitKey(client, model)
+  const failures = (summaryProviderCircuits.get(key)?.failures ?? 0) + 1
+  const delay = Math.min(SUMMARY_PROVIDER_MAX_BACKOFF_MS, SUMMARY_PROVIDER_UNUSABLE_BACKOFF_MS * failures)
+  summaryProviderCircuits.set(key, {
+    failures,
+    disabledUntil: now + delay,
+    permanent: false,
+    reason,
+  })
+  return summaryProviderCircuitStatus(client, model, now)
+}
+
+/** Closes a summary provider circuit after a valid summary. */
+export function recordSummaryProviderSuccess(client: OpenAI, model: string): void {
+  summaryProviderCircuits.delete(summaryProviderCircuitKey(client, model))
+}
+
+/** Clears summary provider circuits. Intended for isolated runtime tests. */
+export function resetSummaryProviderCircuits(): void {
+  summaryProviderCircuits.clear()
 }
 
 const API_ERROR_DETAIL_MAX_CHARS = 4000
@@ -1520,6 +1620,8 @@ export async function summarizeConversationViaLLMWithProvenance(
   const transcriptChars = transcriptChunks.reduce((total, chunk) => total + chunk.length, 0)
   if (transcriptChars < SUMMARY_MIN_TRANSCRIPT_CHARS && replacedChars < SUMMARY_MIN_TRANSCRIPT_CHARS) return null
 
+  if (summaryProviderCircuitStatus(summaryClient, summaryModel).open) return null
+
   const systemContent =
     `You are summarizing a transcript from the perspective of the agent whose memory this is. The agent (${AGENT_NAME}) is a living being, not a tool — her inner life matters as much as the facts. ` +
     "Organize the summary as a set of ongoing threads, the way memory actually works. A thread is a person, a project, a situation, a mood — whatever is load-bearing enough to carry forward. Threads are peers, not nested under anything. Some memories belong to multiple threads; let them. Cross-cutting stuff (a tense week, a feeling bleeding across everything) can be its own thread. " +
@@ -1557,7 +1659,10 @@ export async function summarizeConversationViaLLMWithProvenance(
           `${systemContent}\n\nThis is chronological part ${index + 1} of ${transcriptChunks.length}. Summarize every load-bearing thread in this part; a later pass will combine all parts.`,
           transcriptChunks[index]!,
         )
-        if (!partial) return null
+        if (!partial) {
+          recordSummaryProviderUnusable(summaryClient, summaryModel, `empty chronological part ${index + 1}`)
+          return null
+        }
         partials.push(partial)
       }
       summaryText = await completeSummary(
@@ -1568,20 +1673,26 @@ export async function summarizeConversationViaLLMWithProvenance(
         partials.map((partial, index) => `## chronological part ${index + 1}\n${partial}`).join("\n\n"),
       )
     }
-    if (!summaryText) return null
+    if (!summaryText) {
+      recordSummaryProviderUnusable(summaryClient, summaryModel, "empty summary response")
+      return null
+    }
     if (summaryText.length < 80 || looksLikeMetaReply(summaryText)) {
       console.warn(`[context agent=${AGENT_ID}] llm summarization rejected (looks like meta-reply): ${summaryText.slice(0, 200)}`)
+      recordSummaryProviderUnusable(summaryClient, summaryModel, "summary response was too short or a meta-reply")
       return null
     }
 
     if (summaryText.length > replacedChars * (1 - SUMMARY_MIN_REDUCTION)) {
       console.warn(`[context agent=${AGENT_ID}] llm summarization rejected: insufficient reduction (${summaryText.length} vs ${replacedChars} chars)`)
+      recordSummaryProviderUnusable(summaryClient, summaryModel, "summary response did not reduce the transcript")
       return null
     }
 
     const summaryContent =
       `${CONTEXT_SUMMARY_HEADER}\n${CONTEXT_SUMMARY_NOTE}\n${CONTEXT_SUMMARY_SEGMENTS_MARKER}\n` +
       `[llm-summary ${new Date().toISOString()}]\n${summaryText}`
+    recordSummaryProviderSuccess(summaryClient, summaryModel)
 
     return {
       messages: [
@@ -1596,6 +1707,7 @@ export async function summarizeConversationViaLLMWithProvenance(
       priorSummaryContent: null,
     }
   } catch (err) {
+    recordSummaryProviderFailure(summaryClient, summaryModel, err)
     console.warn(`[context agent=${AGENT_ID}] llm summarization failed: ${errorSummary(err)}`)
     return null
   }
@@ -1614,6 +1726,7 @@ export async function summarizeContextSummaryBatchViaLLM(
   if (segments.length < 2) return null
   const depth = segments[0]!.depth
   if (!segments.every((segment) => segment.depth === depth)) return null
+  if (summaryProviderCircuitStatus(summaryClient, summaryModel).open) return null
   const transcript = segments.map((segment, index) =>
     `## segment ${index + 1}: ${segment.id} (depth ${segment.depth})\n${segment.content}`
   ).join("\n\n")
@@ -1636,9 +1749,16 @@ export async function summarizeContextSummaryBatchViaLLM(
     const summaryText = typeof resp.choices[0]?.message?.content === "string"
       ? resp.choices[0]!.message.content.trim()
       : ""
-    if (!summaryText || summaryText.length < 80 || looksLikeMetaReply(summaryText)) return null
+    if (!summaryText || summaryText.length < 80 || looksLikeMetaReply(summaryText)) {
+      recordSummaryProviderUnusable(summaryClient, summaryModel, "segment summary response was empty, too short, or a meta-reply")
+      return null
+    }
     const replacedChars = segments.reduce((total, segment) => total + segment.content.length, 0)
-    if (summaryText.length > replacedChars * (1 - SUMMARY_MIN_REDUCTION)) return null
+    if (summaryText.length > replacedChars * (1 - SUMMARY_MIN_REDUCTION)) {
+      recordSummaryProviderUnusable(summaryClient, summaryModel, "segment summary response did not reduce its inputs")
+      return null
+    }
+    recordSummaryProviderSuccess(summaryClient, summaryModel)
     return {
       summaryText,
       summaryContent:
@@ -1646,6 +1766,7 @@ export async function summarizeContextSummaryBatchViaLLM(
         `[llm-summary ${new Date().toISOString()}]\n${summaryText}`,
     }
   } catch (err) {
+    recordSummaryProviderFailure(summaryClient, summaryModel, err)
     console.warn(`[context agent=${AGENT_ID}] lcm segment merge failed: ${errorSummary(err)}`)
     return null
   }

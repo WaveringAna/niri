@@ -1,24 +1,40 @@
 import OpenAI from "openai"
 import { AGENT_ID } from "../agent-config"
 import type { DiscordAttachmentInput } from "../discord/attachments"
-import { writeMemory, writeSoul, readSoul, readMemory, listMemory, grepMemory } from "../agent-state-tools"
-import { cancelSchedule, createSchedule, listSchedules } from "../scheduler"
 import { logMessage } from "../db"
 import {
-  listDiscordBackread,
-  listDiscordChannels,
-  listDiscordInbox,
   markDiscordItem,
   scanDiscordChannels,
   sendDiscordMessage,
   setDiscordChannelNote,
 } from "../discord/state"
 import { getPostureState, setPosture, type Posture } from "../discord/posture"
-import { searchDiscordMessages } from "../discord/search"
-import { listAliases, removeAlias, searchMemories, setAlias } from "../memory"
+import {
+  ServiceError,
+  contextDescribe,
+  contextExpand,
+  contextGrep,
+  discordBackread,
+  discordChannels,
+  discordInbox,
+  discordSearch,
+  memoryAliasList,
+  memoryAliasRemove,
+  memoryAliasSet,
+  memoryGrep,
+  memoryList,
+  memoryRead,
+  memorySearch,
+  memoryWrite,
+  scheduleCancel,
+  scheduleCreate,
+  scheduleList,
+  soulRead,
+  soulWrite,
+} from "../server-native-services"
 import { emit } from "../stream"
 import type { Message } from "../types"
-import { archiveContextMessages, describeContextSummary, expandContextSummary, grepContext, recordRestContextSnapshot } from "./context-store"
+import { archiveContextMessages, recordRestContextSnapshot } from "./context-store"
 import { commitLcmCompaction } from "./lcm-compaction"
 import { collectAgentCompactionRecollection, configuredSummaryProvider } from "./loop-completion"
 import type { ToolHandler } from "./loop-shared"
@@ -47,6 +63,27 @@ const IMAGE_MIME_SIGNATURES: Record<string, (data: Buffer) => boolean> = {
     data.subarray(0, 4).equals(Buffer.from([0x49, 0x49, 0x2a, 0x00])) ||
     data.subarray(0, 4).equals(Buffer.from([0x4d, 0x4d, 0x00, 0x2a]))
   ),
+}
+
+async function contextDescriptionForTool(id: unknown, tokenCap: unknown): Promise<string> {
+  try {
+    return JSON.stringify(await contextDescribe({ id, token_cap: tokenCap }), null, 2)
+  } catch (error) {
+    if (!(error instanceof ServiceError) || error.code !== "not_found") throw error
+    return JSON.stringify({
+      error: error.message,
+      hint: "Use context_grep to find archived evidence, or check the summary id from the active context marker.",
+    }, null, 2)
+  }
+}
+
+async function contextExpansionForTool(summaryId: unknown, offset: unknown, limit: unknown): Promise<string> {
+  try {
+    return JSON.stringify(await contextExpand({ summary_id: summaryId, offset, limit }), null, 2)
+  } catch (error) {
+    if (!(error instanceof ServiceError) || error.code !== "not_found") throw error
+    return JSON.stringify({ error: error.message }, null, 2)
+  }
 }
 
 function normalizeTimeoutMs(requested: unknown, fallback: number): number {
@@ -89,7 +126,7 @@ function hasAlreadyBeenNudged(conversation: Message[], tool: string, filePath: s
 async function executeClientText(
   hooks: Pick<LoopHooks, "clientTools">,
   ctx: Parameters<ToolHandler>[0],
-  tool: "shell" | "read_file" | "write_file" | "edit_file",
+  tool: "python" | "shell" | "read_file" | "write_file" | "edit_file",
 ): Promise<string> {
   if (tool === "read_file" || tool === "write_file" || tool === "edit_file") {
     const filePath = String(ctx.args.path ?? "").toLowerCase()
@@ -224,6 +261,12 @@ function formatDiscordSendResult(result: Record<string, unknown>): string {
   return "sent!"
 }
 
+async function resetClientPythonAtSessionBoundary(hooks: Pick<LoopHooks, "clientTools">): Promise<void> {
+  if (!hooks.clientTools.getCapabilities().includes("python")) return
+  const reset = await hooks.clientTools.execute({ agentId: AGENT_ID, tool: "python", args: { action: "reset" }, timeoutMs: 5_000 })
+  if (reset.status !== "ok") console.warn(`[python] session reset failed: ${reset.output ?? reset.status}`)
+}
+
 export function buildToolHandlers(
   hooks: Pick<LoopHooks, "clientTools">,
   options: { emitClientToolEvents?: boolean } = {},
@@ -341,9 +384,20 @@ export function buildToolHandlers(
         snapshot.forests.map((content) => ({ role: "user", content } as Message)),
         args.note as string | undefined,
       )
+      await resetClientPythonAtSessionBoundary(hooks)
       await hooks.clearSession()
       return { shouldRest: true }
     },
+
+    python: (ctx) =>
+      runStandardTool(ctx, {
+        name: "python",
+        logArgKeys: ["action", "timeout_ms"] as const,
+        runArgKeys: [] as const,
+        run: () => executeClientText(hooks, ctx, "python"),
+        emitArgKeys: ["action"] as const,
+        emitEvent: emitClientToolEvents,
+      }),
 
     shell: (ctx) =>
       runStandardTool(ctx, {
@@ -392,15 +446,7 @@ export function buildToolHandlers(
         name: "memory_search",
         logArgKeys: ["query", "limit"] as const,
         runArgKeys: ["query", "limit"] as const,
-        run: async (query, limit) =>
-          JSON.stringify(
-            {
-              query,
-              results: await searchMemories(query as string, limit as number | undefined),
-            },
-            null,
-            2,
-          ),
+        run: async (query, limit) => JSON.stringify(await memorySearch({ query, limit }), null, 2),
         emptyFallback: '{"query":"","results":[]}',
       }),
 
@@ -409,11 +455,8 @@ export function buildToolHandlers(
         name: "context_grep",
         logArgKeys: ["query", "summary_id", "limit"] as const,
         runArgKeys: ["query", "limit", "summary_id"] as const,
-        run: async (query, limit, summaryId) => JSON.stringify({
-          query,
-          summaryId: summaryId ?? null,
-          results: grepContext(String(query ?? ""), limit as number | undefined, summaryId as string | undefined),
-        }, null, 2),
+        run: async (query, limit, summaryId) =>
+          JSON.stringify(await contextGrep({ query, limit, summary_id: summaryId }), null, 2),
         emptyFallback: '{"query":"","results":[]}',
       }),
 
@@ -422,14 +465,7 @@ export function buildToolHandlers(
         name: "lcm_describe",
         logArgKeys: ["id", "tokenCap"] as const,
         runArgKeys: ["id", "tokenCap"] as const,
-        run: async (id, tokenCap) => {
-          const summaryId = String(id ?? "").trim()
-          const described = describeContextSummary(summaryId, tokenCap as number | undefined)
-          return JSON.stringify(described ?? {
-            error: `unknown context summary: ${summaryId}`,
-            hint: "Use context_grep to find archived evidence, or check the summary id from the active context marker.",
-          }, null, 2)
-        },
+        run: contextDescriptionForTool,
       }),
 
     context_expand: (ctx) =>
@@ -437,14 +473,7 @@ export function buildToolHandlers(
         name: "context_expand",
         logArgKeys: ["summary_id", "offset", "limit"] as const,
         runArgKeys: ["summary_id", "offset", "limit"] as const,
-        run: async (summaryId, offset, limit) => {
-          const expanded = expandContextSummary(
-            String(summaryId ?? ""),
-            offset as number | undefined,
-            limit as number | undefined,
-          )
-          return JSON.stringify(expanded ?? { error: `unknown context summary: ${String(summaryId ?? "")}` }, null, 2)
-        },
+        run: contextExpansionForTool,
       }),
 
     memory_alias: (ctx) =>
@@ -454,22 +483,15 @@ export function buildToolHandlers(
         runArgKeys: ["action", "handle", "canonical"] as const,
         run: async (action, handle, canonical) => {
           const op = String(action ?? "").toLowerCase()
-          if (op === "list") {
-            return JSON.stringify({ ok: true, aliases: await listAliases() }, null, 2)
+          const alias = op === "list" ? memoryAliasList : op === "set" ? memoryAliasSet : op === "remove" ? memoryAliasRemove : null
+          if (!alias) return JSON.stringify({ ok: false, error: `unknown action: ${op}` })
+          // The shared operation owns validation; keep this tool's ok/error
+          // envelope so a bad argument reads as a result, not a tool failure.
+          try {
+            return JSON.stringify(await alias({ handle, canonical }), null, 2)
+          } catch (error) {
+            return JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) })
           }
-          if (op === "set") {
-            if (!handle || !canonical) {
-              return JSON.stringify({ ok: false, error: "set requires handle and canonical" })
-            }
-            const map = await setAlias(String(handle), String(canonical))
-            return JSON.stringify({ ok: true, aliases: map }, null, 2)
-          }
-          if (op === "remove") {
-            if (!handle) return JSON.stringify({ ok: false, error: "remove requires handle" })
-            const map = await removeAlias(String(handle), canonical ? String(canonical) : undefined)
-            return JSON.stringify({ ok: true, aliases: map }, null, 2)
-          }
-          return JSON.stringify({ ok: false, error: `unknown action: ${op}` })
         },
       }),
 
@@ -478,7 +500,7 @@ export function buildToolHandlers(
         name: "memory_write",
         logArgKeys: ["path", "mode"] as const,
         runArgKeys: ["path", "content", "mode", "target"] as const,
-        run: (filePath, content, mode, target) => writeMemory(filePath, content, mode, target),
+        run: (path, content, mode, target) => memoryWrite({ path, content, mode, target }),
         emitArgKeys: ["path", "mode"] as const,
         previewChars: 0,
       }),
@@ -488,7 +510,7 @@ export function buildToolHandlers(
         name: "soul_write",
         logArgKeys: ["mode"] as const,
         runArgKeys: ["content", "mode", "target"] as const,
-        run: (content, mode, target) => writeSoul(content, mode, target),
+        run: (content, mode, target) => soulWrite({ content, mode, target }),
         emitArgKeys: ["mode"] as const,
         previewChars: 0,
       }),
@@ -498,7 +520,7 @@ export function buildToolHandlers(
         name: "soul_read",
         logArgKeys: [] as const,
         runArgKeys: ["hashline"] as const,
-        run: (hashline) => readSoul(hashline),
+        run: (hashline) => soulRead({ hashline }),
         emitArgKeys: [] as const,
         previewChars: 0,
       }),
@@ -508,7 +530,7 @@ export function buildToolHandlers(
         name: "memory_read",
         logArgKeys: ["path"] as const,
         runArgKeys: ["path", "start_line", "end_line", "hashline"] as const,
-        run: (filePath, startLine, endLine, hashline) => readMemory(filePath, startLine, endLine, hashline),
+        run: (path, start_line, end_line, hashline) => memoryRead({ path, start_line, end_line, hashline }),
         emitArgKeys: ["path"] as const,
         previewChars: 0,
       }),
@@ -518,7 +540,7 @@ export function buildToolHandlers(
         name: "memory_ls",
         logArgKeys: [] as const,
         runArgKeys: [] as const,
-        run: () => listMemory(),
+        run: () => memoryList(),
         previewChars: 0,
       }),
 
@@ -527,7 +549,7 @@ export function buildToolHandlers(
         name: "memory_grep",
         logArgKeys: ["query"] as const,
         runArgKeys: ["query", "case_insensitive"] as const,
-        run: (query, caseInsensitive) => grepMemory(query, caseInsensitive),
+        run: (query, case_insensitive) => memoryGrep({ query, case_insensitive }),
         emitArgKeys: ["query"] as const,
         previewChars: 0,
       }),
@@ -540,11 +562,11 @@ export function buildToolHandlers(
         run: async (action, message, at, delay_ms, repeat_every_ms, id) => {
           switch (action) {
             case "set":
-              return JSON.stringify(createSchedule({ message, at, delayMs: delay_ms, repeatEveryMs: repeat_every_ms }), null, 2)
+              return JSON.stringify(await scheduleCreate({ message, at, delay_ms, repeat_every_ms }), null, 2)
             case "list":
-              return JSON.stringify(listSchedules(), null, 2)
+              return JSON.stringify(await scheduleList({}), null, 2)
             case "cancel":
-              return cancelSchedule(id) ? `cancelled ${id}` : `no pending schedule found with id ${id}`
+              return (await scheduleCancel({ id })).cancelled ? `cancelled ${id}` : `no pending schedule found with id ${id}`
             default:
               throw new Error("action must be set, list, or cancel")
           }
@@ -647,12 +669,7 @@ export function buildToolHandlers(
         name: "discord_inbox",
         logArgKeys: ["limit", "status"] as const,
         runArgKeys: ["limit", "status"] as const,
-        run: async (limit, status) =>
-          JSON.stringify(
-            listDiscordInbox(limit as number | undefined, status as string | string[] | undefined),
-            null,
-            2,
-          ),
+        run: async (limit, status) => JSON.stringify(await discordInbox({ limit, statuses: status }), null, 2),
       }),
 
     discord_mark: (ctx) =>
@@ -677,15 +694,7 @@ export function buildToolHandlers(
         logArgKeys: ["channel_id", "limit", "before_message_id"] as const,
         runArgKeys: ["channel_id", "limit", "before_message_id"] as const,
         run: async (channel_id, limit, before_message_id) =>
-          JSON.stringify(
-            listDiscordBackread(
-              channel_id as string,
-              limit as number | undefined,
-              before_message_id as string | undefined,
-            ),
-            null,
-            2,
-          ),
+          JSON.stringify(await discordBackread({ channel_id, limit, before_message_id }), null, 2),
       }),
 
     discord_search: (ctx) =>
@@ -694,16 +703,7 @@ export function buildToolHandlers(
         logArgKeys: ["channel_id", "query", "message_id", "limit"] as const,
         runArgKeys: ["channel_id", "query", "message_id", "limit"] as const,
         run: async (channel_id, query, message_id, limit) =>
-          JSON.stringify(
-            await searchDiscordMessages({
-              channelId: channel_id as string,
-              query: query as string | undefined,
-              messageId: message_id as string | undefined,
-              limit: limit as number | undefined,
-            }),
-            null,
-            2,
-          ),
+          JSON.stringify(await discordSearch({ channel_id, query, message_id, limit }), null, 2),
       }),
 
     discord_send: (ctx) => {
@@ -736,7 +736,7 @@ export function buildToolHandlers(
         name: "discord_channels",
         logArgKeys: [] as const,
         runArgKeys: [] as const,
-        run: async () => JSON.stringify(listDiscordChannels(), null, 2),
+        run: async () => JSON.stringify(await discordChannels(), null, 2),
       }),
 
     discord_channel_note: (ctx) =>
@@ -754,4 +754,5 @@ export const __toolRegistryTest = {
   formatDiscordSendResult,
   validateClientImage,
   validateNoChannelDiscordSendTarget,
+  resetClientPythonAtSessionBoundary,
 }

@@ -22,7 +22,7 @@ The three canonical component names are:
 
 - **niri server** — the central process that configures, supervises, and routes to agents
 - **agent runtime**, or **agent** in ordinary prose — one process containing one agent's mind and durable state
-- **tool host** — the execution boundary for `shell`, `read_file`, `edit_file`, `image_tool`, and `read_blob`
+- **tool host** — the execution boundary for persistent `python`, `shell`, `read_file`, `edit_file`, `image_tool`, and `read_blob`
 
 Keep these independent from placement and transport:
 
@@ -56,7 +56,31 @@ Everything durable about the agent lives in its home directory (`soul.md`, `memo
 
 ### Tool host (`apps/client`, `packages/harness-client-node`)
 
-Answers tool calls from its agent; it never initiates agent work. In iroh mode it does initiate the transport connection by dialing the niri server, but its component role remains the tool host. It runs `shell`, `read_file`, `edit_file`, `image_tool`, and the internal `read_blob` (chunked, hash-verified binary reads used for Discord attachments). With the Docker execution backend enabled, shell commands run inside a container rather than directly on the tool-host machine.
+Answers tool calls from its agent; it never initiates agent work. In iroh mode it does initiate the transport connection by dialing the niri server, but its component role remains the tool host. It runs persistent `python`, `shell`, `read_file`, `edit_file`, `image_tool`, and the internal `read_blob` (chunked, hash-verified binary reads used for Discord attachments). With the Docker execution backend enabled, shell commands run inside a container rather than directly on the tool-host machine.
+
+### Persistent Python and host RPC
+
+`python` is a process-owned kernel on the tool-host side. It starts when the tool host starts and is advertised only after a readiness handshake succeeds (Python >= 3.9). Its namespace, imports, helper functions, and current directory persist across ordinary model turns. A cell that reaches its invocation deadline receives `SIGINT`; when Python acknowledges the interrupt within two seconds, the cell is cancelled and the namespace remains intact. A cell that ignores `SIGINT` is force-killed after that grace period and the kernel restarts. `rest`, an explicit reset, tool-host shutdown, or that forced restart clears the namespace. It is scratch state, not durable agent state and not a sandbox.
+
+The kernel starts in the user's workspace, but Python bytecode from both cells and commands launched through `sh` is redirected to `$CLIENT_HOME/.cache/niri-python` through `PYTHONPYCACHEPREFIX`. `niri.scratch` names a writable directory at `$CLIENT_HOME/.cache/niri-scratch`, outside the workspace; it survives namespace resets and is the place for temporary generated files that should not enter the user's tree.
+
+Kernel control messages travel on dedicated file descriptors (3 and 4), never on the interpreter's stdin/stdout/stderr. Stdin is closed (`input()` raises immediately). Cell stdout/stderr flow through the normal fds and are drained continuously; the kernel writes an end marker after flushing, so subprocess output cannot corrupt the control channel. That marker is minted per cell from random bytes, so cell output cannot forge a boundary and misattribute the rest of its own output to the next cell.
+
+The model-facing result remains capped at 512,000 bytes. Independently, the tool host archives up to 8 MiB from each completed cell, retaining the newest 32 archives within a 32 MiB process-wide cap. The synchronous `out.list()`, `out.size()`, `out.page()`, `out.tail()`, and `out.grep()` helpers inspect any retained archive by id without rerunning the computation. Archives survive intervening cells, explicit namespace resets, and forced Python restarts; tool-host shutdown clears them.
+
+Resets are ordinary kernel operations rather than fire-and-forget writes: an explicit reset is serialized behind whatever cell is running and resolves only when Python acknowledges it, so a caller that awaits a session-boundary reset knows the namespace is actually gone.
+
+When the attached host advertises `python`, niri exposes `python` and `image_tool` as the model-facing workspace interface by default. The older `shell`, `read_file`, `write_file`, `edit_file`, and `read_blob` capabilities remain implemented for transport compatibility and can be temporarily restored to the model catalog with `NIRI_LEGACY_WORKSPACE_TOOLS=true`.
+
+The kernel preloads `read`, `edit`, `sh`, `glob`, `grep`, and `out`. `read(..., hashline=True)` prefixes each selected source line with the same `<line>#<hash>` anchors used by memory and soul reads; `edit(path, target, content)` replaces or deletes one anchored line or inclusive range, relocating a stale line number when its hash remains unique. `glob(...)` and `grep(...)` provide bounded workspace-native discovery without a shell round trip. The file, edit, and shell helpers call the same bounded Node implementations as the compatibility tools. `sh` returns a structured `ShellResult` whose compact representation reports metadata while retaining command output for explicit `.page()`, `.tail()`, or `.grep()` inspection; long commands are resumable via `sh.poll(session_id)` and `sh.terminate(session_id)`. It also preloads the `niri` client. `niri.whoami()` and `niri.deadline()` synchronously expose the current agent, paths, invocation, host-RPC availability, and remaining time. Calls such as `await niri.memory.search(...)` send typed `HostRpcRequest` values back to the agent runtime, while `await niri.budget()` combines the loop's token and context counters with the local deadline. Memory, soul, context, Discord state, schedules, and loop accounting remain authoritative TypeScript services in the runtime.
+
+Every outer Python invocation receives an opaque execution grant bound to its invocation id and deadline. The runtime revokes it when the outer invocation completes. A stale background task therefore cannot retain host privileges, even though model-generated Python still has the tool host's ordinary OS permissions. The RPC deadline bounds the wait and the grant; it does not abort an already-running service operation. Host RPC does not expose Python, shell, files, images, wait, or rest, which prevents the nested request from looping back into the occupied tool executor or agent-loop control flow.
+
+Direct deployments use ordinary HTTP for the reverse request. With iroh, the outer runtime-to-client request uses a server-opened QUIC BiStream while nested client-to-runtime RPC uses an independent client-opened BiStream. Both carry plain HTTP. The accept loops launch pumps concurrently, so the runtime can service the nested request while it is still awaiting the outer Python result.
+
+An authenticated client connection is authority to invoke its agent's host RPC, not HTTP reach into that agent's runtime. Client-opened streams are therefore pumped into a per-connection loopback ingress on the control plane that admits `POST /host-rpc` and nothing else: any other method is refused with 405, any other path with 404, and an oversized body with 413, none of which ever reach the runtime. The ingress resolves the target from the dial-in identity on every request, so the route follows the agent's current runtime and can never be steered by request contents. The runtime's own `/host-rpc` still validates the execution grant behind it.
+
+The service methods reachable over host RPC are the same typed operations the model-facing tool adapters call. Each RPC-exposed method has exactly one implementation that owns its validation, coercion, and result shape, so a method cannot mean one thing to the model and another to model-generated Python. Service failures carry stable wire codes. Python preserves the message and raises `NiriError` or the corresponding `NiriInvalid`, `NiriNotFound`, `NiriUnauthorized`, `NiriDeadlineExceeded`, or `NiriUnavailable` subclass, allowing cells to branch without matching error prose.
 
 ### How an agent reaches its tool host
 
@@ -83,9 +107,11 @@ Tunnels are raw byte pipes: each accepted loopback TCP socket opens one QUIC BiS
 
 1. A trigger arrives: discord gateway event, cron heartbeat, a fired `schedule` reminder, bsky, webhook, chat, or the control API.
 2. The agent runtime wakes (or enqueues into its running session), builds context (bootstrap + LCM summaries + passive memory recall), and runs model turns.
-3. The model calls exactly one tool per turn: memory/soul tools, Discord tools, tool-host tools, MCP tools, `schedule`, or loop control (`wait`, `wait_then_continue`, `rest`).
+3. Tool choice is automatic. The model may call memory/soul tools, Discord tools, tool-host tools, MCP tools, `schedule`, or loop control (`wait`, `wait_then_continue`, `rest`). A response with no tool call is treated as an inferred ten-minute `wait_then_continue`; an incoming event wakes it early.
 4. Events stream to the agent's outbox (`worker_events` in `niri.db`, retaining its compatibility-era table name), mirrored by the niri server for the UI.
 5. `rest` ends the session with a durable snapshot; the next trigger starts a fresh one with a rest summary.
+
+Compaction is the only point where active history is mechanically rewritten. Once the observed prompt crosses the compaction trigger, the runtime first archives and bounds large old non-social tool results while preserving the recent tail and memory/Discord/context tool traffic; ordinary turns never perform that rewrite, preserving provider prompt-cache stability. LLM summaries remain provenance-backed. A provider/model circuit breaker suppresses repeated summary calls after billing, authentication, transport, or unusable-output failures, with permanent process-lifetime disablement for non-retryable provider errors and bounded cooldowns for transient failures.
 
 ### Delegated tasks and Gastown
 

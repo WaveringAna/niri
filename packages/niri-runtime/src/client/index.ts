@@ -4,6 +4,7 @@ import type { ClientToolExecutor } from "@mira/harness-core"
 import { HttpToolClient, type HttpToolClientStatus } from "@mira/harness-server"
 import type { ClientToolName, ClientToolResult, ToolCapability, ToolInvocation, WorkspaceDescriptor } from "@mira/harness-protocol"
 import { AGENT_ID, REPO_ROOT } from "../agent-config"
+import { issueHostRpcGrant, revokeHostRpcGrant } from "../host-rpc"
 
 export type ConfiguredToolClient = ClientToolExecutor & {
   start(): Promise<void>
@@ -23,6 +24,7 @@ class LocalToolClient implements ConfiguredToolClient {
         id: `${agentId}-server`,
         root: process.env.NIRI_CLIENT_WORKSPACE?.trim() || REPO_ROOT,
       },
+      hostRpcEndpoint: `http://127.0.0.1:${Number.parseInt(process.env.PORT ?? "3000", 10)}`,
     })
   }
 
@@ -71,7 +73,9 @@ class LocalToolClient implements ConfiguredToolClient {
       issuedAt: new Date(now).toISOString(),
       deadlineAt: new Date(now + (input.timeoutMs ?? 30_000)).toISOString(),
     }
-    return this.host.execute(invocation)
+    const grant = input.tool === "python" ? issueHostRpcGrant(invocation.invocationId, invocation.deadlineAt) : undefined
+    if (grant) invocation.hostRpcGrant = grant
+    return this.host.execute(invocation).finally(() => revokeHostRpcGrant(grant))
   }
 }
 
@@ -79,4 +83,4 @@ const client = process.env.NIRI_CLIENT?.trim() || "local"
 
 export const clientTools: ConfiguredToolClient = client === "local"
   ? new LocalToolClient(AGENT_ID)
-  : new HttpToolClient({ agentId: AGENT_ID, endpoint: client })
+  : new HttpToolClient({ agentId: AGENT_ID, endpoint: client, hostRpcGrants: { issue: issueHostRpcGrant, revoke: revokeHostRpcGrant } })

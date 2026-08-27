@@ -164,10 +164,10 @@ function pruneShellSessions(): void {
   throw new Error(`too many live shell sessions (${MAX_SHELL_SESSIONS}); poll or terminate an existing session`)
 }
 
-function createShellSession(command: string): ManagedShellSession {
+function createShellSession(command: string, cwd = CLIENT_WORKSPACE_ROOT): ManagedShellSession {
   pruneShellSessions()
   const id = `sh_${randomBytes(8).toString("hex")}`
-  const child = spawnCommand(command, CLIENT_WORKSPACE_ROOT)
+  const child = spawnCommand(command, cwd)
   const session: ManagedShellSession = {
     id,
     child,
@@ -249,6 +249,7 @@ export async function runShellSession(input: {
   command?: string
   sessionId?: string
   timeoutMs?: number
+  cwd?: string
 }): Promise<ShellSessionResult> {
   const action = input.action ?? "start"
   const timeoutMs = normalizeTimeoutMs(input.timeoutMs, DEFAULT_COMMAND_TIMEOUT_MS)
@@ -256,7 +257,7 @@ export async function runShellSession(input: {
   if (action === "start") {
     const command = String(input.command ?? "")
     if (!command.trim()) throw new Error("command is required when shell action is start")
-    const session = createShellSession(command)
+    const session = createShellSession(command, input.cwd ?? CLIENT_WORKSPACE_ROOT)
     await waitForSession(session, timeoutMs)
     if (session.error) throw session.error
     const result = takeSessionResult(session)

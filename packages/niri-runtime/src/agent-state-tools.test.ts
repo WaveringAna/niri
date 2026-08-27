@@ -316,6 +316,13 @@ test("hashline edits replace, delete, and resolve stale line numbers by hash", (
   assert.throws(() => applyHashlineEdit(doc, `1#${hash("beta")}-3#${hash("alpha")}`, "x"), /inverted/)
   assert.throws(() => applyHashlineEdit(doc, "line two", "x"), /invalid start anchor/)
 
+  // Trailing-newline state is preserved and one terminal newline in content
+  // is a separator, never an invented blank line or an added EOF newline.
+  const noEol = "alpha\nbeta\ngamma"
+  assert.equal(applyHashlineEdit(noEol, `2#${hash("beta")}`, "BETA").result, "alpha\nBETA\ngamma")
+  assert.equal(applyHashlineEdit(doc, `2#${hash("beta")}`, "BETA\n").result, "alpha\nBETA\ngamma\ndelta\n")
+  assert.equal(applyHashlineEdit(doc, `2#${hash("beta")}`, "\n").result, "alpha\n\ngamma\ndelta\n")
+
   const dupes = "same\nother\nsame\n"
   assert.throws(() => applyHashlineEdit(dupes, `9#${hash("same")}`, "x"), /ambiguous/)
 })

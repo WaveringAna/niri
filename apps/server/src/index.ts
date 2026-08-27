@@ -11,6 +11,7 @@ import {
 } from "./local-agents"
 import { LocalAgentSupervisor } from "./supervisor"
 import { startIrohAcceptor, type IrohAgentDialIn, type IrohClientDialIn } from "./iroh"
+import { acceptClientReverseRpc } from "./client-reverse-rpc"
 import { startConnectionTunnel, type ConnectionTunnel } from "@niri/iroh-transport"
 
 function argument(name: string): string | undefined {
@@ -27,6 +28,8 @@ const agentDirectory = path.resolve(argument("--agents") ?? path.join(repoRoot, 
 const CONTROL_HOME = path.resolve(process.env.NIRI_CONTROL_HOME ?? path.join(repoRoot, "data", "control"))
 const IROH_SECRET_FILE = process.env.NIROH_SECRET_FILE ?? path.join(CONTROL_HOME, "iroh.secret")
 const IROH_TOKEN_FILE = process.env.NIROH_TOKEN_FILE ?? path.join(CONTROL_HOME, "iroh.token")
+
+const clientConnections = new Map<string, IrohClientDialIn["connection"]>()
 
 async function main(): Promise<void> {
   if (!Number.isInteger(controlPort) || controlPort < 1 || controlPort > 65535) {
@@ -104,7 +107,6 @@ async function main(): Promise<void> {
 
   // Track each agent's live client connection so a stale disconnect cannot
   // detach its replacement (same race as worker reconnects).
-  const clientConnections = new Map<string, IrohClientDialIn["connection"]>()
   const handleClientDialIn = (dialIn: IrohClientDialIn) => {
     const tunnel = clientTunnels.get(dialIn.agentId)
     if (!tunnel) throw new Error(`no iroh client tunnel for agent ${dialIn.agentId}`)
@@ -115,6 +117,18 @@ async function main(): Promise<void> {
     clientConnections.set(dialIn.agentId, dialIn.connection)
     tunnel.setConnection(dialIn.connection)
     console.log(`[iroh] client tunnel for ${dialIn.agentId} attached at ${tunnel.url}`)
+    void acceptClientReverseRpc(dialIn, {
+      isCurrent: (agentId, connection) => clientConnections.get(agentId) === connection,
+      onError: (agentId, error) => {
+        if (clientConnections.get(agentId) === dialIn.connection) {
+          console.warn(`[iroh] reverse RPC bridge for ${agentId} failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      },
+    }).catch((error) => {
+      if (clientConnections.get(dialIn.agentId) === dialIn.connection) {
+        console.warn(`[iroh] reverse RPC bridge for ${dialIn.agentId} stopped: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    })
   }
 
   // Iroh acceptor: never fatal — failure to bind is a warning, not a crash.

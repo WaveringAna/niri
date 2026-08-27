@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { NodeToolHost } from "./host.js"
+import { hashlineLineHash } from "./hashline.js"
 import type { ClientToolName, ToolInvocation } from "@mira/harness-protocol"
 
 function invocation(tool: ClientToolName, args: Record<string, unknown>): ToolInvocation {
@@ -41,32 +42,90 @@ test("every shell call starts in the advertised workspace", async () => {
   }
 })
 
-test("an unsuccessful exact edit is a tool error", async () => {
+test("an unsuccessful hashline edit is a tool error", async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "harness-host-edit-"))
   const file = path.join(workspace, "notes.md")
   await fs.writeFile(file, "one\n", "utf8")
   const host = new NodeToolHost({ capabilities: ["edit_file"], workspace: { id: "test", root: workspace } })
   try {
-    const result = await host.execute(invocation("edit_file", { path: file, old_text: "missing", new_text: "two" }))
+    const result = await host.execute(invocation("edit_file", {
+      path: file,
+      target: `1#${hashlineLineHash("missing")}`,
+      content: "two",
+    }))
     assert.equal(result.status, "error")
-    assert.match(result.output ?? "", /old_text not found/)
+    assert.match(result.output ?? "", /anchor .* not found/)
   } finally {
     await host.stop()
     await fs.rm(workspace, { recursive: true, force: true })
   }
 })
 
-test("native edits replace atomically and preserve file permissions", async () => {
+test("native hashline edits relocate stale anchors, preserve permissions, and remain atomic", async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "harness-host-atomic-edit-"))
   const file = path.join(workspace, "notes.md")
-  await fs.writeFile(file, "one\n", { mode: 0o640 })
-  const host = new NodeToolHost({ capabilities: ["edit_file"], workspace: { root: workspace } })
+  await fs.writeFile(file, "inserted\none\n", { mode: 0o640 })
+  const host = new NodeToolHost({ capabilities: ["read_file", "edit_file"], workspace: { root: workspace } })
   try {
-    const result = await host.execute(invocation("edit_file", { path: file, old_text: "one", new_text: "two" }))
+    const read = await host.execute(invocation("read_file", { path: file, hashline: true }))
+    assert.equal(read.status, "ok")
+    assert.match(read.output ?? "", new RegExp(`2#${hashlineLineHash("one")} one`))
+
+    const result = await host.execute(invocation("edit_file", {
+      path: file,
+      target: `1#${hashlineLineHash("one")}`,
+      content: "two",
+    }))
     assert.equal(result.status, "ok")
-    assert.equal(await fs.readFile(file, "utf8"), "two\n")
+    assert.match(result.output ?? "", /replaced lines 2–2/)
+    assert.equal(await fs.readFile(file, "utf8"), "inserted\ntwo\n")
     assert.equal((await fs.stat(file)).mode & 0o777, 0o640)
     assert.deepEqual((await fs.readdir(workspace)).filter((name) => name.endsWith(".tmp")), [])
+  } finally {
+    await host.stop()
+    await fs.rm(workspace, { recursive: true, force: true })
+  }
+})
+
+test("hashline edits preserve trailing-newline state and treat one terminal newline as a separator", async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "harness-host-newline-edit-"))
+  const file = path.join(workspace, "no-eof.md")
+  await fs.writeFile(file, "one\ntwo", "utf8")
+  const host = new NodeToolHost({ capabilities: ["read_file", "edit_file"], workspace: { root: workspace } })
+  try {
+    const edited = await host.execute(invocation("edit_file", {
+      path: file,
+      target: `2#${hashlineLineHash("two")}`,
+      content: "TWO",
+    }))
+    assert.equal(edited.status, "ok")
+    assert.equal(await fs.readFile(file, "utf8"), "one\nTWO")
+
+    const separated = await host.execute(invocation("edit_file", {
+      path: file,
+      target: `2#${hashlineLineHash("TWO")}`,
+      content: "TWO\n",
+    }))
+    assert.equal(separated.status, "ok")
+    assert.equal(await fs.readFile(file, "utf8"), "one\nTWO")
+
+    const blank = await host.execute(invocation("edit_file", {
+      path: file,
+      target: `2#${hashlineLineHash("TWO")}`,
+      content: "a\n\nb",
+    }))
+    assert.equal(blank.status, "ok")
+    assert.equal(await fs.readFile(file, "utf8"), "one\na\n\nb")
+
+    const withEof = path.join(workspace, "eof.md")
+    await fs.writeFile(withEof, "one\ntwo\n", "utf8")
+    const kept = await host.execute(invocation("edit_file", {
+      path: withEof,
+      target: `2#${hashlineLineHash("two")}`,
+      content: "TWO",
+    }))
+    assert.equal(kept.status, "ok")
+    assert.equal(await fs.readFile(withEof, "utf8"), "one\nTWO\n")
   } finally {
     await host.stop()
     await fs.rm(workspace, { recursive: true, force: true })

@@ -42,6 +42,7 @@ import {
   shouldFallback,
   shouldRetryProvider,
   summaryClient,
+  summaryProviderCircuitStatus,
   summarizeConversationViaLLMWithProvenance,
 } from "./util"
 import { batchActiveContextSummariesForPrompt } from "./context-store"
@@ -63,14 +64,40 @@ function isPathologicalCompactionRecollection(content: string): boolean {
  *
  * @returns Active summary provider config.
  */
+let loggedSummaryCircuit = ""
+
 export async function configuredSummaryProvider(): Promise<{ client: OpenAI | null; model: string }> {
-  if (summaryClient && SUMMARY_MODEL) return { client: summaryClient, model: SUMMARY_MODEL }
-  const failover = USE_FALLBACK ? null : await primaryFailoverStatus()
-  if (failover?.active) return { client: fallbackClient, model: FALLBACK_MODEL }
-  return {
-    client: USE_FALLBACK ? fallbackClient : client,
-    model: USE_FALLBACK ? FALLBACK_MODEL : MODEL,
+  let provider: { client: OpenAI | null; model: string }
+  if (summaryClient && SUMMARY_MODEL) {
+    provider = { client: summaryClient, model: SUMMARY_MODEL }
+  } else {
+    const failover = USE_FALLBACK ? null : await primaryFailoverStatus()
+    provider = failover?.active
+      ? { client: fallbackClient, model: FALLBACK_MODEL }
+      : {
+          client: USE_FALLBACK ? fallbackClient : client,
+          model: USE_FALLBACK ? FALLBACK_MODEL : MODEL,
+        }
   }
+
+  if (!provider.client || !provider.model) return provider
+  const circuit = summaryProviderCircuitStatus(provider.client, provider.model)
+  if (!circuit.open) {
+    loggedSummaryCircuit = ""
+    return provider
+  }
+
+  const disabledFor = circuit.permanent
+    ? "for this process"
+    : `until ${new Date(circuit.disabledUntil ?? Date.now()).toISOString()}`
+  const logKey = `${provider.model}\n${disabledFor}\n${circuit.reason ?? ""}`
+  if (loggedSummaryCircuit !== logKey) {
+    console.warn(
+      `[context agent=${AGENT_ID}] summary provider circuit open ${disabledFor}: model=${provider.model} reason=${circuit.reason ?? "unknown"}`,
+    )
+    loggedSummaryCircuit = logKey
+  }
+  return { client: null, model: provider.model }
 }
 
 function logApiError(err: unknown, context: string): void {
@@ -261,6 +288,37 @@ function apiErrorSearchText(err: { message: string; error?: unknown }): string {
     }
   }
   return parts.join("\n")
+}
+
+/**
+ * Providers that answered a forced tool_choice with a rejection, keyed by
+ * endpoint+model. The downgrade to "auto" is remembered for the process so one
+ * rejection costs one wasted round trip, not one per turn for the whole
+ * session. Re-learned after a restart, so a provider that gains support (or a
+ * changed config) is picked up on the next boot.
+ */
+const forcedToolChoiceRejected = new Set<string>()
+
+function toolChoiceKey(baseUrl: string, model: string): string {
+  return `${baseUrl}|${model}`
+}
+
+/**
+ * The tool_choice to send, honouring an earlier rejection from this provider.
+ * Only "required" is downgraded: "none" is a deliberate no-tools turn, and
+ * rewriting it to "auto" would hand the model tools the caller withheld.
+ */
+function effectiveToolChoice(
+  baseUrl: string,
+  model: string,
+  requested: "required" | "auto" | "none",
+): "required" | "auto" | "none" {
+  return requested === "required" && forcedToolChoiceRejected.has(toolChoiceKey(baseUrl, model)) ? "auto" : requested
+}
+
+/** Record that this endpoint+model refuses a forced tool_choice. */
+function rememberForcedToolChoiceRejection(baseUrl: string, model: string): void {
+  forcedToolChoiceRejected.add(toolChoiceKey(baseUrl, model))
 }
 
 function shouldRetryWithAutoToolChoice(err: unknown): boolean {
@@ -616,7 +674,7 @@ async function createFallbackCompletion(
     model: FALLBACK_MODEL,
     messages,
     tools,
-    tool_choice: options.toolChoice ?? FALLBACK_TOOL_CHOICE,
+    tool_choice: effectiveToolChoice(FALLBACK_BASE, FALLBACK_MODEL, options.toolChoice ?? FALLBACK_TOOL_CHOICE),
     ...promptCacheRequestExtras(FALLBACK_BASE, "fallback"),
     ...openRouterToolRequestExtras(FALLBACK_BASE),
     ...configuredThinkingRequestExtras(),
@@ -632,8 +690,9 @@ async function createFallbackCompletion(
     } catch (err) {
       if (currentRequest.tool_choice !== "auto" && !retriedAutoToolChoice && shouldRetryWithAutoToolChoice(err)) {
         retriedAutoToolChoice = true
+        rememberForcedToolChoiceRejection(FALLBACK_BASE, FALLBACK_MODEL)
         console.warn(
-          `[fallback] provider rejected tool_choice=${currentRequest.tool_choice}; retrying with tool_choice=auto`,
+          `[fallback] provider rejected tool_choice=${currentRequest.tool_choice}; retrying with tool_choice=auto (remembered for this process)`,
         )
         currentRequest = {
           ...currentRequest,
@@ -676,11 +735,12 @@ async function createPrimaryCompletion(
     }, { emitEvents: options.emitEvents })
   }
 
+  const model = options.model ?? MODEL
   const request: CompletionRequest = {
-    model: options.model ?? MODEL,
+    model,
     messages,
     tools,
-    tool_choice: options.toolChoice ?? PRIMARY_TOOL_CHOICE,
+    tool_choice: effectiveToolChoice(API_BASE, model, options.toolChoice ?? PRIMARY_TOOL_CHOICE),
     ...promptCacheRequestExtras(API_BASE, "primary"),
     ...openRouterToolRequestExtras(API_BASE),
     ...configuredThinkingRequestExtras(),
@@ -696,7 +756,8 @@ async function createPrimaryCompletion(
     } catch (err) {
       if (currentRequest.tool_choice !== "auto" && !retriedAutoToolChoice && shouldRetryWithAutoToolChoice(err)) {
         retriedAutoToolChoice = true
-        console.warn(`[api] provider rejected tool_choice=${currentRequest.tool_choice}; retrying primary with tool_choice=auto`)
+        rememberForcedToolChoiceRejection(API_BASE, currentRequest.model)
+        console.warn(`[api] provider rejected tool_choice=${currentRequest.tool_choice}; retrying primary with tool_choice=auto (remembered for this process)`)
         currentRequest = {
           ...currentRequest,
           tool_choice: "auto",
@@ -1171,6 +1232,9 @@ export async function fetchCompletion(
 
 export const __completionTest = {
   consumeCompletionStream,
+  effectiveToolChoice,
+  rememberForcedToolChoiceRejection,
+  resetForcedToolChoiceMemory: () => forcedToolChoiceRejected.clear(),
   isPathologicalCompactionRecollection,
   promptCacheRequestExtras,
   quarantineLatestIncomingForContentFilter,

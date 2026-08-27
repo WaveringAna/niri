@@ -1,4 +1,4 @@
-export const CLIENT_TOOL_NAMES = ["shell", "read_file", "write_file", "edit_file", "image_tool", "read_blob"] as const
+export const CLIENT_TOOL_NAMES = ["python", "shell", "read_file", "write_file", "edit_file", "image_tool", "read_blob"] as const
 
 export type ClientToolName = (typeof CLIENT_TOOL_NAMES)[number]
 export type ToolCapability = ClientToolName
@@ -10,6 +10,7 @@ export type WorkspaceDescriptor = {
   imageRoot?: string
   platform?: string
   persistentShell?: boolean
+  persistentPython?: boolean
 }
 
 export type ToolInvocation = {
@@ -20,6 +21,8 @@ export type ToolInvocation = {
   args: Record<string, unknown>
   issuedAt: string
   deadlineAt: string
+  /** Short-lived opaque lease for client->host RPC during this invocation. */
+  hostRpcGrant?: string
 }
 
 export type ClientImageArtifact = {
@@ -85,6 +88,7 @@ export function parseToolInvocation(value: unknown): ToolInvocation | null {
     args,
     issuedAt: input.issuedAt,
     deadlineAt: input.deadlineAt,
+    ...(nonEmptyString(input.hostRpcGrant) ? { hostRpcGrant: input.hostRpcGrant } : {}),
   }
 }
 
@@ -137,4 +141,63 @@ export function parseClientToolResult(value: unknown): ClientToolResult | null {
       : {}),
     completedAt: input.completedAt,
   }
+}
+
+
+export const HOST_RPC_METHODS = [
+  "memory.search", "memory.read", "memory.list", "memory.grep", "memory.write",
+  "memory.alias.list", "memory.alias.set", "memory.alias.remove",
+  "soul.read", "soul.write",
+  "context.grep", "context.describe", "context.expand",
+  "discord.inbox", "discord.backread", "discord.search", "discord.channels",
+  "loop.budget",
+  "schedule.create", "schedule.list", "schedule.cancel",
+] as const
+
+export type HostRpcMethod = (typeof HOST_RPC_METHODS)[number]
+
+export type HostRpcRequest = {
+  type: "host.call"
+  requestId: string
+  outerInvocationId: string
+  method: HostRpcMethod
+  args: Record<string, unknown>
+  issuedAt: string
+  deadlineAt: string
+}
+
+export type HostRpcResult = {
+  type: "host.result"
+  requestId: string
+  status: "ok" | "error" | "cancelled"
+  result?: unknown
+  error?: { code: string; message: string }
+  completedAt: string
+}
+
+export function isHostRpcMethod(value: unknown): value is HostRpcMethod {
+  return typeof value === "string" && (HOST_RPC_METHODS as readonly string[]).includes(value)
+}
+
+export function parseHostRpcRequest(value: unknown): HostRpcRequest | null {
+  const input = record(value)
+  const args = input && record(input.args)
+  if (!input || !args || input.type !== "host.call" || !nonEmptyString(input.requestId) ||
+      !nonEmptyString(input.outerInvocationId) || !isHostRpcMethod(input.method) ||
+      !validDate(input.issuedAt) || !validDate(input.deadlineAt) ||
+      Date.parse(input.deadlineAt) < Date.parse(input.issuedAt)) return null
+  return { type: "host.call", requestId: input.requestId.trim(), outerInvocationId: input.outerInvocationId.trim(),
+    method: input.method, args, issuedAt: input.issuedAt, deadlineAt: input.deadlineAt }
+}
+
+export function parseHostRpcResult(value: unknown): HostRpcResult | null {
+  const input = record(value)
+  if (!input || input.type !== "host.result" || !nonEmptyString(input.requestId) ||
+      !["ok", "error", "cancelled"].includes(String(input.status)) || !validDate(input.completedAt)) return null
+  const error = input.error === undefined ? null : record(input.error)
+  if (input.status === "ok" && error) return null
+  if (input.status !== "ok" && (!error || !nonEmptyString(error.code) || !nonEmptyString(error.message))) return null
+  return { type: "host.result", requestId: input.requestId.trim(), status: input.status as HostRpcResult["status"],
+    ...(input.result !== undefined ? { result: input.result } : {}),
+    ...(error ? { error: { code: String(error.code), message: String(error.message) } } : {}), completedAt: input.completedAt }
 }

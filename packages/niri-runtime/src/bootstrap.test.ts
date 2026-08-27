@@ -19,6 +19,32 @@ test("bootstrap explains immutable context recovery tools", async () => {
   assert.match(system, /not a substitute for journaling/i)
 })
 
+test("bootstrap fully explains persistent Python and hashline workspace editing", async () => {
+  const messages = await buildBootstrap(
+    { source: "chat", triggeredAt: new Date().toISOString(), content: "fix it", raw: null },
+    null,
+    {
+      clientCapabilities: ["python", "read_file", "edit_file"],
+      workspace: { id: "repo", root: "/workspace", persistentPython: true },
+    },
+  )
+  const system = String(messages[0]?.content)
+
+  assert.match(system, /one long-lived namespace/)
+  assert.match(system, /run its tests, scripts, CLIs, builds, and dependency checks with `sh/)
+  assert.match(system, /read\(path, start_line=1, end_line=None, hashline=False\)/)
+  assert.match(system, /edit\(path, target, content\)/)
+  assert.match(system, /Hashes are authoritative when line numbers drift/)
+  assert.match(system, /out\.list\(\).*out\.page.*out\.tail.*out\.grep/s)
+  assert.match(system, /glob\(pattern.*grep\(pattern/s)
+  assert.match(system, /kernel starts in the attached workspace.*Do not repeat imports, cwd setup/s)
+  assert.match(system, /niri\.whoami\(\).*niri\.deadline\(\)/s)
+  assert.match(system, /await niri\.budget\(\)/)
+  assert.match(system, /Every other `niri` server method is a coroutine/)
+  assert.match(system, /NiriNotFound/)
+  assert.match(system, /deadline first interrupts the active cell while preserving the namespace/)
+})
+
 test("bootstrap restores a rest summary as its own provenance-bearing message", async () => {
   const forest = "[context summary v1]\n[segments]\n[context-summary-id sum_00000000-0000-4000-8000-000000000000]\nolder living summary"
   const messages = await buildBootstrap(

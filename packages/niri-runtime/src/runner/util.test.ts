@@ -12,6 +12,8 @@ import {
   COMPACTION_RECOLLECTION_PROMPT,
   COMPACTION_RECOLLECTION_TURN_INSTRUCTION,
   PRIMARY_FAILOVER_FILE,
+  FALLBACK_TOOL_CHOICE,
+  PRIMARY_TOOL_CHOICE,
   PRIMARY_QUOTA_RETRY_MS,
   REST_SNAPSHOT_FILE,
   clearPrimaryFailover,
@@ -23,6 +25,10 @@ import {
   loadRestSnapshot,
   primaryFailoverStatus,
   recordPrimaryQuotaFailover,
+  recordSummaryProviderFailure,
+  recordSummaryProviderSuccess,
+  recordSummaryProviderUnusable,
+  resetSummaryProviderCircuits,
   restForestFromMessages,
   sanitizeMessages,
   saveRestSnapshot,
@@ -32,6 +38,7 @@ import {
   summarizeConversationViaLLM,
   summarizeConversationViaLLMWithProvenance,
   summarizeContextSummaryBatchViaLLM,
+  summaryProviderCircuitStatus,
 } from "./util"
 
 test("countConversationCompactionCandidates excludes the prior summary and preserved tail", () => {
@@ -46,6 +53,99 @@ test("countConversationCompactionCandidates excludes the prior summary and prese
     countConversationCompactionCandidates(messages, { recentMinKeep: 6, recentMaxKeep: 6 }),
     8,
   )
+})
+
+test("tool choice defaults to automatic selection", () => {
+  assert.equal(PRIMARY_TOOL_CHOICE, "auto")
+  assert.equal(FALLBACK_TOOL_CHOICE, "auto")
+})
+
+test("summary provider circuit permanently disables billing failures", () => {
+  resetSummaryProviderCircuits()
+  const client = new OpenAI({ apiKey: "test", baseURL: "https://summary-billing.invalid/v1" })
+  try {
+    const error = new OpenAI.APIError(402, { error: { message: "payment required" } }, "402 payment required", undefined)
+    const opened = recordSummaryProviderFailure(client, "summary-model", error, 1_000)
+
+    assert.equal(opened.open, true)
+    assert.equal(opened.permanent, true)
+    assert.equal(opened.disabledUntil, null)
+    assert.equal(summaryProviderCircuitStatus(client, "summary-model", Number.MAX_SAFE_INTEGER).open, true)
+  } finally {
+    resetSummaryProviderCircuits()
+  }
+})
+
+test("summary provider circuit backs off transient failures and resets after success", () => {
+  resetSummaryProviderCircuits()
+  const client = new OpenAI({ apiKey: "test", baseURL: "https://summary-transient.invalid/v1" })
+  try {
+    const error = new OpenAI.APIError(429, { error: { message: "rate limited" } }, "429 rate limited", undefined)
+    const first = recordSummaryProviderFailure(client, "summary-model", error, 1_000)
+    assert.equal(first.disabledUntil, 31_000)
+    assert.equal(summaryProviderCircuitStatus(client, "summary-model", 30_999).open, true)
+    assert.equal(summaryProviderCircuitStatus(client, "summary-model", 31_000).open, false)
+
+    const second = recordSummaryProviderFailure(client, "summary-model", error, 31_000)
+    assert.equal(second.disabledUntil, 91_000)
+    recordSummaryProviderSuccess(client, "summary-model")
+    assert.deepEqual(summaryProviderCircuitStatus(client, "summary-model"), {
+      open: false,
+      permanent: false,
+      disabledUntil: null,
+      failures: 0,
+      reason: null,
+    })
+  } finally {
+    resetSummaryProviderCircuits()
+  }
+})
+
+test("summary provider circuit cools down unusable responses", () => {
+  resetSummaryProviderCircuits()
+  const client = new OpenAI({ apiKey: "test", baseURL: "https://summary-unusable.invalid/v1" })
+  try {
+    const opened = recordSummaryProviderUnusable(client, "summary-model", "empty summary", 10_000)
+    assert.equal(opened.open, true)
+    assert.equal(opened.permanent, false)
+    assert.equal(opened.disabledUntil, 310_000)
+    assert.equal(opened.reason, "empty summary")
+  } finally {
+    resetSummaryProviderCircuits()
+  }
+})
+
+test("failed compaction calls trip the provider circuit before another request", async () => {
+  resetSummaryProviderCircuits()
+  let calls = 0
+  const client = {
+    baseURL: "https://summary-integration.invalid/v1",
+    chat: {
+      completions: {
+        create: async () => {
+          calls++
+          throw new OpenAI.APIError(402, { error: { message: "payment required" } }, "402 payment required", undefined)
+        },
+      },
+    },
+  } as unknown as OpenAI
+  const longTurn = "load-bearing transcript detail ".repeat(120)
+  const messages: Message[] = [
+    { role: "system", content: "bootstrap" },
+    { role: "user", content: longTurn },
+    { role: "assistant", content: longTurn },
+    { role: "user", content: longTurn },
+    { role: "assistant", content: longTurn },
+    { role: "user", content: "recent 1" },
+    { role: "assistant", content: "recent 2" },
+  ]
+  try {
+    assert.equal(await summarizeConversationViaLLM(messages, client, "summary-model", { recentMinKeep: 2, recentMaxKeep: 2 }), null)
+    assert.equal(await summarizeConversationViaLLM(messages, client, "summary-model", { recentMinKeep: 2, recentMaxKeep: 2 }), null)
+    assert.equal(calls, 1)
+  } finally {
+    resetSummaryProviderCircuits()
+  }
 })
 
 type AssistantMessageWithReasoning = OpenAI.Chat.ChatCompletionAssistantMessageParam & {

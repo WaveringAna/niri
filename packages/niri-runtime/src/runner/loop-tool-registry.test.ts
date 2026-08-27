@@ -105,3 +105,12 @@ test("client image validation checks decoded size and file signature", () => {
   )
   assert.throws(() => __toolRegistryTest.validateClientImage(image, data.length - 1), /safety limit/)
 })
+
+
+test("session boundary resets Python only when the client advertises it",async()=>{
+ const calls:Array<{tool:string;args:Record<string,unknown>}>=[];const client={getCapabilities:()=>["python"],execute:async(input:{tool:string;args:Record<string,unknown>})=>{calls.push({tool:input.tool,args:input.args});return {status:"ok",output:"reset"}}} as never
+ await __toolRegistryTest.resetClientPythonAtSessionBoundary({clientTools:client})
+ assert.deepEqual(calls,[{tool:"python",args:{action:"reset"}}])
+ const without={getCapabilities:()=>["shell"],execute:async()=>{throw new Error("must not run")}} as never
+ await __toolRegistryTest.resetClientPythonAtSessionBoundary({clientTools:without})
+})
