@@ -47,7 +47,7 @@ export function discordBatchEnabled(env: NodeJS.ProcessEnv = process.env): boole
   return asEnabled(env.DISCORD_GATEWAY_ENABLED, true) && Boolean(env.DISCORD_BOT_TOKEN?.trim())
 }
 
-const TRIGGER_SOURCES = new Set(["discord", "bsky", "webhook", "cron", "chat", "delegation"])
+const TRIGGER_SOURCES = new Set(["discord", "bsky", "webhook", "cron", "chat", "delegation", "process_job"])
 
 function parseMetricTypes(raw: string | undefined): MetricListType[] | undefined {
   if (!raw?.trim()) return undefined

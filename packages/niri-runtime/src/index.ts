@@ -16,6 +16,7 @@ import { startScheduler } from "./scheduler"
 import { clientTools } from "./client"
 import { startMcpServers, stopMcpServers } from "./mcp"
 import { initDelegation, stopDelegation } from "./delegation/manager"
+import { initProcessJobs, stopProcessJobs } from "./process-jobs"
 
 const PORT = Number.parseInt(process.env.PORT ?? "3000", 10)
 const WORKER_HOST = process.env.NIRI_WORKER_HOST?.trim() || "127.0.0.1"
@@ -64,6 +65,11 @@ async function main() {
   initDelegation((event, options) => {
     if (isRunning()) enqueueEvent(event, options)
     else void wake(event)
+  })
+  initProcessJobs(clientTools, (event) => {
+    if (isRunning()) return enqueueEvent(event)
+    void wake(event)
+    return true
   })
 
   let shuttingDown = false
@@ -129,6 +135,7 @@ async function main() {
     const cleanup = async () => {
       discordEmbeddingBackfill.stop()
       stopDelegation()
+      await stopProcessJobs()
       if (discordGateway) await discordGateway.stop()
       setDiscordToolsAvailable(false)
       await clientTools.stop()

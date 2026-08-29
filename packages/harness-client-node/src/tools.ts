@@ -13,7 +13,7 @@ import {
   normalizeTimeoutMs,
   resolveMaxLines,
 } from "./config.js"
-import { currentWorkingDirectory, runRaw, runShellSession, type ShellSessionAction } from "./shell.js"
+import { currentWorkingDirectory, runRaw, runShellSession, type ShellSessionAction, type ShellSessionResult } from "./shell.js"
 import { annotateHashlines, applyHashlineEdit } from "./hashline.js"
 import type { EditResult, ImageToolPayload } from "./types.js"
 
@@ -42,6 +42,34 @@ function boundedCommandOutput(raw: string, command: string, maxLines?: number): 
   return `[truncated — showing last ${cap} of ${lines.length} lines]\n${kept.join("\n")}`
 }
 
+export type CommandResult = { output: string; shell: ShellSessionResult }
+
+function formatShellResult(result: ShellSessionResult, action: ShellSessionAction, command: string, maxLines?: number): string {
+  const output = boundedCommandOutput(result.output, command, maxLines)
+  if (result.status === "running") {
+    const state = result.terminationRequested ? "termination requested" : "still running"
+    const note = `[shell session ${result.sessionId} is ${state}; call shell with action="poll" and session_id="${result.sessionId}" to check it${result.terminationRequested ? "." : `, or action="terminate" to stop it.`}]`
+    return output ? `${output}\n${note}` : note
+  }
+  if (action !== "start") {
+    const detail = result.signal ? `signal ${result.signal}` : `code ${result.exitCode ?? "unknown"}`
+    const note = `[shell session ${result.sessionId} ${result.status} with ${detail}.]`
+    return output ? `${output}\n${note}` : note
+  }
+  return output
+}
+
+export async function runCommandResult(input: RunCommandInput): Promise<CommandResult> {
+  const action = input.action ?? "start"
+  const command = String(input.command ?? "")
+  const shell = await runShellSession({
+    action, command,
+    ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+  })
+  return { shell, output: formatShellResult(shell, action, command, input.maxLines) }
+}
+
 export async function runCommand(input: RunCommandInput): Promise<string>
 export async function runCommand(command: string, maxLines?: number, timeoutMs?: number): Promise<string>
 export async function runCommand(
@@ -50,35 +78,9 @@ export async function runCommand(
   timeoutMs?: number,
 ): Promise<string> {
   const input: RunCommandInput = typeof inputOrCommand === "string"
-    ? {
-        command: inputOrCommand,
-        ...(maxLines !== undefined ? { maxLines } : {}),
-        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-      }
+    ? { command: inputOrCommand, ...(maxLines !== undefined ? { maxLines } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}) }
     : inputOrCommand
-  const action = input.action ?? "start"
-  const command = String(input.command ?? "")
-  const result = await runShellSession({
-    action,
-    command,
-    ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
-    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
-  })
-  const output = boundedCommandOutput(result.output, command, input.maxLines)
-
-  if (result.status === "running") {
-    const state = result.terminationRequested ? "termination requested" : "still running"
-    const note = `[shell session ${result.sessionId} is ${state}; call shell with action="poll" and session_id="${result.sessionId}" to check it${result.terminationRequested ? "." : `, or action="terminate" to stop it.`}]`
-    return output ? `${output}\n${note}` : note
-  }
-
-  if (action !== "start") {
-    const detail = result.signal ? `signal ${result.signal}` : `code ${result.exitCode ?? "unknown"}`
-    const note = `[shell session ${result.sessionId} ${result.status} with ${detail}.]`
-    return output ? `${output}\n${note}` : note
-  }
-
-  return output
+  return (await runCommandResult(input)).output
 }
 
 function normalizeImagePath(filePath: string): string {

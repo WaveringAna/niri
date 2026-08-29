@@ -357,6 +357,13 @@ class _Schedule:
     async def list(self, limit=50): """Coroutine: list scheduled messages."""; return await _host_call("schedule.list", {"limit": limit})
     async def cancel(self, id): """Coroutine: cancel a scheduled message."""; return await _host_call("schedule.cancel", {"id": id})
 
+class _Work:
+    async def create(self, title, note=""): """Coroutine: create durable current work."""; return await _host_call("work.create", {"title": title, "note": note})
+    async def list(self, status=None, limit=20): """Coroutine: list durable work items."""; return await _host_call("work.list", {"status": status, "limit": limit})
+    async def get(self, id): """Coroutine: get one durable work item."""; return await _host_call("work.get", {"id": id})
+    async def update(self, id, title=None, note=None, status=None): """Coroutine: update active or paused work."""; return await _host_call("work.update", {"id": id, **({"title": title} if title is not None else {}), **({"note": note} if note is not None else {}), **({"status": status} if status is not None else {})})
+    async def close(self, id, status="completed"): """Coroutine: close work as completed or cancelled."""; return await _host_call("work.close", {"id": id, "status": status})
+
 class _Aliases:
     async def list(self): """Coroutine: list memory aliases."""; return await _host_call("memory.alias.list", {})
     async def set(self, handle, canonical): """Coroutine: set a memory alias."""; return await _host_call("memory.alias.set", {"handle": handle, "canonical": canonical})
@@ -373,12 +380,13 @@ def _seconds_remaining(execution):
         return 0.0
 
 class _Niri:
-    """Persistent niri API namespaces: memory, soul, context, discord, schedule, aliases, and scratch."""
+    """Persistent niri API namespaces: memory, soul, context, discord, work, schedule, aliases, and scratch."""
     scratch = os.environ["NIRI_SCRATCH"]
     memory = _Memory()
     soul = _Soul()
     context = _Context()
     discord = _Discord()
+    work = _Work()
     schedule = _Schedule()
     aliases = _Aliases()
     async def budget(self):

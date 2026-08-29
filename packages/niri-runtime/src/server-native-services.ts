@@ -5,6 +5,7 @@ import { searchDiscordMessages } from "./discord/search"
 import { listAliases, removeAlias, searchMemories, setAlias } from "./memory"
 import { describeContextSummary, expandContextSummary, grepContext } from "./runner/context-store"
 import { readLoopBudget, type LoopBudget } from "./runner/loop-budget"
+import { WorkLedgerError, createWorkItem, getWorkItem, listWorkItems, updateWorkItem, closeWorkItem, type WorkItem, type WorkItemSummary } from "./work-ledger"
 import type { HostRpcMethod } from "@mira/harness-protocol"
 
 /**
@@ -143,6 +144,42 @@ export async function loopBudget(): Promise<LoopBudget> {
   return readLoopBudget()
 }
 
+function workService<T>(run: () => T): T {
+  try {
+    return run()
+  } catch (err) {
+    if (err instanceof WorkLedgerError) {
+      const code = err.message === "unknown work item" ? "not_found" : "invalid_argument"
+      throw new ServiceError(code, err.message)
+    }
+    throw err
+  }
+}
+
+export async function workCreate(args: ServiceArgs): Promise<WorkItem> {
+  return workService(() => createWorkItem({ title: args.title, ...(Object.hasOwn(args, "note") ? { note: args.note } : {}) }))
+}
+
+export async function workList(args: ServiceArgs): Promise<WorkItemSummary[]> {
+  return workService(() => listWorkItems({ status: args.status, limit: args.limit }))
+}
+
+export async function workGet(args: ServiceArgs): Promise<WorkItem> {
+  return workService(() => {
+    const item = getWorkItem(args.id)
+    if (!item) throw new WorkLedgerError("unknown work item")
+    return item
+  })
+}
+
+export async function workUpdate(args: ServiceArgs): Promise<WorkItem> {
+  return workService(() => updateWorkItem({ id: args.id, ...(Object.hasOwn(args, "title") ? { title: args.title } : {}), ...(Object.hasOwn(args, "note") ? { note: args.note } : {}), ...(Object.hasOwn(args, "status") ? { status: args.status } : {}) }))
+}
+
+export async function workClose(args: ServiceArgs): Promise<WorkItem> {
+  return workService(() => closeWorkItem({ id: args.id, status: args.status }))
+}
+
 export async function scheduleCreate(args: ServiceArgs): Promise<Schedule> {
   return createSchedule({ message: args.message, at: args.at, delayMs: args.delay_ms, repeatEveryMs: args.repeat_every_ms })
 }
@@ -175,6 +212,11 @@ const OPERATIONS: Record<HostRpcMethod, (args: ServiceArgs) => Promise<unknown>>
   "discord.search": discordSearch,
   "discord.channels": discordChannels,
   "loop.budget": loopBudget,
+  "work.create": workCreate,
+  "work.list": workList,
+  "work.get": workGet,
+  "work.update": workUpdate,
+  "work.close": workClose,
   "schedule.create": scheduleCreate,
   "schedule.list": scheduleList,
   "schedule.cancel": scheduleCancel,

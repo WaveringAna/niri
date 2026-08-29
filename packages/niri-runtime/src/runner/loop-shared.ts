@@ -6,6 +6,7 @@ export type FunctionToolCall = OpenAI.Chat.ChatCompletionMessageToolCall & { typ
 export type ToolArgs = {
   command?: string
   session_id?: string
+  job_id?: string
   task_id?: string
   profile?: string
   objective?: string

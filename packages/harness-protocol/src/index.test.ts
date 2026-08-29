@@ -81,3 +81,21 @@ test("host RPC parsers validate methods, dates, args, and results", () => {
  assert.equal(parseHostRpcResult({type:"host.result",requestId:"r1",status:"error",completedAt:now.toISOString()}),null)
  assert.equal(parseHostRpcResult({type:"host.result",requestId:"r1",status:"ok",result:{x:1},completedAt:now.toISOString()})?.status,"ok")
 })
+
+
+test("host RPC accepts listed work methods only", () => {
+ const now=new Date(); const base={type:"host.call",requestId:"r",outerInvocationId:"i",args:{},issuedAt:now.toISOString(),deadlineAt:new Date(now.getTime()+1000).toISOString()}
+ assert.equal(parseHostRpcRequest({...base,method:"work.list"})?.method,"work.list")
+ assert.equal(parseHostRpcRequest({...base,method:"work.delete"}),null)
+})
+
+
+test("tool results preserve validated typed shell session state", () => {
+  const base = { type: "tool.result", invocationId: "i", agentId: "a", status: "ok", completedAt: new Date().toISOString() }
+  const parsed = parseClientToolResult({ ...base, output: "hello", shell: {
+    sessionId: "sh_123", status: "running", output: "hello", exitCode: null, signal: null, terminationRequested: false,
+  } })
+  assert.equal(parsed?.shell?.sessionId, "sh_123")
+  assert.equal(parseClientToolResult({ ...base, shell: { sessionId: "", status: "wat", output: 1, exitCode: "0", signal: 1, terminationRequested: "no" } }), null)
+  assert.equal(parseClientToolResult(base)?.shell, undefined)
+})

@@ -29,10 +29,16 @@ import {
   scheduleCancel,
   scheduleCreate,
   scheduleList,
+  workClose,
+  workCreate,
+  workGet,
+  workList,
+  workUpdate,
   soulRead,
   soulWrite,
 } from "../server-native-services"
 import { emit } from "../stream"
+import { cancelProcessJob, getProcessJob, listProcessJobs, startProcessJob } from "../process-jobs"
 import type { Message } from "../types"
 import { archiveContextMessages, recordRestContextSnapshot } from "./context-store"
 import { commitLcmCompaction } from "./lcm-compaction"
@@ -273,6 +279,23 @@ export function buildToolHandlers(
 ): Record<string, ToolHandler> {
   const emitClientToolEvents = options.emitClientToolEvents !== false
   return {
+    process_job: async ({ convId, state, call, args }) => {
+      const action = String(args.action ?? "").trim()
+      const jobId = String(args.job_id ?? "").trim()
+      try {
+        let result: unknown
+        if (action === "start") result = await startProcessJob(args.command)
+        else if (action === "get") { if (!jobId) throw new Error("process_job get requires job_id"); result = getProcessJob(jobId) }
+        else if (action === "list") result = listProcessJobs(args.limit)
+        else if (action === "cancel") { if (!jobId) throw new Error("process_job cancel requires job_id"); result = await cancelProcessJob(jobId) }
+        else throw new Error("process_job action must be start, get, list, or cancel")
+        recordToolResult(convId, state, call, "process_job", { action, job_id: jobId || (typeof result === "object" && result && "id" in result ? String((result as { id: unknown }).id) : undefined) }, JSON.stringify(result, null, 2))
+      } catch (err) {
+        recordToolResult(convId, state, call, "process_job", { action, job_id: jobId || undefined }, toolError(err))
+      }
+      return {}
+    },
+
     delegate: async ({ convId, state, call, args }) => {
       const action = String(args.action ?? "").trim()
       const taskId = String(args.task_id ?? "").trim()
@@ -395,7 +418,7 @@ export function buildToolHandlers(
         logArgKeys: ["action", "timeout_ms"] as const,
         runArgKeys: [] as const,
         run: () => executeClientText(hooks, ctx, "python"),
-        emitArgKeys: ["action"] as const,
+        emitArgKeys: ["action", "code", "timeout_ms"] as const,
         emitEvent: emitClientToolEvents,
       }),
 
@@ -551,6 +574,25 @@ export function buildToolHandlers(
         runArgKeys: ["query", "case_insensitive"] as const,
         run: (query, case_insensitive) => memoryGrep({ query, case_insensitive }),
         emitArgKeys: ["query"] as const,
+        previewChars: 0,
+      }),
+
+    work: (ctx) =>
+      runStandardTool(ctx, {
+        name: "work",
+        logArgKeys: ["action", "id", "title", "status", "limit"] as const,
+        runArgKeys: ["action", "id", "title", "note", "status", "limit"] as const,
+        run: async (action, id, title, note, status, limit) => {
+          switch (action) {
+            case "create": return JSON.stringify(await workCreate({ title, ...(note !== undefined ? { note } : {}) }), null, 2)
+            case "list": return JSON.stringify(await workList({ ...(status !== undefined ? { status } : {}), ...(limit !== undefined ? { limit } : {}) }), null, 2)
+            case "get": return JSON.stringify(await workGet({ id }), null, 2)
+            case "update": return JSON.stringify(await workUpdate({ id, ...(title !== undefined ? { title } : {}), ...(note !== undefined ? { note } : {}), ...(status !== undefined ? { status } : {}) }), null, 2)
+            case "close": return JSON.stringify(await workClose({ id, status }), null, 2)
+            default: throw new Error("action must be create, list, get, update, or close")
+          }
+        },
+        emitArgKeys: ["action"] as const,
         previewChars: 0,
       }),
 

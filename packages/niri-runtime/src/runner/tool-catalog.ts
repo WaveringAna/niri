@@ -11,6 +11,7 @@ export type NiriToolCatalogOptions = {
   memory?: boolean
   discord?: boolean
   delegationProfiles?: string[]
+  processJobs?: boolean
 }
 
 const functionTool = (name: string, description: string, parameters: JsonSchema): ToolDefinition => ({
@@ -344,7 +345,37 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
     )
   }
 
+  if (options.processJobs) {
+    tools.push(functionTool(
+      "process_job",
+      "Start a background shell job with a durable runtime record. Start returns promptly with a job id. Completion enters the event queue without raw output; use get for an explicit bounded tail, list for compact previews, and cancel is idempotent. Commands are stored only as hashes and are never replayed after restart; a client-host restart can make the OS process lost.",
+      { type: "object", additionalProperties: false, properties: {
+        action: { type: "string", enum: ["start", "get", "list", "cancel"] },
+        command: { type: "string", description: "Shell command; required for start." },
+        job_id: { type: "string", description: "Process job id; required for get or cancel." },
+        limit: { type: "integer", minimum: 1, maximum: 100 },
+      }, required: ["action"] },
+    ))
+  }
+
   tools.push(
+    functionTool(
+      "work",
+      "Manage durable current work. Create, list, get, update, or close items. Active and paused work is shown on fresh or restored wakes; list is preview-only and get returns one full item.",
+      {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          action: { type: "string", enum: ["create", "list", "get", "update", "close"] },
+          id: { type: "string", description: "Work item id (work_...)." },
+          title: { type: "string" },
+          note: { type: "string" },
+          status: { type: "string", enum: ["active", "paused", "completed", "cancelled", "all"] },
+          limit: { type: "integer", minimum: 1, maximum: 50 },
+        },
+        required: ["action"],
+      },
+    ),
     functionTool(
       "schedule",
       "Manage scheduled reminders that wake this agent later. 'set' creates a one-shot or repeating reminder (exactly one of 'at' or 'delay_ms'), 'list' shows pending reminders, 'cancel' removes one by id.",

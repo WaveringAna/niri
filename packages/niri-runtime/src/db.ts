@@ -246,6 +246,20 @@ export function initDb(): void {
     create index if not exists idx_delegation_profile_feedback_order
       on delegation_profile_feedback(profile, created_at desc);
 
+    create table if not exists work_items (
+      id         text primary key,
+      title      text not null,
+      note       text not null default '',
+      status     text not null default 'active'
+                   check (status in ('active', 'paused', 'completed', 'cancelled')),
+      created_at text not null,
+      updated_at text not null,
+      closed_at  text
+    );
+
+    create index if not exists idx_work_items_current
+      on work_items(status, updated_at desc);
+
     create table if not exists memory_documents (
       id           integer primary key autoincrement,
       path         text    not null unique,

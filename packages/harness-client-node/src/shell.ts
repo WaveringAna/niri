@@ -15,6 +15,13 @@ import type { RunRawOptions } from "./types.js"
 export type ShellSessionAction = "start" | "poll" | "terminate"
 export type ShellSessionStatus = "running" | "exited" | "terminated" | "failed"
 
+export class UnknownShellSessionError extends Error {
+  constructor(readonly sessionId: string) {
+    super(`unknown shell session: ${sessionId}`)
+    this.name = "UnknownShellSessionError"
+  }
+}
+
 export type ShellSessionResult = {
   sessionId: string
   status: ShellSessionStatus
@@ -268,7 +275,7 @@ export async function runShellSession(input: {
   const sessionId = String(input.sessionId ?? "").trim()
   if (!sessionId) throw new Error(`session_id is required when shell action is ${action}`)
   const session = shellSessions.get(sessionId)
-  if (!session) throw new Error(`unknown shell session: ${sessionId}`)
+  if (!session) throw new UnknownShellSessionError(sessionId)
 
   if (action === "terminate" && session.status === "running") {
     session.terminationRequested = true
@@ -278,7 +285,9 @@ export async function runShellSession(input: {
 
   await waitForSession(session, timeoutMs)
   if (session.error) throw session.error
-  return takeSessionResult(session)
+  const result = takeSessionResult(session)
+  if (result.status !== "running") shellSessions.delete(session.id)
+  return result
 }
 
 export async function closeShellSessions(): Promise<void> {

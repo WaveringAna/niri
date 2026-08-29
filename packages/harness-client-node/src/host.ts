@@ -18,8 +18,8 @@ import {
   configureNodeToolRuntime,
   type NodeToolRuntimeOptions,
 } from "./config.js"
-import { editFile, readBlobChunk, readFile, readImageForModel, runCommand, writeFile } from "./tools.js"
-import { closeShellSessions } from "./shell.js"
+import { editFile, readBlobChunk, readFile, readImageForModel, runCommandResult, writeFile } from "./tools.js"
+import { closeShellSessions, UnknownShellSessionError } from "./shell.js"
 import { PythonKernelManager } from "./python-kernel.js"
 
 export type NodeToolHostOptions = {
@@ -89,6 +89,7 @@ export class NodeToolHost implements ClientToolHost {
       imageRoot: IMAGE_ROOT,
       platform: options.workspace?.platform?.trim() || process.platform,
       persistentShell: false,
+      shellSessionResults: this.capabilities.includes("shell"),
       persistentPython: this.capabilities.includes("python"),
     }
   }
@@ -135,14 +136,31 @@ export class NodeToolHost implements ClientToolHost {
     try {
       this.assertActiveRuntime()
       await this.start()
+      if (invocation.tool === "shell") {
+        try {
+          const result = await runCommandResult({
+            action: invocation.args.action === "poll" || invocation.args.action === "terminate" ? invocation.args.action : "start",
+            ...(typeof invocation.args.command === "string" ? { command: invocation.args.command } : {}),
+            ...(typeof invocation.args.session_id === "string" ? { sessionId: invocation.args.session_id } : {}),
+            ...(typeof invocation.args.max_lines === "number" ? { maxLines: invocation.args.max_lines } : {}),
+            ...(typeof invocation.args.timeout_ms === "number" ? { timeoutMs: invocation.args.timeout_ms } : {}),
+          })
+          return { type: "tool.result", invocationId: invocation.invocationId, agentId: invocation.agentId,
+            status: "ok", output: boundedText(result.output), shell: result.shell, completedAt: new Date().toISOString() }
+        } catch (error) {
+          if (error instanceof UnknownShellSessionError) {
+            return { type: "tool.result", invocationId: invocation.invocationId, agentId: invocation.agentId,
+              status: "unknown", output: `[unknown shell session ${error.sessionId}]`,
+              shell: { sessionId: error.sessionId, status: "unknown", output: "", exitCode: null, signal: null, terminationRequested: false },
+              completedAt: new Date().toISOString() }
+          }
+          throw error
+        }
+      }
       const output = await this.executeTool(invocation.tool, invocation.args, invocation)
       return {
-        type: "tool.result",
-        invocationId: invocation.invocationId,
-        agentId: invocation.agentId,
-        status: "ok",
-        ...(typeof output === "string" ? { output: boundedText(output) } : { image: output }),
-        completedAt: new Date().toISOString(),
+        type: "tool.result", invocationId: invocation.invocationId, agentId: invocation.agentId,
+        status: "ok", ...(typeof output === "string" ? { output: boundedText(output) } : { image: output }), completedAt: new Date().toISOString(),
       }
     } catch (error) {
       const result = errorResult(invocation, error)
@@ -158,6 +176,8 @@ export class NodeToolHost implements ClientToolHost {
 
   private async executeTool(tool: ClientToolName, args: Record<string, unknown>, invocation: ToolInvocation): Promise<string | ClientImageArtifact> {
     switch (tool) {
+      // Shell is handled in execute() so its typed session result can cross the protocol.
+      case "shell": throw new Error("shell must be handled by execute")
       case "python": {
         const action = args.action === "reset" ? "reset" : "execute"
         if (action === "reset") {
@@ -177,16 +197,6 @@ export class NodeToolHost implements ClientToolHost {
         if (result.status === "cancelled") throw new CancelledExecutionError(result.output || "Python execution cancelled")
         if (result.status !== "ok") throw new Error(result.output || `Python execution ${result.status}`)
         return result.output || "(no output)"
-      }
-      case "shell": {
-        const output = await runCommand({
-          action: args.action === "poll" || args.action === "terminate" ? args.action : "start",
-          ...(typeof args.command === "string" ? { command: args.command } : {}),
-          ...(typeof args.session_id === "string" ? { sessionId: args.session_id } : {}),
-          ...(typeof args.max_lines === "number" ? { maxLines: args.max_lines } : {}),
-          ...(typeof args.timeout_ms === "number" ? { timeoutMs: args.timeout_ms } : {}),
-        })
-        return output || "(no output)"
       }
       case "read_file": {
         const output = await readFile(

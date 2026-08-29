@@ -14,7 +14,7 @@ export type StreamEvent =
       tokensPerSecond?: number
     }
 
-export type TriggerSource = "discord" | "bsky" | "webhook" | "cron" | "chat" | "delegation"
+export type TriggerSource = "discord" | "bsky" | "webhook" | "cron" | "chat" | "delegation" | "process_job"
 
 export interface UserMessage {
   source: TriggerSource

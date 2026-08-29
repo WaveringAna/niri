@@ -85,6 +85,21 @@ function mirrorWorkerEvents(raw: unknown, agentId?: string): void {
   for (const event of events) mirrorWorkerEvent(event, agentId)
 }
 
+function compactToolValue(value: unknown, key = "", depth = 0): unknown {
+  if (/(?:api[_-]?key|authorization|cookie|password|secret|token)/iu.test(key)) return "[redacted]"
+  if (typeof value === "string") return value.length > 320 ? `${value.slice(0, 317)}...` : value
+  if (typeof value === "number" || typeof value === "boolean" || value === null) return value
+  if (depth >= 3) return "[nested value]"
+  if (Array.isArray(value)) return value.slice(0, 12).map((item) => compactToolValue(item, key, depth + 1))
+  if (!value || typeof value !== "object") return String(value ?? "")
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .slice(0, 24)
+      .map(([childKey, childValue]) => [childKey, compactToolValue(childValue, childKey, depth + 1)]),
+  )
+}
+
+
 function compactWorkerEventForChat(raw: unknown): WorkerEvent | null {
   if (!looksLikeWorkerEvent(raw)) return null
   const payload = raw.payload && typeof raw.payload === "object" ? (raw.payload as Record<string, unknown>) : {}
@@ -109,6 +124,17 @@ function compactWorkerEventForChat(raw: unknown): WorkerEvent | null {
           totalTokens: numeric("totalTokens"),
           elapsedMs: numeric("elapsedMs"),
           tokensPerSecond: numeric("tokensPerSecond"),
+        },
+      }
+    }
+    if (type === "tool" && typeof payload.name === "string") {
+      return {
+        ...raw,
+        payload: {
+          type,
+          name: payload.name,
+          args: compactToolValue(payload.args),
+          result: compactText(typeof payload.result === "string" ? payload.result : "", 4_000),
         },
       }
     }

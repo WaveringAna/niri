@@ -6,6 +6,9 @@ test("Niri catalog keeps server tools separate from client capabilities", () => 
   const names = createNiriToolCatalog({ discord: false }).map((tool) => tool.function.name)
   assert.equal(names.includes("shell"), false)
   assert.equal(names.includes("memory_search"), true)
+  assert.equal(names.includes("work"), true)
+  const work = createNiriToolCatalog({ discord: false }).find((tool) => tool.function.name === "work")!
+  assert.equal(work.function.parameters.additionalProperties, false)
   assert.equal(names.includes("discord_send"), false)
 })
 
@@ -46,4 +49,13 @@ test("Python replaces legacy model-facing workspace tools by default with a comp
   delete process.env.NIRI_LEGACY_WORKSPACE_TOOLS
   assert.deepEqual(modelFacingClientCapabilities(["shell","read_file"]),["shell","read_file"])
  } finally {if(prior===undefined)delete process.env.NIRI_LEGACY_WORKSPACE_TOOLS;else process.env.NIRI_LEGACY_WORKSPACE_TOOLS=prior}
+})
+
+
+test("process_job is opt-in and has the closed lifecycle actions", () => {
+  assert.equal(createNiriToolCatalog().some((tool) => tool.function.name === "process_job"), false)
+  const tool = createNiriToolCatalog({ processJobs: true }).find((candidate) => candidate.function.name === "process_job")
+  assert.ok(tool)
+  const action = (tool.function.parameters.properties as Record<string, { enum?: string[] }>).action
+  assert.deepEqual(action?.enum, ["start", "get", "list", "cancel"])
 })

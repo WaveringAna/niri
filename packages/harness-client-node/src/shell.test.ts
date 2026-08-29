@@ -120,6 +120,7 @@ test("shell timeout yields a resumable session without killing descendants", asy
     const completed = await runCommand({ action: "poll", sessionId, timeoutMs: 2_000, maxLines: 0 })
     assert.match(completed, /descendant-finished/)
     assert.match(completed, /exited with code 0/)
+    await assert.rejects(runCommand({ action: "poll", sessionId, timeoutMs: 100, maxLines: 0 }), /unknown shell session/)
     assert.equal(await fs.readFile(marker, "utf8"), "finished")
   } finally {
     await fs.rm(dir, { recursive: true, force: true })
@@ -133,4 +134,5 @@ test("shell sessions stop only after explicit termination", async () => {
 
   const terminated = await runCommand({ action: "terminate", sessionId, timeoutMs: 5_000, maxLines: 0 })
   assert.match(terminated, /terminated with signal SIGTERM/)
+  await assert.rejects(runCommand({ action: "poll", sessionId, timeoutMs: 100, maxLines: 0 }), /unknown shell session/)
 })

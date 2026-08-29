@@ -33,9 +33,14 @@ export function emit(event: StreamEvent): void {
     endConsoleText()
     if (event.type === "user") console.log(`[user/${event.source}] ${event.text}`)
   }
-  buffer.push(event)
+  // Tool payloads can be large; bound the streamed copy. Full results remain in
+  // the conversation archive, so replay/display stays cheap.
+  const publishable = event.type === "tool" && typeof event.result === "string" && event.result.length > 4_000
+    ? { ...event, result: `${event.result.slice(0, 3_999)}…` }
+    : event
+  buffer.push(publishable)
   if (buffer.length > BUFFER_SIZE) buffer.shift()
-  publishWorkerEvent("stream.event", event)
+  publishWorkerEvent("stream.event", publishable)
   for (const fn of listeners) fn(event)
 }
 

@@ -11,6 +11,8 @@ export type WorkspaceDescriptor = {
   platform?: string
   persistentShell?: boolean
   persistentPython?: boolean
+  /** Client can return typed shell session state in tool results. */
+  shellSessionResults?: boolean
 }
 
 export type ToolInvocation = {
@@ -32,6 +34,15 @@ export type ClientImageArtifact = {
   dataUrl: string
 }
 
+export type ClientShellSessionResult = {
+  sessionId: string
+  status: "running" | "exited" | "terminated" | "failed" | "unknown"
+  output: string
+  exitCode: number | null
+  signal: string | null
+  terminationRequested: boolean
+}
+
 export type ClientToolResult = {
   type: "tool.result"
   invocationId: string
@@ -39,6 +50,8 @@ export type ClientToolResult = {
   status: "ok" | "error" | "cancelled" | "unknown"
   output?: string
   image?: ClientImageArtifact
+  /** Typed result for shell sessions; output remains the model-facing text. */
+  shell?: ClientShellSessionResult
   completedAt: string
 }
 
@@ -108,6 +121,17 @@ export function parseClientToolResult(value: unknown): ClientToolResult | null {
 
   const image = input.image === undefined ? null : record(input.image)
   if (input.image !== undefined && !image) return null
+  const shell = input.shell === undefined ? null : record(input.shell)
+  if (input.shell !== undefined && !shell) return null
+  if (
+    shell &&
+    (!nonEmptyString(shell.sessionId) ||
+      !["running", "exited", "terminated", "failed", "unknown"].includes(String(shell.status)) ||
+      typeof shell.output !== "string" ||
+      !(typeof shell.exitCode === "number" && Number.isSafeInteger(shell.exitCode) || shell.exitCode === null) ||
+      !(typeof shell.signal === "string" || shell.signal === null) ||
+      typeof shell.terminationRequested !== "boolean")
+  ) return null
   if (
     image &&
     (!nonEmptyString(image.path) ||
@@ -139,6 +163,13 @@ export function parseClientToolResult(value: unknown): ClientToolResult | null {
           },
         }
       : {}),
+    ...(shell ? {
+      shell: {
+        sessionId: String(shell.sessionId), status: shell.status as ClientShellSessionResult["status"],
+        output: String(shell.output), exitCode: shell.exitCode as number | null,
+        signal: shell.signal as string | null, terminationRequested: Boolean(shell.terminationRequested),
+      },
+    } : {}),
     completedAt: input.completedAt,
   }
 }
@@ -151,6 +182,7 @@ export const HOST_RPC_METHODS = [
   "context.grep", "context.describe", "context.expand",
   "discord.inbox", "discord.backread", "discord.search", "discord.channels",
   "loop.budget",
+  "work.create", "work.list", "work.get", "work.update", "work.close",
   "schedule.create", "schedule.list", "schedule.cancel",
 ] as const
 

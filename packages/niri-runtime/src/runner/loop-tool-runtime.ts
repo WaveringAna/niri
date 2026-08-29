@@ -57,6 +57,24 @@ function hasToolResponse(state: LoopState, call: FunctionToolCall): boolean {
   )
 }
 
+function streamToolValue(value: unknown, key = "", depth = 0): unknown {
+  if (/(?:api[_-]?key|authorization|cookie|password|secret|token)/iu.test(key)) return "[redacted]"
+  if (typeof value === "string") return value.length > 1_000 ? `${value.slice(0, 997)}...` : value
+  if (typeof value === "number" || typeof value === "boolean" || value === null) return value
+  if (depth >= 4) return "[nested value]"
+  if (Array.isArray(value)) return value.slice(0, 20).map((item) => streamToolValue(item, key, depth + 1))
+  if (!value || typeof value !== "object") return String(value ?? "")
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .slice(0, 32)
+      .map(([childKey, childValue]) => [childKey, streamToolValue(childValue, childKey, depth + 1)]),
+  )
+}
+
+function streamToolArgs(args: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(args).map(([key, value]) => [key, streamToolValue(value, key)]))
+}
+
 /**
  * Records a tool result and emits it to stream subscribers.
  *
@@ -77,7 +95,7 @@ export function recordToolResult(
   content: string,
 ): string {
   const result = pushToolMessage(convId, state, call, content)
-  emit({ type: "tool", name, args, result })
+  emit({ type: "tool", name, args: streamToolArgs(args), result })
   return result
 }
 

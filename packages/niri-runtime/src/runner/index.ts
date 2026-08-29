@@ -13,6 +13,7 @@ import { clearSession, loadRestSnapshot, loadSession, saveRestSnapshot, saveSess
 import type { UserMessage } from "../types"
 import { getMcpToolDefinitions } from "../mcp"
 import { delegationProfileNames, isDelegationAvailable } from "../delegation/manager"
+import { formatCurrentWorkForWake } from "../work-ledger"
 
 let eventResolvers: Array<(event: UserMessage | null) => void> = []
 let shutdownResolvers: Array<() => void> = []
@@ -26,6 +27,7 @@ function currentToolCatalog() {
       memory: true,
       discord: areDiscordToolsAvailable(),
       delegationProfiles: isDelegationAvailable() ? delegationProfileNames() : [],
+      processJobs: Boolean(clientTools.getWorkspace()?.shellSessionResults),
     }),
     ...getMcpToolDefinitions(),
   ]
@@ -302,9 +304,12 @@ export async function wake(event: UserMessage): Promise<void> {
   state.memoryRecallPending = true
 
   const saved = await loadSession()
+  // The ledger is SQLite-owned state, so fetch it once immediately before this wake.
+  const currentWork = formatCurrentWorkForWake()
   if (saved) {
     state.conversation = normalizeActiveContextSummaryDepths(saved)
     autoSeeDiscordEvent(event)
+    if (currentWork) state.conversation.push({ role: "user", content: currentWork })
     state.conversation.push({
       role: "user",
       content: `[harness restarted — ${event.source} @ ${event.triggeredAt}]\n\n${event.content}`,
@@ -316,6 +321,7 @@ export async function wake(event: UserMessage): Promise<void> {
       workspace: clientTools.getWorkspace(),
       discord: areDiscordToolsAvailable(),
       delegationProfiles: isDelegationAvailable() ? delegationProfileNames() : [],
+            currentWork,
     }))
   }
 

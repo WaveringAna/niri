@@ -58,7 +58,9 @@ remaining = niri.deadline()
 assert 0 < remaining <= 5
 assert info["host_rpc"] is False
 assert niri.memory.search.__doc__
-assert "Coroutine" in niri.memory.search.__doc__`},5000))
+assert "Coroutine" in niri.memory.search.__doc__
+assert niri.work.list.__doc__
+assert "Coroutine" in niri.work.list.__doc__`},5000))
   assert.equal(result.status,"ok")
  } finally { await host.stop(); await fs.rm(workspace,{recursive:true,force:true}) }
 })

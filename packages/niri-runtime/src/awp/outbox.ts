@@ -31,7 +31,7 @@ function shouldPersistWorkerEvent(type: WorkerEventType, payload: unknown): bool
 
   if (type === "stream.event") {
     if (!isRecord(payload)) return false
-    return payload.type === "user" || payload.type === "usage"
+    return payload.type === "user" || payload.type === "usage" || payload.type === "tool"
   }
 
   return true

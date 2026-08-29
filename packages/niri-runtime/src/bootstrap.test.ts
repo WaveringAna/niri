@@ -80,3 +80,12 @@ test("bootstrap restores the complete active summary frontier", async () => {
   assert.equal(messages[2]?.content, forests[1])
   assert.match(String(messages[3]?.content), /context_segments_restored: 2/)
 })
+
+
+test("bootstrap injects current work immediately before the wake", async () => {
+  const marker = "[current work ledger — durable state]\n- [active] work_x — test"
+  const messages = await buildBootstrap({ source: "chat", triggeredAt: new Date().toISOString(), content: "wake", raw: null }, null, { currentWork: marker })
+  assert.equal(messages.at(-2)?.content, marker)
+  assert.match(String(messages.at(-1)?.content), /^\[wake\]/)
+  assert.match(String(messages[0]?.content), /`work`/)
+})

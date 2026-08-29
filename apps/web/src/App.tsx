@@ -161,6 +161,7 @@ type ChatLine = {
   label: string
   text: string
   detail?: string
+  toolArgs?: Record<string, unknown>
 }
 
 const PANEL_COOKIE = "niri_control_panels"
@@ -390,6 +391,67 @@ function toolLabel(text: string): string {
   return `${first.slice(0, 79)}...`
 }
 
+function truncateInline(text: string, maxChars: number): string {
+  const single = text.replace(/\s+/gu, " ").trim()
+  return single.length > maxChars ? `${single.slice(0, maxChars - 1)}…` : single
+}
+
+function codeSummary(code: string): string {
+  const lineCount = code.split("\n").length
+  const first = code.split("\n").find((line) => line.trim()) ?? ""
+  return `${lineCount} line${lineCount === 1 ? "" : "s"} · ${truncateInline(first, 90)}`
+}
+
+function toolArgsSummary(name: string, args: Record<string, unknown>): string {
+  const parts: string[] = []
+  const str = (key: string): string | undefined => {
+    const value = args[key]
+    return typeof value === "string" && value.trim() ? value : undefined
+  }
+  const action = str("action")
+  if (action) parts.push(action)
+  if (name === "python") {
+    const code = str("code")
+    if (code) parts.push(codeSummary(code))
+  }
+  const command = str("command")
+  if (command) parts.push(`$ ${truncateInline(command, 160)}`)
+  const path = str("path")
+  if (path) parts.push(truncateInline(path, 80))
+  const query = str("query")
+  if (query) parts.push(`"${truncateInline(query, 60)}"`)
+  const title = str("title")
+  if (title) parts.push(`"${truncateInline(title, 60)}"`)
+  const sessionId = str("session_id")
+  if (sessionId) parts.push(sessionId)
+  const jobId = str("job_id")
+  if (jobId) parts.push(jobId)
+  const taskId = str("task_id")
+  if (taskId) parts.push(truncateInline(taskId, 44))
+  const workId = str("id")
+  if (workId && !jobId) parts.push(truncateInline(workId, 44))
+  const mode = str("mode")
+  if (mode) parts.push(mode)
+  const status = str("status")
+  if (status) parts.push(status)
+  if (typeof args.limit === "number") parts.push(`limit ${args.limit}`)
+  const note = str("note")
+  if (note) parts.push(truncateInline(note, 60))
+  const message = str("message")
+  if (message) parts.push(`"${truncateInline(message, 60)}"`)
+  return parts.join(" · ")
+}
+
+function toolLineLabel(name: string, argsValue: unknown): string {
+  const args = argsValue && typeof argsValue === "object" ? (argsValue as Record<string, unknown>) : {}
+  const summary = toolArgsSummary(name, args)
+  return summary ? `${name} ${summary}` : name
+}
+
+function toolDedupeKey(text: string): string {
+  return text.trimStart().slice(0, 300)
+}
+
 function discordContextLine(text: string): Pick<ChatLine, "kind" | "label" | "text" | "detail"> {
   const stats = text.match(/new_messages=(\d+).*?channels=(\d+).*?pending_inbox=(\d+)/s)
   const recent = text.match(/recent messages:\s*([\s\S]*?)(?:\n\npending preview:|$)/)
@@ -455,12 +517,16 @@ function linesFromEvents(events: WorkerEvent[]): ChatLine[] {
   const lines: ChatLine[] = []
   const sorted = [...events].sort((a, b) => a.seq - b.seq)
   const streamUserTexts = new Set<string>()
+  const streamToolResults = new Set<string>()
 
   for (const event of sorted) {
     if (event.type !== "stream.event") continue
     const payload = eventPayloadObject(event)
     if (payload.type === "user" && typeof payload.text === "string" && payload.text.trim()) {
       streamUserTexts.add(payload.text.trim())
+    }
+    if (payload.type === "tool" && typeof payload.result === "string") {
+      streamToolResults.add(toolDedupeKey(payload.result))
     }
   }
 
@@ -515,6 +581,20 @@ function linesFromEvents(events: WorkerEvent[]): ChatLine[] {
       continue
     }
 
+    if (event.type === "stream.event" && payload.type === "tool" && typeof payload.name === "string") {
+      const resultText = typeof payload.result === "string" ? payload.result : ""
+      lines.push({
+        key: event.id,
+        seq: event.seq,
+        at: event.createdAt,
+        kind: "tool",
+        label: toolLineLabel(payload.name, payload.args),
+        text: resultText,
+        toolArgs: eventPayloadObject(event).args as Record<string, unknown> | undefined,
+      })
+      continue
+    }
+
     if (event.type === "conversation.started") {
       lines.push({
         key: event.id,
@@ -558,6 +638,7 @@ function linesFromEvents(events: WorkerEvent[]): ChatLine[] {
     }
 
     if (role === "tool") {
+      if (streamToolResults.has(toolDedupeKey(content))) continue
       lines.push({
         key: event.id,
         seq: event.seq,

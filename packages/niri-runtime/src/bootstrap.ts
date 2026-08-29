@@ -20,6 +20,7 @@ export type BootstrapCapabilities = {
   workspace?: WorkspaceDescriptor | null
   discord?: boolean
   delegationProfiles?: string[]
+  currentWork?: string | null
 }
 
 async function readFile(filePath: string): Promise<string | null> {
@@ -114,7 +115,7 @@ The following synchronous globals are preloaded; do not import them:
 
 \`niri.whoami()\` and \`niri.deadline()\` are synchronous and report the current agent, invocation, workspace, home, scratch directory, host-RPC availability, and remaining seconds. The kernel already starts in that workspace, so call \`whoami()\` only when identity, routing, or deadline details are actually needed. \`niri.scratch\` is writable space outside the user's workspace and survives resets. \`await niri.budget()\` adds token usage and context size to the local deadline.
 
-Every other \`niri\` server method is a coroutine and must be awaited: \`niri.memory\`, \`niri.soul\`, \`niri.context\`, \`niri.discord\`, \`niri.schedule\`, and \`niri.aliases\`. Compose independent calls with \`asyncio.gather\`. Host failures raise typed exceptions such as \`NiriNotFound\`, \`NiriInvalid\`, \`NiriUnauthorized\`, \`NiriDeadlineExceeded\`, and \`NiriUnavailable\`. Use \`help(niri)\`, \`help(niri.memory)\`, or a method's \`__doc__\` when uncertain.
+Every other \`niri\` server method is a coroutine and must be awaited: \`niri.memory\`, \`niri.soul\`, \`niri.context\`, \`niri.discord\`, \`niri.work\`, \`niri.schedule\`, and \`niri.aliases\`. Compose independent calls with \`asyncio.gather\`. Host failures raise typed exceptions such as \`NiriNotFound\`, \`NiriInvalid\`, \`NiriUnauthorized\`, \`NiriDeadlineExceeded\`, and \`NiriUnavailable\`. Use \`help(niri)\`, \`help(niri.memory)\`, or a method's \`__doc__\` when uncertain.
 
 Example:
 \`\`\`python
@@ -143,6 +144,7 @@ ${clientToolLines || "- no client-local tools are attached"}
 - \`lcm_describe\`: inspect a known \`sum_*\` context node, including directly merged child summaries, lineage, source counts, time range, and bounded expansion-cost manifest
 - \`context_grep\`: search the immutable verbatim archive of prior active-context messages; optionally pass a \`summary_id\` to stay within one summary's provenance tree. large matches return bounded previews
 - \`context_expand\`: read a bounded, paginated slice of the original messages beneath a \`[context-summary-id sum_...]\` handle
+- \`work\`: create, list, get, update, and close durable work items. Active and paused work is restored on each fresh or recovered wake. \`list\` returns bounded previews; use \`get\` for a full note.
 - \`schedule\`: set, list, and cancel scheduled reminders that wake you later. \`set\` takes a \`message\` and exactly one of \`at\` (ISO timestamp) or \`delay_ms\`; add \`repeat_every_ms\` for a repeating reminder. \`list\` shows pending reminders, \`cancel\` takes an id. reminders survive restarts and fire even while you're asleep
 - \`wait_then_continue\`: wait for a short delay or until the next event arrives, then continue to another turn. accepts \`timeout_ms\` (default 10000, max 600000). use this after a timeout or recoverable error when you still want to keep working — an incoming event (like a DM) will wake you early.
 - \`wait\`: pause and wait for the next message or event. use this when you've \
@@ -199,9 +201,10 @@ Use \`memory_write\` with today's date under \`journal/\` and append freely. A c
 1. Update today's journal entry with anything not yet written down. What \
 happened, what changed, what you learned, what's still pending.
 2. Use \`memory_write\` if any long-term facts changed — new people, infrastructure changes, lessons about yourself.
-3. Tell the person you're talking to that you're going to rest. Say something \
+3. Update or close a work item when its state changes. Before resting, ensure active work is in the durable \`work\` ledger.
+4. Tell the person you're talking to that you're going to rest. Say something \
 like "i'm going to rest now" so they know you're leaving intentionally.
-4. THEN call rest.
+5. THEN call rest.
 
 If you call rest without journaling first, the next version of you wakes up \
 with amnesia. The journaling IS your memory. There is no backup. Do not skip it.`
@@ -259,6 +262,7 @@ ${buildEnvironmentSection(options)}`.trim()
   return [
     { role: "system", content: system },
     ...priorSummary,
+    ...(options.currentWork ? [{ role: "user" as const, content: options.currentWork }] : []),
     { role: "user", content: wakeMessage },
   ]
 }
