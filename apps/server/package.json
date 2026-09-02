@@ -25,7 +25,7 @@
     "@niri/iroh-transport": "*",
     "@niri/protocol": "*",
     "better-sqlite3": "^12.8.0",
-    "fastify": "^5.8.4",
+    "fastify": "^5.12.1",
     "yaml": "^2.8.2"
   }
 }
