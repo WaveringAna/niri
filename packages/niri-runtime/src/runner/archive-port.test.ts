@@ -3,19 +3,25 @@ import test from "node:test"
 import { initDb } from "../db"
 import { contextDescribe, contextExpand, ServiceError } from "../server-native-services"
 import type { Message } from "../types"
-import {
-  archiveContextMessages,
-  batchActiveContextSummariesForPrompt,
-  attachContextSummaryId,
-  contextSummaryId,
-  describeContextSummary,
-  expandContextSummary,
-  grepContext,
-  recordContextCompaction,
-  recordRestContextSnapshot,
-} from "./context-store"
+import { contextArchive } from "./archive"
 
 initDb()
+
+/**
+ * These assertions were written against `runner/context-store.ts` and run
+ * verbatim against `@mira/agent-context`'s archive, which that file was ported
+ * into. They are the check that the port preserved behavior.
+ */
+const archive = contextArchive()
+const archiveContextMessages = archive.archiveMessages
+const batchActiveContextSummariesForPrompt = archive.batchActiveContextSummariesForPrompt
+const attachContextSummaryId = archive.attachContextSummaryId
+const contextSummaryId = archive.contextSummaryId
+const describeContextSummary = archive.describe
+const expandContextSummary = archive.expand
+const grepContext = archive.grep
+const recordContextCompaction = archive.recordCompaction
+const recordRestContextSnapshot = archive.recordRestSnapshot
 
 test("native context services type unknown summaries as not found", async () => {
   await assert.rejects(

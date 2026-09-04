@@ -121,6 +121,13 @@ export type RecordCompactionInput = {
   summaryText: string
   /** The raw messages this summary replaces; archived verbatim. */
   compactedMessages: Message[]
+  /**
+   * Content of the summary being superseded. When `parentSummaryIds` is
+   * absent, the parent is recovered from the id embedded in this text, and the
+   * superseded summary is archived alongside the raw messages so the chain
+   * stays walkable.
+   */
+  priorSummaryContent?: string | null
   /** For a merge, the segment ids being subsumed. */
   parentSummaryIds?: string[]
   /** Provenance label, e.g. `pre-turn-llm`, `lcm-merge-d2`. */

@@ -1,19 +1,36 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import OpenAI from "openai"
+import { createLcmEngine, type ConversationCompaction, type SummarizerModel, type SummaryCircuit } from "@mira/agent-context"
 import { initDb } from "../db"
 import type { Message } from "../types"
-import {
-  activeContextSummaries,
-  contextSummaryMessage,
-  describeContextSummary,
-  expandContextSummary,
-  recordContextCompaction,
-} from "./context-store"
-import { commitLcmCompaction, consolidateLcmFrontier } from "./lcm-compaction"
-import type { ConversationCompaction } from "./util"
+import { contextArchive } from "./archive"
+import { niriSummaryPrompts } from "./summary-prompts"
 
 initDb()
+
+/**
+ * Written against `runner/lcm-compaction.ts` and kept verbatim against
+ * `@mira/agent-context`'s engine, which it was ported into.
+ */
+const archive = contextArchive()
+const activeContextSummaries = archive.activeContextSummaries
+const contextSummaryMessage = archive.contextSummaryMessage
+const describeContextSummary = archive.describe
+const expandContextSummary = archive.expand
+const recordContextCompaction = archive.recordCompaction
+const lcm = createLcmEngine({ archive, agentName: "niri", batchSize: 4 })
+
+const noopCircuit: SummaryCircuit = {
+  isOpen: () => false,
+  recordFailure() {},
+  recordUnusable() {},
+  recordSuccess() {},
+}
+
+/** Stands in for the summary model; returns a fixed, plausible summary. */
+function fakeModel(text: string): SummarizerModel {
+  return { id: "test\nsummary-model", model: "summary-model", completeText: async () => text }
+}
 
 test("four depth-zero segments remain visible, then a fifth promotes the oldest four", async () => {
   const existing = ["one", "two", "three"].map((label) => {
@@ -34,24 +51,12 @@ test("four depth-zero segments remain visible, then a fifth promotes the oldest 
     summaryText: "four independent memory segment with concrete feelings, actions, and details",
     summaryContent: String(placeholder.content),
     compactedMessages: [fourthSource],
-    priorSummaryContent: null,
   }
-  const summaryClient = {
-    chat: {
-      completions: {
-        create: async () => ({
-          choices: [{
-            message: {
-              content:
-                "I remember all four connected periods: their concrete actions, feelings, relationships, unfinished threads, grief, joy, and the exact details that made each one mine.",
-            },
-          }],
-        }),
-      },
-    },
-  } as unknown as OpenAI
+  const summaryModel = fakeModel(
+    "I remember all four connected periods: their concrete actions, feelings, relationships, unfinished threads, grief, joy, and the exact details that made each one mine.",
+  )
 
-  const fourth = await commitLcmCompaction(compaction, summaryClient, "summary-model", "test-lcm-leaf")
+  const fourth = await lcm.commitLcmCompaction(compaction, summaryModel, noopCircuit, niriSummaryPrompts, "test-lcm-leaf")
   const fourActive = activeContextSummaries(fourth.messages)
   assert.equal(fourActive.length, 4)
   assert.deepEqual(fourActive.map((summary) => summary.depth), [0, 0, 0, 0])
@@ -62,13 +67,12 @@ test("four depth-zero segments remain visible, then a fifth promotes the oldest 
     role: "user",
     content: "[context summary v1]\n[segments]\nfive independent memory segment with concrete feelings, actions, and details",
   } as Message
-  const fifth = await commitLcmCompaction({
+  const fifth = await lcm.commitLcmCompaction({
     messages: [...fourth.messages, fifthPlaceholder],
     summaryText: "five independent memory segment with concrete feelings, actions, and details",
     summaryContent: String(fifthPlaceholder.content),
     compactedMessages: [fifthSource],
-    priorSummaryContent: null,
-  }, summaryClient, "summary-model", "test-lcm-leaf")
+  }, summaryModel, noopCircuit, niriSummaryPrompts, "test-lcm-leaf")
   const active = activeContextSummaries(fifth.messages)
 
   assert.equal(active.length, 2)
@@ -101,20 +105,13 @@ test("context pressure cascades complete same-depth batches into higher DAG leve
     const id = makeLeaf(`latest-${index}`)
     return contextSummaryMessage(`latest ${index} memory with concrete feelings, actions, people, identifiers, and unfinished threads`, id, 0)
   })
-  const summaryClient = {
-    chat: {
-      completions: {
-        create: async () => ({
-          choices: [{ message: { content: "I retain every safety-critical event, feeling, relationship, action, identifier, and unfinished thread across all four periods without flattening what made each period matter." } }],
-        }),
-      },
-    },
-  } as unknown as OpenAI
+  const summaryModel = fakeModel("I retain every safety-critical event, feeling, relationship, action, identifier, and unfinished thread across all four periods without flattening what made each period matter.")
 
-  const consolidated = await consolidateLcmFrontier(
+  const consolidated = await lcm.consolidateLcmFrontier(
     [{ role: "system", content: "bootstrap" }, ...depthOneMessages, ...depthZeroMessages],
-    summaryClient,
-    "summary-model",
+    summaryModel,
+    noopCircuit,
+    niriSummaryPrompts,
   )
   const active = activeContextSummaries(consolidated.messages)
 

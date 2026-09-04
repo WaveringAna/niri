@@ -1,4 +1,5 @@
 import {
+  commitRestCompaction,
   createContextCompactor,
   createLcmEngine,
   createSqliteContextArchive,
@@ -11,7 +12,8 @@ import {
 } from "@mira/agent-context"
 import type { ProviderSet } from "@mira/agent-llm"
 import { getDb } from "../db"
-import { AGENT_NAME } from "./util"
+import type { Message as ContextMessage } from "@mira/agent-context"
+import { AGENT_NAME, loadAgentSummaryContext } from "./util"
 import { niriSummaryPrompts } from "./summary-prompts"
 
 /**
@@ -130,5 +132,44 @@ export function createNiriCompactor(
     recentMaxKeep: options.recentMaxKeep,
     tailCharBudget: options.tailCharBudget,
     toolsForEstimate: options.toolsForEstimate,
+  })
+}
+
+
+/**
+ * Rest-time compaction.
+ *
+ * Distinct from the in-loop compactor: `maybeCompact` always preserves a
+ * verbatim tail so the agent can keep working, but at rest there is no next
+ * turn to preserve context for. Everything folds into one summary segment, and
+ * the raw messages live on in the archive.
+ *
+ * Returns the conversation to snapshot. Falls back to the input unchanged when
+ * no summarizer is available, so resting never blocks on the model.
+ */
+export async function compactConversationForRest(
+  providers: ProviderSet,
+  conversation: ContextMessage[],
+  options: { directRecollection?: string | null } = {},
+): Promise<ContextMessage[]> {
+  const summarizer = await summarizerFor(providers)()
+  if (!summarizer) return conversation
+
+  const config = lcmConfigFromEnv()
+  const archiveInstance = contextArchive()
+  return commitRestCompaction({
+    agentName: AGENT_NAME,
+    archive: archiveInstance,
+    lcm: createLcmEngine({
+      archive: archiveInstance,
+      agentName: AGENT_NAME,
+      batchSize: config.summaryBatchSize,
+    }),
+    prompts: niriSummaryPrompts,
+    model: summarizer.model,
+    circuit: summarizer.circuit,
+    conversation,
+    grounding: await loadAgentSummaryContext(),
+    directRecollection: options.directRecollection ?? null,
   })
 }

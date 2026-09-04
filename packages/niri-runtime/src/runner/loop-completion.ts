@@ -27,7 +27,7 @@ import {
   summaryClient,
   summaryProviderCircuitStatus,
 } from "./util"
-import { batchActiveContextSummariesForPrompt } from "./context-store"
+import { contextArchive } from "./archive"
 import type { CompletionRequest, CompletionTurnResult, ToolCallAssembly } from "./loop-shared"
 
 function isPathologicalCompactionRecollection(content: string): boolean {
@@ -517,7 +517,7 @@ export async function collectAgentCompactionRecollection(
   convId: number,
   state: LoopState,
 ): Promise<string | null> {
-  const recollectionMessages = batchActiveContextSummariesForPrompt(
+  const recollectionMessages = contextArchive().batchActiveContextSummariesForPrompt(
     sanitizeMessages([
       ...state.conversation,
       { role: "system", content: COMPACTION_RECOLLECTION_TURN_INSTRUCTION },

@@ -320,3 +320,51 @@ export function createContextCompactor(deps: CompactorDeps): ContextCompactor {
     },
   }
 }
+
+export type RestCompactionInput = {
+  agentName: string
+  archive: SqliteContextArchive
+  lcm: LcmEngine
+  prompts: SummaryPrompts
+  model: SummarizerModel
+  circuit: SummaryCircuit
+  conversation: Message[]
+  grounding: SummaryGrounding
+  /** The agent's own account of the session, collected before this runs. */
+  directRecollection: string | null
+}
+
+/**
+ * Folds an entire conversation into one summary segment.
+ *
+ * The in-loop compactor always keeps a verbatim tail so the agent can carry on
+ * mid-task. At rest there is no next turn to preserve for, so the tail budget
+ * goes to zero and everything becomes summary — the raw messages remain in the
+ * archive and stay reachable by id.
+ *
+ * Returns the input unchanged if the summarizer declines, so resting is never
+ * blocked by a model failure.
+ */
+export async function commitRestCompaction(input: RestCompactionInput): Promise<Message[]> {
+  const { agentName, prompts, model, circuit } = input
+  const compaction = await summarizeConversationViaLLMWithProvenance(
+    agentName,
+    input.conversation,
+    model,
+    circuit,
+    prompts,
+    {
+      recentMinKeep: 0,
+      recentMaxKeep: 0,
+      tailCharBudget: 0,
+      agentContext: input.grounding,
+      directRecollection: input.directRecollection,
+    },
+  )
+  if (!compaction) return input.conversation
+
+  const committed = await input.lcm.commitLcmCompaction(
+    compaction, model, circuit, prompts, "rest-llm", input.grounding,
+  )
+  return committed.messages
+}

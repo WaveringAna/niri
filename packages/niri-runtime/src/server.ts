@@ -17,7 +17,7 @@ import { parseChannelIds } from "./discord/parse"
 import { queryChannelMessages, queryChannels } from "./discord/db"
 import type { MetricListType } from "./metrics"
 import type { UserMessage } from "./types"
-import { activeContextSummaries, describeContextSummary } from "./runner/context-store"
+import { contextArchive } from "./runner/archive"
 import { loadSession } from "./runner/util"
 import { dispatchHostRpc, HOST_RPC_BODY_LIMIT_BYTES } from "./host-rpc"
 
@@ -170,8 +170,8 @@ export function createServer(options: { requestRestart?: (reason?: string) => vo
 
   app.get("/awp/context/dag", async () => {
     const session = await loadSession() ?? []
-    const frontier = activeContextSummaries(session).map(({ id, depth }) => {
-      const described = describeContextSummary(id)
+    const frontier = contextArchive().activeContextSummaries(session).map(({ id, depth }) => {
+      const described = contextArchive().describe(id)
       return described ? { id, depth, summary: described.summary } : { id, depth, summary: null }
     })
     return { agentId: AGENT_ID, frontier }
@@ -180,7 +180,7 @@ export function createServer(options: { requestRestart?: (reason?: string) => vo
   app.get("/awp/context/dag/:summaryId", async (req, reply) => {
     const { summaryId } = req.params as { summaryId: string }
     if (!/^sum_[0-9a-f-]+$/.test(summaryId)) return reply.code(400).send({ error: "invalid summary id" })
-    const described = describeContextSummary(summaryId)
+    const described = contextArchive().describe(summaryId)
     if (!described) return reply.code(404).send({ error: "summary not found" })
     return { agentId: AGENT_ID, node: described }
   })

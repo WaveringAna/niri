@@ -40,12 +40,12 @@ import {
 import { emit } from "../stream"
 import { cancelProcessJob, getProcessJob, listProcessJobs, startProcessJob } from "../process-jobs"
 import type { Message } from "../types"
-import { archiveContextMessages, recordRestContextSnapshot } from "./context-store"
-import { commitLcmCompaction } from "./lcm-compaction"
-import { collectAgentCompactionRecollection, configuredSummaryProvider } from "./loop-completion"
+import { compactConversationForRest, contextArchive } from "./archive"
+import { createProviderSet, resolveProviderConfig, type ProviderSet } from "@mira/agent-llm"
+import { collectAgentCompactionRecollection } from "./loop-completion"
 import type { ToolHandler } from "./loop-shared"
 import { pushToolMessage, recordToolResult, runStandardTool, toolError } from "./loop-tool-runtime"
-import { loadAgentSummaryContext, parseImageDetail, saveRestSnapshot, summarizeConversationViaLLMWithProvenance } from "./util"
+import { parseImageDetail, saveRestSnapshot } from "./util"
 import type { LoopHooks } from "./types"
 import {
   cancelDelegatedTask,
@@ -56,6 +56,13 @@ import {
   sendDelegatedTaskMessage,
   spawnDelegatedTask,
 } from "../delegation/manager"
+
+let restProviderSet: ProviderSet | null = null
+
+/** Provider set for rest-time compaction; shares the agent's configuration. */
+function restProviders(): ProviderSet {
+  return (restProviderSet ??= createProviderSet(resolveProviderConfig(process.env), { agentId: AGENT_ID }))
+}
 
 const DEFAULT_WAIT_THEN_CONTINUE_MS = 10_000
 const MAX_TOOL_TIMEOUT_MS = 10 * 60_000
@@ -375,33 +382,14 @@ export function buildToolHandlers(
     rest: async ({ convId, state, hooks, call, args }) => {
       if (args.note) console.log("[runner] rest note:", args.note)
       recordToolResult(convId, state, call, "rest", args, "Goodnight.")
-      archiveContextMessages(state.conversation, "rest")
-      const summaryProvider = await configuredSummaryProvider()
-      let directRecollection: string | null = null
-      if (summaryProvider.client && summaryProvider.model) {
-        directRecollection = await collectAgentCompactionRecollection(convId, state)
-      }
-      let restConversation = state.conversation
-      if (summaryProvider.client && summaryProvider.model) {
-        const agentContext = await loadAgentSummaryContext()
-        const compaction = await summarizeConversationViaLLMWithProvenance(
-          restConversation,
-          summaryProvider.client,
-          summaryProvider.model,
-          { recentMinKeep: 0, recentMaxKeep: 0, agentContext, directRecollection },
-        )
-        if (compaction) {
-          const committed = await commitLcmCompaction(
-            compaction,
-            summaryProvider.client,
-            summaryProvider.model,
-            "rest-llm",
-            agentContext,
-          )
-          restConversation = committed.messages
-        }
-      }
-      const snapshot = recordRestContextSnapshot(restConversation, args.note as string | undefined)
+      contextArchive().archiveMessages(state.conversation, "rest")
+      const providers = restProviders()
+      // Ask her what mattered before the session is folded into one segment.
+      const directRecollection = await collectAgentCompactionRecollection(convId, state)
+      const restConversation = await compactConversationForRest(providers, state.conversation, {
+        directRecollection,
+      })
+      const snapshot = contextArchive().recordRestSnapshot(restConversation, args.note as string | undefined)
       console.log(`[context agent=${AGENT_ID}] rest: archived ${snapshot.sourceCount} raw message(s); active=${snapshot.summaryIds.join(",")}`)
       await saveRestSnapshot(
         snapshot.forests.map((content) => ({ role: "user", content } as Message)),

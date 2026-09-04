@@ -3,7 +3,8 @@ import { cancelSchedule, createSchedule, listSchedules, type Schedule } from "./
 import { listDiscordBackread, listDiscordChannels, listDiscordInbox } from "./discord/state"
 import { searchDiscordMessages } from "./discord/search"
 import { listAliases, removeAlias, searchMemories, setAlias } from "./memory"
-import { describeContextSummary, expandContextSummary, grepContext } from "./runner/context-store"
+import { contextArchive } from "./runner/archive"
+import type { ContextSearchResult } from "@mira/agent-context"
 import { readLoopBudget, type LoopBudget } from "./runner/loop-budget"
 import { WorkLedgerError, createWorkItem, getWorkItem, listWorkItems, updateWorkItem, closeWorkItem, type WorkItem, type WorkItemSummary } from "./work-ledger"
 import type { HostRpcMethod } from "@mira/harness-protocol"
@@ -50,7 +51,7 @@ function optionalText(value: unknown): string | undefined {
 
 export type MemorySearchResponse = { query: string; results: Awaited<ReturnType<typeof searchMemories>> }
 export type AliasResponse = { ok: true; aliases: Awaited<ReturnType<typeof listAliases>> }
-export type ContextGrepResponse = { query: string; summaryId: string | null; results: ReturnType<typeof grepContext> }
+export type ContextGrepResponse = { query: string; summaryId: string | null; results: ContextSearchResult[] }
 
 export async function memorySearch(args: ServiceArgs): Promise<MemorySearchResponse> {
   const query = text(args.query, "query")
@@ -96,19 +97,19 @@ export async function soulWrite(args: ServiceArgs): Promise<string> {
 export async function contextGrep(args: ServiceArgs): Promise<ContextGrepResponse> {
   const query = text(args.query, "query")
   const summaryId = optionalText(args.summary_id)
-  return { query, summaryId: summaryId ?? null, results: grepContext(query, optionalNumber(args.limit), summaryId) }
+  return { query, summaryId: summaryId ?? null, results: contextArchive().grep(query, optionalNumber(args.limit), summaryId) }
 }
 
 export async function contextDescribe(args: ServiceArgs): Promise<unknown> {
   const id = text(args.id, "id")
-  const summary = describeContextSummary(id, optionalNumber(args.token_cap))
+  const summary = contextArchive().describe(id, optionalNumber(args.token_cap))
   if (!summary) throw new ServiceError("not_found", `unknown context summary: ${id}`)
   return summary
 }
 
 export async function contextExpand(args: ServiceArgs): Promise<unknown> {
   const summaryId = text(args.summary_id, "summary_id")
-  const summary = expandContextSummary(summaryId, optionalNumber(args.offset), optionalNumber(args.limit))
+  const summary = contextArchive().expand(summaryId, optionalNumber(args.offset), optionalNumber(args.limit))
   if (!summary) throw new ServiceError("not_found", `unknown context summary: ${summaryId}`)
   return summary
 }
