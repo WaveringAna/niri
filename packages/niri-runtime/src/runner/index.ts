@@ -6,12 +6,15 @@ import { endConversation, logMessage, startConversation } from "../db"
 import { emit } from "../stream"
 import { runLoop } from "./loop"
 import { setRunnerPresence } from "./presence"
-import { createNiriToolCatalog, modelFacingClientCapabilities } from "./tool-catalog"
+import { modelFacingClientCapabilities } from "./tool-catalog"
+import { niriToolModules } from "./modules"
+import type { AgentRuntime, ToolModuleContext } from "@mira/agent-loop"
+import { AGENT_ID, NIRI_HOME } from "../agent-config"
+import { AGENT_NAME, AGENT_STATE_DIR } from "./util"
 import { archiveContextMessages, normalizeActiveContextSummaryDepths } from "./context-store"
 import type { RunnerStateInternal } from "./types"
 import { clearSession, loadRestSnapshot, loadSession, saveRestSnapshot, saveSession } from "./util"
 import type { UserMessage } from "../types"
-import { getMcpToolDefinitions } from "../mcp"
 import { delegationProfileNames, isDelegationAvailable } from "../delegation/manager"
 import { formatCurrentWorkForWake } from "../work-ledger"
 
@@ -19,18 +22,15 @@ let eventResolvers: Array<(event: UserMessage | null) => void> = []
 let shutdownResolvers: Array<() => void> = []
 const PROCESS_STARTED_AT = new Date().toISOString()
 
+const MODULE_CONTEXT: ToolModuleContext = {
+  identity: { id: AGENT_ID, name: AGENT_NAME, homeDir: NIRI_HOME, stateDir: AGENT_STATE_DIR },
+  // The existing loop dispatches through buildToolHandlers, so nothing here
+  // reads `runtime`; it is supplied when the loop itself moves to @mira/agent-loop.
+  runtime: undefined as unknown as AgentRuntime,
+}
+
 function currentToolCatalog() {
-  return [
-    ...createNiriToolCatalog({
-      clientCapabilities: modelFacingClientCapabilities(clientTools.getCapabilities()),
-      workspace: clientTools.getWorkspace(),
-      memory: true,
-      discord: areDiscordToolsAvailable(),
-      delegationProfiles: isDelegationAvailable() ? delegationProfileNames() : [],
-      processJobs: Boolean(clientTools.getWorkspace()?.shellSessionResults),
-    }),
-    ...getMcpToolDefinitions(),
-  ]
+  return niriToolModules.flatMap((module) => module.definitions(MODULE_CONTEXT))
 }
 
 const state: RunnerStateInternal = {

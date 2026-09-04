@@ -27,6 +27,7 @@ import {
 import { assistantContentText, isFunctionToolCall } from "./loop-content"
 import { setLoopBudget } from "./loop-budget"
 import { processToolCalls } from "./loop-tools"
+import { discordSendPolicy } from "./policies"
 import type { LoopHooks, LoopState } from "./types"
 
 const LLM_RECENT_MIN_KEEP = 6
@@ -175,76 +176,6 @@ async function processAssistantTurn(convId: number, state: LoopState, hooks: Loo
 
   const shouldRest = await processToolCalls(convId, state, hooks, functionCalls)
   return shouldRest ? CycleOutcome.Rest : CycleOutcome.ToolsDone
-}
-
-/**
- * Detects when the assistant responded to a Discord message with
- * conversational text but did not call discord_send. Injects a system
- * nudge so the next turn actually delivers the message.
- */
-function isDiscordInputMessage(message: Message): boolean {
-  return message.role === "user" && typeof message.content === "string" && /\[discord(?:\/(?:dm|channel)| batch)\]/i.test(message.content)
-}
-
-function activeUserTurnMessages(conversation: Message[], turnMessages: Message[]): Message[] {
-  // Prefer a user event injected during this model/tool step. Otherwise walk
-  // back to the latest user message in the full conversation. This keeps the
-  // original input active across preliminary assistant/tool steps such as
-  // memory_read on a fresh wake.
-  for (let i = turnMessages.length - 1; i >= 0; i--) {
-    if (turnMessages[i]?.role === "user") return turnMessages.slice(i)
-  }
-  for (let i = conversation.length - 1; i >= 0; i--) {
-    if (conversation[i]?.role === "user") return conversation.slice(i)
-  }
-  return turnMessages
-}
-
-function hasDiscordInputForTurn(conversation: Message[], turnMessages: Message[]): boolean {
-  return activeUserTurnMessages(conversation, turnMessages).some(isDiscordInputMessage)
-}
-
-function applyDiscordSendNudge(
-  state: LoopState,
-  turnMessages: Message[],
-): boolean {
-  // Check the whole active user turn, including preliminary tool calls made
-  // after a fresh wake and before the assistant writes its reply.
-  const activeTurnMessages = activeUserTurnMessages(state.conversation, turnMessages)
-  const hasDiscordInput = activeTurnMessages.some(isDiscordInputMessage)
-  if (!hasDiscordInput) return false
-
-  // A discord_send from an earlier assistant/tool step in the same user turn
-  // means the reply was already delivered.
-  const hasDiscordSend = activeTurnMessages.some(
-    (m) =>
-      m.role === "assistant" &&
-      "tool_calls" in m &&
-      Array.isArray(m.tool_calls) &&
-      m.tool_calls.some((tc) => tc.type === "function" && tc.function.name === "discord_send"),
-  )
-  if (hasDiscordSend) return false
-
-  // Also check if a tool result from discord_send exists (edge case: tool result is separate message)
-  const hasDiscordSendResult = activeTurnMessages.some(
-    (m) =>
-      m.role === "tool" &&
-      typeof m.content === "string" &&
-      m.content.includes('"ok":true') &&
-      m.content.includes("discord_send"),
-  )
-  if (hasDiscordSendResult) return false
-
-  // Find the assistant's text content in this turn
-  const assistantText = turnMessages.find((m) => m.role === "assistant" && assistantContentText(m.content).length > 0)
-  if (!assistantText) return false
-
-  // The assistant wrote something in response to a Discord message but
-  // never actually sent it. Nudge.
-  const nudge = `[system] you wrote a response to a Discord message but did not call discord_send. your message was not delivered. call discord_send now or explicitly decide not to reply.`
-  console.warn("[runner] discord_send nudge: assistant responded to Discord input without calling discord_send")
-  state.conversation.push({ role: "user", content: nudge })
-  return true
 }
 
 async function applyLLMCompaction(
@@ -455,7 +386,13 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
     // then calls wait/rest, leaving the Discord user in silence.
     let discordSendNudged = false
     if (outcome !== CycleOutcome.Rest) {
-      discordSendNudged = applyDiscordSendNudge(state, turnMessages)
+      const nudge = discordSendPolicy.onTurnEnd?.({
+        convId, state: state as never, runtime: undefined as never, turnMessages, calledTools: outcome === CycleOutcome.ToolsDone,
+      })
+      if (typeof nudge === "string" && nudge) {
+        state.conversation.push({ role: "user", content: nudge })
+        discordSendNudged = true
+      }
     }
 
     if (outcome === CycleOutcome.Rest) return "rest"
@@ -482,8 +419,6 @@ export async function runLoop(convId: number, state: LoopState, hooks: LoopHooks
 }
 
 export const __loopTest = {
-  applyDiscordSendNudge,
-  hasDiscordInputForTurn,
   waitForImplicitContinuation,
   pruneToolOutputsForCompaction,
   shouldDeferSmallFollowUpCompaction,

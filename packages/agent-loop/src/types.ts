@@ -187,6 +187,33 @@ export interface AgentRuntime {
   summaryGrounding(): Promise<SummaryGrounding>
   /** Build the opening conversation for a fresh wake. */
   buildBootstrap(input: AgentInput): Promise<Message[]>
+
+  /**
+   * Last transform before a request is sent, re-run on every attempt.
+   *
+   * This is where per-turn message work belongs that is specific to a harness:
+   * Niri sanitizes tool-call ordering and injects passively recalled memory
+   * here. Returning `messages` unchanged is a valid implementation.
+   */
+  prepareCompletionMessages?(messages: Message[], state: LoopState): Promise<Message[]> | Message[]
+
+  /**
+   * The provider rejected the prompt as too large. Shrink the conversation
+   * (compact, drop attachments) and return true to retry.
+   */
+  onPromptTooLarge?(state: LoopState, attempt: number): Promise<boolean> | boolean
+
+  /**
+   * The provider refused the content. Both safety filters and image-parse
+   * failures persist across turns when the offending content is saved in the
+   * conversation, which crash-loops an agent on restart — so recovery means
+   * mutating `state.conversation`. Return true to retry.
+   */
+  onContentRejected?(
+    state: LoopState,
+    kind: "content_filter" | "image_parse",
+    attempt: number,
+  ): Promise<boolean> | boolean
 }
 
 /**

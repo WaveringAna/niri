@@ -1,6 +1,6 @@
 import type OpenAI from "openai"
 import type { Message } from "@mira/agent-context"
-import type { CompletionStreamSink } from "@mira/agent-llm"
+import { completeWithResilience, type CompletionStreamSink } from "@mira/agent-llm"
 import type {
   AgentInput,
   AgentRuntime,
@@ -75,15 +75,22 @@ async function runCompletion(
   state: LoopState,
   tools: OpenAI.Chat.ChatCompletionTool[],
 ): Promise<{ message: OpenAI.Chat.ChatCompletionMessage; emittedText: boolean }> {
-  const resolved = await runtime.providers.resolvePrimary()
-  if (!resolved) throw new Error("no model provider is configured for this agent")
-
-  const result = await resolved.provider.complete(
+  const result = await completeWithResilience(
+    runtime.providers,
     {
-      model: resolved.provider.model,
-      messages: state.conversation as OpenAI.Chat.ChatCompletionMessageParam[],
+      // model and tool_choice are filled in per attempt from whichever
+      // endpoint is serving, so a failover picks up the right ones.
+      model: "",
+      messages: [],
       tools,
-      tool_choice: resolved.provider.toolChoice,
+      tool_choice: "auto",
+    },
+    {
+      currentMessages: async () =>
+        (await runtime.prepareCompletionMessages?.(state.conversation, state) ??
+          state.conversation) as OpenAI.Chat.ChatCompletionMessageParam[],
+      onPromptTooLarge: (attempt) => runtime.onPromptTooLarge?.(state, attempt) ?? false,
+      onContentRejected: (kind, attempt) => runtime.onContentRejected?.(state, kind, attempt) ?? false,
     },
     { sink: streamSink(runtime) },
   )

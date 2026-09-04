@@ -45,8 +45,12 @@ export type RecoveryHooks = {
    * true to retry.
    */
   onContentRejected?(kind: "content_filter" | "image_parse", attempt: number): Promise<boolean> | boolean
-  /** Latest messages to send. Re-read after each recovery so edits take effect. */
-  currentMessages(): CompletionRequest["messages"]
+  /**
+   * Messages to send. Re-invoked on every attempt so recovery edits take
+   * effect, and so per-turn preparation (passive memory recall, sanitization)
+   * re-runs against the corrected conversation rather than a stale copy.
+   */
+  currentMessages(): CompletionRequest["messages"] | Promise<CompletionRequest["messages"]>
   /** Notified before each backoff sleep, for logging. */
   onRetry?(info: { slot: ProviderSlot; kind: CompletionErrorKind; delayMs: number; error: unknown }): void
 }
@@ -114,7 +118,7 @@ export async function completeWithResilience(
       ...request,
       model: resolved.provider.model,
       tool_choice: resolved.provider.toolChoice,
-      messages: hooks.currentMessages(),
+      messages: await hooks.currentMessages(),
     }
 
     try {
