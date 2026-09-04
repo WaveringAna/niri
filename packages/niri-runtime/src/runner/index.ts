@@ -1,9 +1,9 @@
-import { runLoop, type AgentRuntime, type LoopState } from "@mira/agent-loop"
+import { runLoop, type LoopState } from "@mira/agent-loop"
 import { markDiscordItem } from "../discord/state"
 import { emit } from "../stream"
 import { setRunnerPresence } from "./presence"
 import { contextArchive } from "./archive"
-import { createNiriProviders, createNiriRuntime, markRecallPending } from "./runtime"
+import { markRecallPending, niriRuntime } from "./runtime"
 import { loadSession, saveRestSnapshot, saveSession } from "./util"
 import type { UserMessage } from "../types"
 import { formatCurrentWorkForWake } from "../work-ledger"
@@ -39,12 +39,7 @@ const state: RunnerState = {
   deferredEvents: [],
 }
 
-let runtime: AgentRuntime | null = null
 
-/** Built once, on first wake, so importing this module opens nothing. */
-function agentRuntime(): AgentRuntime {
-  return (runtime ??= createNiriRuntime(createNiriProviders()))
-}
 
 /**
  * Returns whether a runner session is currently active.
@@ -271,7 +266,7 @@ function injectIncomingEvent(convId: number, event: UserMessage): void {
     role: "user",
     content: incomingMessage,
   })
-  agentRuntime().transcript.logMessage(convId, "user", incomingMessage)
+  niriRuntime().transcript.logMessage(convId, "user", incomingMessage)
   emitUserEvent(event)
   // A new incoming event starts a new turn — recall once for it.
   markRecallPending(state)
@@ -313,23 +308,23 @@ export async function wake(event: UserMessage): Promise<void> {
     })
   } else {
     autoSeeDiscordEvent(event)
-    const bootstrap = await agentRuntime().buildBootstrap(event)
+    const bootstrap = await niriRuntime().buildBootstrap(event)
     if (currentWork) bootstrap.splice(bootstrap.length - 1, 0, { role: "user", content: currentWork })
     state.conversation = contextArchive().normalizeActiveContextSummaryDepths(bootstrap)
   }
 
-  const convId = agentRuntime().transcript.startConversation(event.source, event.triggeredAt)
+  const convId = niriRuntime().transcript.startConversation(event.source, event.triggeredAt)
 
   const wakeMsg = state.conversation[state.conversation.length - 1]
   if (wakeMsg && wakeMsg.role === "user") {
-    agentRuntime().transcript.logMessage(convId, "user", typeof wakeMsg.content === "string" ? wakeMsg.content : JSON.stringify(wakeMsg.content))
+    niriRuntime().transcript.logMessage(convId, "user", typeof wakeMsg.content === "string" ? wakeMsg.content : JSON.stringify(wakeMsg.content))
     emitUserEvent(event)
   }
 
   console.log("[runner] niri is awake")
 
   try {
-    const exit = await runLoop(agentRuntime(), convId, state, {
+    const exit = await runLoop(niriRuntime(), convId, state, {
       waitForEvent,
       waitForEventWithTimeout,
       injectIncomingEvent: (id, incoming) => injectIncomingEvent(id, incoming as UserMessage),
@@ -352,7 +347,7 @@ export async function wake(event: UserMessage): Promise<void> {
     }
   } finally {
     const wasShutdownRequested = state.shutdownRequested
-    agentRuntime().transcript.endConversation(convId, state.tokenCount)
+    niriRuntime().transcript.endConversation(convId, state.tokenCount)
     state.running = false
     state.conversation = []
     state.toolInFlight = false

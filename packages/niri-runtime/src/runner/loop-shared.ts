@@ -1,5 +1,5 @@
 import OpenAI from "openai"
-import type { LoopHooks, LoopState } from "./types"
+import type { ToolExecutionContext as AgentToolExecutionContext } from "@mira/agent-loop"
 
 export type FunctionToolCall = OpenAI.Chat.ChatCompletionMessageToolCall & { type: "function" }
 
@@ -80,12 +80,11 @@ export type ToolCallAssembly = {
 export type ToolArgKey = keyof ToolArgs
 export type ArgTuple<K extends readonly ToolArgKey[]> = { [I in keyof K]: ToolArgs[K[I]] }
 
-export type ToolExecutionContext = {
-  convId: number
-  state: LoopState
-  hooks: LoopHooks
-  call: FunctionToolCall
-  args: ToolArgs
-}
+/**
+ * Handlers run under the loop from `@mira/agent-loop`, so its context is the
+ * authority. Declaring a local shape here would let the two drift and be caught
+ * only at runtime.
+ */
+export type ToolExecutionContext = Omit<AgentToolExecutionContext, "args"> & { args: ToolArgs }
 
 export type ToolHandler = (ctx: ToolExecutionContext) => Promise<ToolExecutionOutcome>

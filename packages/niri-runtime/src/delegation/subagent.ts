@@ -5,12 +5,14 @@ import { logMessage } from "../db"
 import { createClientToolCatalog, type ToolDefinition } from "@mira/harness-core"
 import { callMcpTool, getMcpToolDefinitions, hasMcpTool } from "../mcp"
 import { addAssistantMessage, applyUsage, fetchIsolatedCompletion } from "../runner/loop-completion"
+import { niriRuntime } from "../runner/runtime"
+import type { LoopHooks } from "@mira/agent-loop"
 import { buildToolHandlers } from "../runner/loop-tool-registry"
 import { executeToolCall, pushToolMessage } from "../runner/loop-tool-runtime"
 import { isFunctionToolCall } from "../runner/loop-content"
 import { parseToolArguments } from "../runner/util"
 import type { FunctionToolCall } from "../runner/loop-shared"
-import type { LoopHooks, LoopState } from "../runner/types"
+import type { LoopState } from "../runner/types"
 import type { DelegationProfile } from "./config"
 import { listDelegationProfileFeedback, type DelegatedTask, type DelegatedTaskMessage, type DelegatedMessageKind } from "./store"
 
@@ -149,23 +151,18 @@ export async function runDelegatedSubagent(
     tokenCount: 0,
     contextSize: 0,
     toolInFlight: false,
-    memoryRecallCooldowns: {},
-    memoryRecallTurn: 0,
-    memoryRecallPending: false,
     shutdownRequested: false,
     turnInFlight: false,
+    extras: new Map(),
   }
   const handlers = buildToolHandlers({ clientTools }, { emitClientToolEvents: false })
   const allowedHandlers = new Set<string>(profile.tools)
   const allowedMcpTools = new Set(profile.mcpTools)
   const hooks: LoopHooks = {
-    clientTools,
-    getTools: () => tools,
     waitForEvent: async () => null,
     waitForEventWithTimeout: async () => null,
     injectIncomingEvent: () => {},
     flushDeferredEvents: () => {},
-    clearSession: async () => {},
     saveSession: async () => {},
     saveShutdownSnapshot: async () => {},
     shouldShutdown: callbacks.isCancelled,
@@ -256,7 +253,7 @@ export async function runDelegatedSubagent(
           pushToolMessage(convId, state, call as FunctionToolCall, `error: ${call.function.name} is not available to this task worker`)
           continue
         }
-        await executeToolCall(convId, state, hooks, handlers, call as FunctionToolCall)
+        await executeToolCall(convId, state, niriRuntime(), hooks, handlers, call as FunctionToolCall)
         if (call.function.name === "shell") trackShellSession(state, call as FunctionToolCall, activeShellSessions)
         remainingTaskMs(deadline, timeoutMs, callbacks)
       }

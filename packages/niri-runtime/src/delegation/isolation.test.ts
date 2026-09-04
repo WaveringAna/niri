@@ -25,11 +25,9 @@ test("worker usage and client tools do not emit as niri activity", async (t) => 
     tokenCount: 0,
     contextSize: 0,
     toolInFlight: false,
-    memoryRecallCooldowns: {},
-    memoryRecallTurn: 0,
-    memoryRecallPending: false,
     shutdownRequested: false,
     turnInFlight: false,
+    extras: new Map(),
   }
   const events: unknown[] = []
   const unsubscribe = subscribe((event) => events.push(event))
@@ -61,7 +59,8 @@ test("worker usage and client tools do not emit as niri activity", async (t) => 
   await handlers.read_file?.({
     convId: startConversation("delegation:test", new Date().toISOString()),
     state,
-    hooks: { clientTools } as never,
+    runtime: {} as never,
+    hooks: {} as never,
     call: {
       id: "call-1",
       type: "function",

@@ -8,12 +8,12 @@
     "./server": "./src/server.ts"
   },
   "scripts": {
-    "predev": "npm run build --workspace @mira/harness-protocol && npm run build --workspace @mira/harness-core && npm run build --workspace @mira/harness-server && npm run build --workspace @mira/harness-client-node && npm run build --workspace @niri/protocol && npm run build --workspace @niri/agent-config && npm run build --workspace @niri/iroh-transport",
-    "prestart": "npm run build --workspace @mira/harness-protocol && npm run build --workspace @mira/harness-core && npm run build --workspace @mira/harness-server && npm run build --workspace @mira/harness-client-node && npm run build --workspace @niri/protocol && npm run build --workspace @niri/agent-config && npm run build --workspace @niri/iroh-transport",
+    "predev": "npm run build --workspace @mira/harness-protocol && npm run build --workspace @mira/harness-core && npm run build --workspace @mira/harness-server && npm run build --workspace @mira/harness-client-node && npm run build --workspace @mira/agent-llm && npm run build --workspace @mira/agent-context && npm run build --workspace @mira/agent-prompt && npm run build --workspace @mira/agent-loop && npm run build --workspace @niri/protocol && npm run build --workspace @niri/agent-config && npm run build --workspace @niri/iroh-transport",
+    "prestart": "npm run build --workspace @mira/harness-protocol && npm run build --workspace @mira/harness-core && npm run build --workspace @mira/harness-server && npm run build --workspace @mira/harness-client-node && npm run build --workspace @mira/agent-llm && npm run build --workspace @mira/agent-context && npm run build --workspace @mira/agent-prompt && npm run build --workspace @mira/agent-loop && npm run build --workspace @niri/protocol && npm run build --workspace @niri/agent-config && npm run build --workspace @niri/iroh-transport",
     "start": "tsx src/index.ts",
     "start:standalone": "tsx src/standalone.ts",
     "dev": "tsx watch src/index.ts",
-    "pretest": "npm run build --workspace @mira/harness-protocol && npm run build --workspace @mira/harness-core && npm run build --workspace @mira/harness-server && npm run build --workspace @mira/harness-client-node && npm run build --workspace @niri/protocol && npm run build --workspace @niri/agent-config && npm run build --workspace @niri/iroh-transport",
+    "pretest": "npm run build --workspace @mira/harness-protocol && npm run build --workspace @mira/harness-core && npm run build --workspace @mira/harness-server && npm run build --workspace @mira/harness-client-node && npm run build --workspace @mira/agent-llm && npm run build --workspace @mira/agent-context && npm run build --workspace @mira/agent-prompt && npm run build --workspace @mira/agent-loop && npm run build --workspace @niri/protocol && npm run build --workspace @niri/agent-config && npm run build --workspace @niri/iroh-transport",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --import tsx --test 'src/**/*.test.ts'"
   },

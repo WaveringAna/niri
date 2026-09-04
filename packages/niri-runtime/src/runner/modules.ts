@@ -7,7 +7,6 @@ import { delegationProfileNames, isDelegationAvailable } from "../delegation/man
 import { getMcpToolDefinitions, hasMcpTool, callMcpTool } from "../mcp"
 import { buildToolHandlers } from "./loop-tool-registry"
 import { createNiriToolCatalog, modelFacingClientCapabilities } from "./tool-catalog"
-import type { ToolHandler as NiriToolHandler } from "./loop-shared"
 
 /**
  * Niri's tool surface, grouped into `ToolModule`s.
@@ -67,15 +66,6 @@ function fullCatalog(): ToolDefinition[] {
   })
 }
 
-/**
- * Niri's handlers take the same `{ convId, state, call, args }` shape the loop
- * passes, plus `hooks`. The event types differ only in that Niri narrows
- * `source` to a union, so the boundary cast is safe in that direction.
- */
-function adapt(handler: NiriToolHandler): ToolHandler {
-  return handler as unknown as ToolHandler
-}
-
 function moduleFor(spec: ModuleSpec): ToolModule {
   const owned = new Set(spec.tools)
   return {
@@ -90,7 +80,7 @@ function moduleFor(spec: ModuleSpec): ToolModule {
       const picked: Record<string, ToolHandler> = {}
       for (const name of owned) {
         const handler = all[name]
-        if (handler) picked[name] = adapt(handler)
+        if (handler) picked[name] = handler
       }
       return picked
     },

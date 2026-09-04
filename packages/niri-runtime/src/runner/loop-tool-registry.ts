@@ -1,3 +1,4 @@
+import type { ClientToolExecutor } from "@mira/harness-core"
 import OpenAI from "openai"
 import { AGENT_ID } from "../agent-config"
 import type { DiscordAttachmentInput } from "../discord/attachments"
@@ -46,7 +47,7 @@ import { collectAgentCompactionRecollection } from "./loop-completion"
 import type { ToolHandler } from "./loop-shared"
 import { pushToolMessage, recordToolResult, runStandardTool, toolError } from "./loop-tool-runtime"
 import { parseImageDetail, saveRestSnapshot } from "./util"
-import type { LoopHooks } from "./types"
+
 import {
   cancelDelegatedTask,
   describeDelegatedTask,
@@ -137,7 +138,7 @@ function hasAlreadyBeenNudged(conversation: Message[], tool: string, filePath: s
 }
 
 async function executeClientText(
-  hooks: Pick<LoopHooks, "clientTools">,
+  hooks: { clientTools: ClientToolExecutor },
   ctx: Parameters<ToolHandler>[0],
   tool: "python" | "shell" | "read_file" | "write_file" | "edit_file",
 ): Promise<string> {
@@ -274,14 +275,14 @@ function formatDiscordSendResult(result: Record<string, unknown>): string {
   return "sent!"
 }
 
-async function resetClientPythonAtSessionBoundary(hooks: Pick<LoopHooks, "clientTools">): Promise<void> {
+async function resetClientPythonAtSessionBoundary(hooks: { clientTools: ClientToolExecutor }): Promise<void> {
   if (!hooks.clientTools.getCapabilities().includes("python")) return
   const reset = await hooks.clientTools.execute({ agentId: AGENT_ID, tool: "python", args: { action: "reset" }, timeoutMs: 5_000 })
   if (reset.status !== "ok") console.warn(`[python] session reset failed: ${reset.output ?? reset.status}`)
 }
 
 export function buildToolHandlers(
-  hooks: Pick<LoopHooks, "clientTools">,
+  hooks: { clientTools: ClientToolExecutor },
   options: { emitClientToolEvents?: boolean } = {},
 ): Record<string, ToolHandler> {
   const emitClientToolEvents = options.emitClientToolEvents !== false
@@ -379,7 +380,7 @@ export function buildToolHandlers(
       return { isWait: true }
     },
 
-    rest: async ({ convId, state, hooks, call, args }) => {
+    rest: async ({ convId, state, runtime, call, args }) => {
       if (args.note) console.log("[runner] rest note:", args.note)
       recordToolResult(convId, state, call, "rest", args, "Goodnight.")
       contextArchive().archiveMessages(state.conversation, "rest")
@@ -396,7 +397,7 @@ export function buildToolHandlers(
         args.note as string | undefined,
       )
       await resetClientPythonAtSessionBoundary(hooks)
-      await hooks.clearSession()
+      await runtime.session.clear()
       return { shouldRest: true }
     },
 
@@ -685,7 +686,6 @@ export function buildToolHandlers(
                 source: "discord",
                 triggeredAt: new Date().toISOString(),
                 content: `[posture queue]\n\n${result.queue}\n\nthese messages remain queued and unseen; use discord_inbox to sift through them.`,
-                raw: { type: "posture_queue" },
               },
               { priority: true },
             )

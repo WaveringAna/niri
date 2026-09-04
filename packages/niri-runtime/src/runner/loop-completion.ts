@@ -7,6 +7,7 @@ import {
 } from "@mira/agent-llm"
 import type { ToolDefinition } from "@mira/harness-core"
 import { AGENT_ID } from "../agent-config"
+import { recallState } from "./runtime"
 import { logMessage } from "../db"
 import { recordMetric } from "../metrics"
 import { emit } from "../stream"
@@ -207,12 +208,12 @@ function quarantineLatestIncomingForContentFilter(state: LoopState): { redacted:
 
     ;(message as { content: unknown }).content = redactedIncomingText(raw)
     state.conversation.push({ role: "user", content: CONTENT_FILTER_NOTICE })
-    state.memoryRecallPending = false
+    recallState(state).pending = false
     return { redacted: true, index: i }
   }
 
   state.conversation.push({ role: "user", content: CONTENT_FILTER_NOTICE })
-  state.memoryRecallPending = false
+  recallState(state).pending = false
   return { redacted: false, index: null }
 }
 

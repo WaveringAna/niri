@@ -11,7 +11,8 @@ import type {
   ToolExecutionOutcome,
   ToolHandler,
 } from "./loop-shared"
-import type { LoopHooks, LoopState } from "./types"
+import type { AgentRuntime, LoopHooks } from "@mira/agent-loop"
+import type { LoopState } from "./types"
 import { parseToolArguments } from "./util"
 
 type StandardToolSpec<
@@ -157,6 +158,7 @@ export async function runStandardTool<
 export async function executeToolCall(
   convId: number,
   state: LoopState,
+  runtime: AgentRuntime,
   hooks: LoopHooks,
   handlers: Record<string, ToolHandler>,
   call: FunctionToolCall,
@@ -184,7 +186,7 @@ export async function executeToolCall(
       recordToolResult(convId, state, call, call.function.name, { _unknown_tool: call.function.name }, errorText)
       return {}
     }
-    return await handler({ convId, state, hooks, call, args: parsed.args })
+    return await handler({ convId, state, runtime, hooks, call, args: parsed.args })
   } catch (err) {
     const errorText = toolError(err)
     if (!hasToolResponse(state, call)) {

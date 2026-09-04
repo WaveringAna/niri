@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import type { LoopState } from "./types"
 import { __completionTest } from "./loop-completion"
+import { recallState } from "./runtime"
 import { AGENT_ID } from "../agent-config"
 
 test("consumeCompletionStream preserves reasoning_content on assistant messages", async () => {
@@ -104,17 +105,15 @@ test("content-filter recovery redacts discord body but keeps routing context", (
     tokenCount: 0,
     contextSize: 0,
     toolInFlight: false,
-    memoryRecallCooldowns: {},
-    memoryRecallTurn: 1,
-    memoryRecallPending: true,
     shutdownRequested: false,
     turnInFlight: false,
+    extras: new Map(),
   }
 
   const result = __completionTest.quarantineLatestIncomingForContentFilter(state)
 
   assert.deepEqual(result, { redacted: true, index: 0 })
-  assert.equal(state.memoryRecallPending, false)
+  assert.equal(recallState(state).pending, false)
   assert.equal(state.conversation.length, 2)
   assert.match(String(state.conversation[0]?.content), /\[discord\/dm\] @ana/)
   assert.match(String(state.conversation[0]?.content), /source_item_id: 456/)

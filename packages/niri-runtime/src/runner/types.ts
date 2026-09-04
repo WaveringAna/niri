@@ -1,39 +1,10 @@
-import type { Message, RunnerState, UserMessage } from "../types"
-import type { ClientToolExecutor, ToolDefinition } from "@mira/harness-core"
+import type { LoopState as AgentLoopState } from "@mira/agent-loop"
 
 export type ImageDetail = "auto" | "low" | "high"
 
-export interface LoopState {
-  conversation: Message[]
-  pendingInputs: UserMessage[]
-  tokenCount: number
-  contextSize: number
-  toolInFlight: boolean
-  memoryRecallCooldowns: Record<number, number>
-  memoryRecallTurn: number
-  memoryRecallPending: boolean
-  shutdownRequested: boolean
-  turnInFlight: boolean
-}
-
-export interface LoopHooks {
-  clientTools: ClientToolExecutor
-  getTools: () => ToolDefinition[]
-  waitForEvent: () => Promise<UserMessage | null>
-  waitForEventWithTimeout: (timeoutMs: number) => Promise<UserMessage | null>
-  injectIncomingEvent: (convId: number, event: UserMessage) => void
-  enqueueEvent?: (event: UserMessage, options?: { priority?: boolean }) => boolean
-  flushDeferredEvents: () => void
-  clearSession: () => Promise<void>
-  saveSession: () => Promise<void>
-  saveShutdownSnapshot: () => Promise<void>
-  shouldShutdown: () => boolean
-  resolveShutdown: () => void
-}
-
-export interface RunnerStateInternal extends RunnerState {
-  toolInFlight: boolean
-  shutdownRequested: boolean
-  turnInFlight: boolean
-  deferredEvents: Array<{ event: UserMessage; priority: boolean }>
-}
+/**
+ * The loop's own state, re-exported so runtime code has one name for it.
+ * Declaring a separate shape here is how the tool context silently drifted
+ * from what the loop actually passes.
+ */
+export type LoopState = AgentLoopState

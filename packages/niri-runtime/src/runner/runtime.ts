@@ -176,3 +176,16 @@ export function createNiriRuntime(providers: ProviderSet): AgentRuntime {
 
   return runtime
 }
+
+
+let cached: AgentRuntime | null = null
+
+/**
+ * The process's agent runtime, built on first use.
+ *
+ * Shared by the session manager and by delegated workers, which run their own
+ * small loops but execute the same tool handlers.
+ */
+export function niriRuntime(): AgentRuntime {
+  return (cached ??= createNiriRuntime(createNiriProviders()))
+}
