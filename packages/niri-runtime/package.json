@@ -35,7 +35,7 @@
     "@openrouter/sdk": "^0.12.21",
     "better-sqlite3": "^12.8.0",
     "discord.js": "^14.25.1",
-    "fastify": "^5.8.4",
+    "fastify": "^5.12.1",
     "openai": "^6.33.0",
     "sqlite-vec": "^0.1.9",
     "undici": "^6.27.0"
