@@ -2,6 +2,7 @@ import type { ToolDefinition } from "@mira/harness-core"
 import type {
   AgentRuntime,
   FunctionToolCall,
+  LoopHooks,
   LoopState,
   ToolArgs,
   ToolExecutionOutcome,
@@ -154,7 +155,7 @@ export async function executeToolCall(
   state: LoopState,
   handlers: Record<string, ToolHandler>,
   call: FunctionToolCall,
-  flushDeferredEvents: () => void,
+  hooks: LoopHooks,
 ): Promise<ToolExecutionOutcome> {
   const parsed = parseToolArguments(call.function.arguments)
   if (!parsed.ok) {
@@ -179,7 +180,7 @@ export async function executeToolCall(
       )
       return {}
     }
-    return await handler({ convId, state, runtime, call, args: parsed.args })
+    return await handler({ convId, state, runtime, hooks, call, args: parsed.args })
   } catch (err) {
     const errorText = toolError(err)
     if (!hasToolResponse(state, call)) {
@@ -191,7 +192,7 @@ export async function executeToolCall(
   } finally {
     if (!waiting) {
       state.toolInFlight = false
-      flushDeferredEvents()
+      hooks.flushDeferredEvents()
     }
   }
 }

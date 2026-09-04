@@ -85,6 +85,11 @@ export type ToolExecutionContext = {
   convId: number
   state: LoopState
   runtime: AgentRuntime
+  /**
+   * Loop control. Only lifecycle tools (`wait`, `wait_then_continue`, `rest`)
+   * legitimately need this; everything else should work through `runtime`.
+   */
+  hooks: LoopHooks
   call: FunctionToolCall
   args: ToolArgs
 }
@@ -100,6 +105,9 @@ export type ToolModuleContext = {
   identity: AgentIdentity
   runtime: AgentRuntime
 }
+
+/** Loop-scoped context, for modules that vary their surface per wake. */
+export type ToolModuleRunContext = ToolModuleContext & { hooks: LoopHooks }
 
 /**
  * A cohesive group of tools, contributed independently.

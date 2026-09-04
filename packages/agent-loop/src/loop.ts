@@ -142,7 +142,7 @@ async function processToolCalls(
       continue
     }
 
-    const outcome = await executeToolCall(runtime, convId, state, handlers, call, hooks.flushDeferredEvents)
+    const outcome = await executeToolCall(runtime, convId, state, handlers, call, hooks)
     if (outcome.shouldRest) return true
 
     // An event that arrived mid-turn preempts the remaining calls, so the agent
