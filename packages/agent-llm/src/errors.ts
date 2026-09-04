@@ -9,10 +9,9 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 /**
  * Provider error classification.
  *
- * Ported verbatim from `@niri/runtime`'s `runner/util.ts`, which accumulated
- * these patterns against real failures from OpenAI, Anthropic, OpenRouter,
- * DeepSeek, and LM Studio. They are matched on message text because none of
- * these providers expose a stable machine-readable reason.
+ * These patterns were accumulated against real failures from OpenAI,
+ * Anthropic, OpenRouter, DeepSeek, and LM Studio. They match on message text
+ * because none of these providers expose a stable machine-readable reason.
  */
 
 export function isQuotaExhaustedError(err: unknown): boolean {

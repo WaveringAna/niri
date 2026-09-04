@@ -1,11 +1,6 @@
 import type { Message } from "@mira/agent-context"
 
-/**
- * Ports the loop needs from its host. Each replaces something that used to be
- * a module-level singleton in `@niri/runtime` (`emit`, `logMessage`,
- * `recordMetric`, `saveSession`), so a second harness can supply its own
- * without inheriting Niri's SQLite schema or console formatting.
- */
+/** Ports the loop needs from its host. */
 
 // ---------------------------------------------------------------------------
 // Events
@@ -82,10 +77,7 @@ export interface SessionStore {
 // Identity
 // ---------------------------------------------------------------------------
 
-/**
- * Who this agent is and where its durable state lives. Replaces the
- * `AGENT_ID` / `AGENT_NAME` / `NIRI_HOME` module constants.
- */
+/** Who this agent is and where its durable state lives. */
 export type AgentIdentity = {
   /** Stable id used by the control plane and metric keys. */
   id: string

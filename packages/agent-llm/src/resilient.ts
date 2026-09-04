@@ -19,12 +19,8 @@ import type {
 /**
  * Failure-tolerant completion.
  *
- * Extracted from `fetchCompletion` in `@niri/runtime`'s `loop-completion.ts`,
- * which had accumulated 250+ lines of hard-won recovery around a one-line API
- * call: primary/fallback routing, quota failover, backoff, prompt-size retry,
- * and content-filter recovery. That is provider behavior, not loop behavior, so
- * it belongs here — and a reviewer working through a large diff needs the
- * prompt-size handling just as much as a chat agent does.
+ * Primary/fallback routing, quota failover, backoff, prompt-size retry, and
+ * content-filter recovery. All of it is provider behavior, not loop behavior.
  *
  * Recovery that requires *mutating the conversation* (dropping images,
  * redacting a blocked message, compacting) stays with the caller, which owns

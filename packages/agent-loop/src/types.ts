@@ -34,14 +34,7 @@ export type EnqueueOptions = {
 // Loop state
 // ---------------------------------------------------------------------------
 
-/**
- * Mutable state for one wake cycle.
- *
- * Note what is *not* here any more: `memoryRecallCooldowns`, `memoryRecallTurn`,
- * and `memoryRecallPending` moved into Niri's memory `ToolModule`, since no
- * other harness has passive memory recall. Extensions keep their own state in
- * `extras`, keyed by module name.
- */
+/** Mutable state for one wake cycle. */
 export interface LoopState {
   conversation: Message[]
   pendingInputs: AgentInput[]
@@ -65,12 +58,7 @@ export type LoopBudget = {
 
 export type FunctionToolCall = OpenAI.Chat.ChatCompletionMessageToolCall & { type: "function" }
 
-/**
- * Parsed tool arguments. Left as an open record rather than the old closed
- * `ToolArgs` union — that union had accumulated every Discord and memory field
- * in the codebase, which is precisely the coupling being removed. Modules
- * narrow their own arguments.
- */
+/** Parsed tool arguments. Modules narrow their own. */
 export type ToolArgs = Record<string, unknown>
 
 /** Control signals a tool can send back to the loop. */
@@ -98,8 +86,8 @@ export type ToolHandler = (ctx: ToolExecutionContext) => Promise<ToolExecutionOu
 
 /**
  * Context a module gets when asked what it offers. Recomputed each turn, so a
- * module can vary its surface with live conditions (Niri hides Discord tools
- * when the gateway is down).
+ * module can vary its surface with live conditions — hiding tools whose
+ * backing service is down, for instance.
  */
 export type ToolModuleContext = {
   identity: AgentIdentity
@@ -109,14 +97,7 @@ export type ToolModuleContext = {
 /** Loop-scoped context, for modules that vary their surface per wake. */
 export type ToolModuleRunContext = ToolModuleContext & { hooks: LoopHooks }
 
-/**
- * A cohesive group of tools, contributed independently.
- *
- * This is the replacement for the 800-line `loop-tool-registry.ts` that
- * statically imported Discord, memory, posture, work-ledger, process-jobs and
- * delegation. Niri now registers those as modules; a PR reviewer registers
- * `githubTools`, `diffTools`, `reviewTools` and gets none of Niri's.
- */
+/** A cohesive group of tools, contributed independently. */
 export type ToolModule = {
   name: string
   /** Tool schemas shown to the model. Return `[]` to disable dynamically. */
@@ -141,13 +122,7 @@ export type TurnPolicyContext = {
   calledTools: boolean
 }
 
-/**
- * A cross-cutting behavioral rule applied around each turn.
- *
- * This is where `applyDiscordSendNudge` goes — it was Discord-specific logic
- * sitting in the core loop. Niri registers it as a policy; a PR reviewer
- * registers "you analysed the diff but never called submit_review".
- */
+/** A cross-cutting behavioral rule applied around each turn. */
 export type TurnPolicy = {
   name: string
   /** Runs before the model turn. May mutate `state.conversation`. */
@@ -166,9 +141,7 @@ export type TurnPolicy = {
 /**
  * Everything one agent needs to run, assembled by the host.
  *
- * Constructing this is the whole of "wiring up a harness": pick providers,
- * a compactor, tool modules, policies and a prompt builder. Nothing is read
- * from the environment at import time.
+ * Nothing here is read from the environment at import time.
  */
 export interface AgentRuntime {
   readonly identity: AgentIdentity
@@ -183,17 +156,14 @@ export interface AgentRuntime {
 
   /** Full tool surface for this turn, across all modules. */
   getTools(): ToolDefinition[]
-  /** Grounding text for summarization; Niri returns soul + core + journal. */
+  /** Background on the agent, prepended to summarization prompts. */
   summaryGrounding(): Promise<SummaryGrounding>
   /** Build the opening conversation for a fresh wake. */
   buildBootstrap(input: AgentInput): Promise<Message[]>
 
   /**
    * Last transform before a request is sent, re-run on every attempt.
-   *
-   * This is where per-turn message work belongs that is specific to a harness:
-   * Niri sanitizes tool-call ordering and injects passively recalled memory
-   * here. Returning `messages` unchanged is a valid implementation.
+   * Returning `messages` unchanged is a valid implementation.
    */
   prepareCompletionMessages?(messages: Message[], state: LoopState): Promise<Message[]> | Message[]
 
@@ -217,9 +187,8 @@ export interface AgentRuntime {
 }
 
 /**
- * Side-effecting callbacks the loop needs from its driver (the session manager
- * that owns event queueing and shutdown). Narrower than the old `LoopHooks`:
- * `clientTools` and `getTools` moved onto `AgentRuntime`.
+ * Callbacks the loop needs from its driver — the session manager that owns
+ * event queueing and shutdown.
  */
 export interface LoopHooks {
   waitForEvent(): Promise<AgentInput | null>

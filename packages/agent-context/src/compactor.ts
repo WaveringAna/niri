@@ -22,9 +22,7 @@ import {
 /**
  * Drives compaction for one agent.
  *
- * Ported from `applyLLMCompaction` in `@niri/runtime`'s `runner/loop.ts`, where
- * it was interleaved with loop state, metrics, and Discord-aware tool-name
- * checks. The escalation order is unchanged and is the point of the design:
+ * The escalation order is the point of the design:
  *
  *  1. Prune bulky archived tool output — cheap, and often enough on its own.
  *  2. Merge the existing summary frontier — reuses work already paid for.

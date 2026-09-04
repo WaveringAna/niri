@@ -4,15 +4,13 @@ import type { SummaryPromptContext, SummaryPrompts } from "./types.js"
  * Default, agent-neutral summarization prompts.
  *
  * These describe *what* to preserve without asserting anything about who the
- * agent is. A harness with a personality (Niri) or a specialist rubric (a PR
- * reviewer) supplies its own via {@link SummaryPrompts}; most only need to
- * override `segment` and `merge`.
+ * agent is. A harness supplies its own via {@link SummaryPrompts}; most only
+ * need to override `segment` and `merge`.
  */
 
 /**
- * Kept verbatim from Niri's original prompt, and exported because it is not
- * personality — it is a correctness rule about what compaction must never drop.
- * Any agent that talks to people should include it.
+ * Exported because this is not personality — it is a correctness rule about
+ * what compaction must never drop. Any agent that talks to people wants it.
  */
 export const SAFETY_CRITICAL_SUMMARY_INSTRUCTION =
   "SAFETY-CRITICAL EVENTS ARE ALWAYS LOAD-BEARING. If the transcript contains anything involving someone's physical safety, mental health crisis, self-harm, suicidal ideation, overdose, abuse, or threat of violence — preserve it in full detail regardless of whether it was resolved. Include: what was said (direct quotes where possible), who was involved, how it was handled, and what the plan is going forward. These events do not get compressed into general relationship threads. They get their own section. Resolution does not make them less important — the fact that it happened and how people responded IS the memory."

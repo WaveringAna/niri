@@ -12,11 +12,9 @@ import type {
 /**
  * SQLite-backed context archive.
  *
- * Ported from `@niri/runtime`'s `runner/context-store.ts`, with one structural
- * change: it takes a database handle instead of calling a `getDb()` singleton,
- * so several agents can keep separate archives in one process. The package owns
- * its four tables via {@link ensureContextSchema} rather than relying on a host
- * migration.
+ * Takes a database handle rather than reaching for a singleton, so several
+ * agents can keep separate archives in one process. Owns its own tables via
+ * {@link ensureContextSchema} rather than relying on a host migration.
  */
 
 /** Creates the archive's tables. Idempotent; safe to call on every boot. */

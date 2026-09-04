@@ -11,16 +11,6 @@ import type {
   ToolModuleContext,
 } from "./types.js"
 
-/**
- * Tool registration and dispatch.
- *
- * Replaces `@niri/runtime`'s `loop-tool-registry.ts`, an 800-line file that
- * statically imported Discord state, posture, memory, the work ledger, process
- * jobs, and delegation. Adding a tool meant editing that file; a harness that
- * wanted none of them had no way to say so. Modules now contribute
- * independently and the loop only sees the merged surface.
- */
-
 /** Tools that block on external input, so they don't count as work in flight. */
 const WAIT_TOOL_NAMES = new Set(["wait", "wait_then_continue"])
 

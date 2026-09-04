@@ -1,15 +1,6 @@
 import type { ToolCapability, WorkspaceDescriptor } from "@mira/harness-protocol"
 import type { ToolDefinition } from "@mira/harness-core"
 
-/**
- * Composable system-prompt assembly.
- *
- * Replaces `bootstrap.ts`'s single 150-line template literal, which interleaved
- * reusable material (workspace description, tool docs, context-archive usage)
- * with Niri-only material (hearth/forge posture, "Always Be Journaling", rest
- * philosophy). Sections let a harness keep the first and drop the second.
- */
-
 export type PromptContext = {
   agentName: string
   homeDir: string
@@ -37,7 +28,7 @@ export type PromptSection = {
 }
 
 export type PromptBuilderOptions = {
-  /** Prepended verbatim ahead of every section — Niri's soul.md goes here. */
+  /** Prepended verbatim ahead of every section; the agent's identity goes here. */
   preamble?: string | null
   /** Separator between rendered sections. */
   separator?: string

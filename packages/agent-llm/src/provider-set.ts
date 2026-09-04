@@ -13,11 +13,8 @@ import type {
 } from "./types.js"
 
 /**
- * Failover and circuit breaking.
- *
- * Both used to be module-level `Map`s and file paths in `runner/util.ts`, which
- * meant a second agent in the same process shared one agent's quota ban. State
- * now lives on the instance.
+ * Failover and circuit breaking. State lives on the instance, so one agent's
+ * quota ban does not affect another in the same process.
  */
 
 const TRANSIENT_BACKOFF_MS = 30_000

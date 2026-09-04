@@ -171,10 +171,10 @@ export type SummaryGrounding = string | null
 /**
  * The summarizer's prompts, as data.
  *
- * Niri's original prompt hard-coded a specific agent's voice and pronouns
- * ("a living being, not a tool", "her inner life") directly into compaction.
- * Making the prompts injectable is what lets a PR reviewer summarize a long
- * review with "preserve every finding, file path, and line number" instead.
+ * A prompt that hard-codes one agent's voice and pronouns bakes that agent
+ * into compaction itself. Keeping the prompts injectable lets a specialist
+ * summarize on its own terms — "preserve every finding, file path, and line
+ * number" rather than an inner life.
  *
  * Every builder receives the same context, so an implementation can ignore what
  * it does not need.
@@ -322,8 +322,8 @@ export type PruneConfig = {
   edgeChars: number
   marker: string
   /**
-   * Tool names whose output must never be pruned. Niri protects
-   * `discord_*`/`memory_*`/`soul_*`; a reviewer protects its diff-fetch tools.
+   * Tool names whose output must never be pruned — typically anything whose
+   * output is the record itself rather than reproducible work.
    */
   protectedToolNames: (toolName: string) => boolean
 }

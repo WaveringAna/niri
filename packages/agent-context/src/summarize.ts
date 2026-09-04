@@ -9,14 +9,9 @@ import type {
 } from "./types.js"
 
 /**
- * Transcript summarization.
- *
- * Ported from `@niri/runtime`'s `runner/util.ts`. The mechanics — chunking a
- * long transcript, rejecting meta-replies, requiring a minimum reduction,
- * reporting provider quality to a circuit breaker — are unchanged. What was
- * extracted is the *voice*: the prompts are now supplied by the caller through
- * {@link SummaryPrompts}, so summarization no longer assumes it is compressing
- * one particular agent's inner life.
+ * Transcript summarization: chunk a long transcript, reject meta-replies,
+ * require a minimum reduction, and report provider quality to a circuit
+ * breaker. The voice is the caller's, via {@link SummaryPrompts}.
  */
 
 function looksLikeMetaReply(text: string): boolean {

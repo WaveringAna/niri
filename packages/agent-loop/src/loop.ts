@@ -14,15 +14,6 @@ import type {
 import { defaultLoopConfig } from "./types.js"
 import { executeToolCall, pushToolMessage, resolveTools } from "./tools.js"
 
-/**
- * The agent turn loop.
- *
- * Ported from `@niri/runtime`'s `runner/loop.ts`, with the Discord-specific
- * `applyDiscordSendNudge` lifted out into a {@link TurnPolicy} and compaction
- * delegated to `@mira/agent-context`. What remains is genuinely generic: run a
- * turn, dispatch its tools, handle interruption, compact when large, wait.
- */
-
 enum CycleOutcome {
   NoTools = "no_tools",
   ToolsDone = "tools_done",
@@ -259,9 +250,8 @@ export async function runLoop(
     }
     const turnMessages = state.conversation.slice(turnStart)
 
-    // Policies may inject a corrective message and re-run the turn immediately.
-    // This is where Niri's "you replied but never called discord_send" nudge
-    // lives now, instead of inside the loop.
+    // Policies may inject a corrective message and re-run the turn immediately,
+    // for rules like "you wrote a reply but never actually sent it".
     let nudged = false
     if (outcome !== CycleOutcome.Rest) {
       const policyCtx: TurnPolicyContext = {

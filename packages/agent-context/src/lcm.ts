@@ -17,9 +17,6 @@ import { summarizeContextSummaryBatchViaLLM } from "./summarize.js"
  * same-depth segments accumulate they are merged into a depth-n+1 parent, so
  * the active conversation holds a shallow frontier while the full history stays
  * recoverable as a DAG in the archive.
- *
- * Ported from `@niri/runtime`'s `runner/lcm-compaction.ts`. The archive, the
- * summarizer, and the batch size are injected instead of imported.
  */
 
 export type LcmDeps = {
