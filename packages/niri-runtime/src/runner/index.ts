@@ -1,51 +1,49 @@
-import { buildBootstrap } from "../bootstrap"
-import { clientTools } from "../client"
-import { areDiscordToolsAvailable } from "../discord/availability"
+import { runLoop, type AgentRuntime, type LoopState } from "@mira/agent-loop"
 import { markDiscordItem } from "../discord/state"
-import { endConversation, logMessage, startConversation } from "../db"
 import { emit } from "../stream"
-import { runLoop } from "./loop"
 import { setRunnerPresence } from "./presence"
-import { modelFacingClientCapabilities } from "./tool-catalog"
-import { niriToolModules } from "./modules"
-import type { AgentRuntime, ToolModuleContext } from "@mira/agent-loop"
-import { AGENT_ID, NIRI_HOME } from "../agent-config"
-import { AGENT_NAME, AGENT_STATE_DIR } from "./util"
-import { archiveContextMessages, normalizeActiveContextSummaryDepths } from "./context-store"
-import type { RunnerStateInternal } from "./types"
-import { clearSession, loadRestSnapshot, loadSession, saveRestSnapshot, saveSession } from "./util"
+import { contextArchive } from "./archive"
+import { createNiriProviders, createNiriRuntime, markRecallPending } from "./runtime"
+import { loadSession, saveRestSnapshot, saveSession } from "./util"
 import type { UserMessage } from "../types"
-import { delegationProfileNames, isDelegationAvailable } from "../delegation/manager"
 import { formatCurrentWorkForWake } from "../work-ledger"
 
 let eventResolvers: Array<(event: UserMessage | null) => void> = []
 let shutdownResolvers: Array<() => void> = []
 const PROCESS_STARTED_AT = new Date().toISOString()
 
-const MODULE_CONTEXT: ToolModuleContext = {
-  identity: { id: AGENT_ID, name: AGENT_NAME, homeDir: NIRI_HOME, stateDir: AGENT_STATE_DIR },
-  // The existing loop dispatches through buildToolHandlers, so nothing here
-  // reads `runtime`; it is supplied when the loop itself moves to @mira/agent-loop.
-  runtime: undefined as unknown as AgentRuntime,
+/** Session-manager state: the loop's own plus this process's queueing. */
+type RunnerState = LoopState & {
+  running: boolean
+  deferredEvents: Array<{ event: UserMessage; priority: boolean }>
 }
 
-function currentToolCatalog() {
-  return niriToolModules.flatMap((module) => module.definitions(MODULE_CONTEXT))
+/**
+ * `LoopState.pendingInputs` is typed as the loop's `AgentInput`, but this
+ * process only ever enqueues the richer `UserMessage`, so reads can narrow.
+ */
+function takePendingInput(): UserMessage | undefined {
+  return state.pendingInputs.shift() as UserMessage | undefined
 }
 
-const state: RunnerStateInternal = {
+const state: RunnerState = {
   contextSize: 0,
   running: false,
   conversation: [],
   pendingInputs: [],
   tokenCount: 0,
   toolInFlight: false,
-  memoryRecallCooldowns: {},
-  memoryRecallTurn: 0,
-  memoryRecallPending: false,
   shutdownRequested: false,
   turnInFlight: false,
+  extras: new Map(),
   deferredEvents: [],
+}
+
+let runtime: AgentRuntime | null = null
+
+/** Built once, on first wake, so importing this module opens nothing. */
+function agentRuntime(): AgentRuntime {
+  return (runtime ??= createNiriRuntime(createNiriProviders()))
 }
 
 /**
@@ -194,7 +192,7 @@ function resolveShutdown(): void {
 }
 
 async function saveRuntimeSnapshot(): Promise<void> {
-  archiveContextMessages(state.conversation, "runtime-checkpoint")
+  contextArchive().archiveMessages(state.conversation, "runtime-checkpoint")
   await saveSession(state.conversation)
   await saveRestSnapshot(state.conversation, "runtime checkpoint")
 }
@@ -203,7 +201,7 @@ async function saveRuntimeSnapshot(): Promise<void> {
 function waitForEvent(): Promise<UserMessage | null> {
   if (state.shutdownRequested) return Promise.resolve(null)
   if (state.pendingInputs.length > 0) {
-    return Promise.resolve(state.pendingInputs.shift()!)
+    return Promise.resolve(takePendingInput()!)
   }
   return new Promise<UserMessage | null>((resolve) => {
     eventResolvers.push(resolve)
@@ -214,7 +212,7 @@ function waitForEvent(): Promise<UserMessage | null> {
 function waitForEventWithTimeout(timeoutMs: number): Promise<UserMessage | null> {
   if (state.shutdownRequested) return Promise.resolve(null)
   if (state.pendingInputs.length > 0) {
-    return Promise.resolve(state.pendingInputs.shift()!)
+    return Promise.resolve(takePendingInput()!)
   }
   return new Promise<UserMessage | null>((resolve) => {
     let settled = false
@@ -273,10 +271,10 @@ function injectIncomingEvent(convId: number, event: UserMessage): void {
     role: "user",
     content: incomingMessage,
   })
-  logMessage(convId, "user", incomingMessage)
+  agentRuntime().transcript.logMessage(convId, "user", incomingMessage)
   emitUserEvent(event)
   // A new incoming event starts a new turn — recall once for it.
-  state.memoryRecallPending = true
+  markRecallPending(state)
   console.log("[runner] injected event from", event.source)
 }
 
@@ -298,16 +296,15 @@ export async function wake(event: UserMessage): Promise<void> {
   setRunnerPresence("awake")
   state.tokenCount = 0
   state.contextSize = 0
-  state.memoryRecallCooldowns = {}
-  state.memoryRecallTurn = 0
+  state.extras.clear()
   // The wake event is the first turn — recall once for it.
-  state.memoryRecallPending = true
+  markRecallPending(state)
 
   const saved = await loadSession()
   // The ledger is SQLite-owned state, so fetch it once immediately before this wake.
   const currentWork = formatCurrentWorkForWake()
   if (saved) {
-    state.conversation = normalizeActiveContextSummaryDepths(saved)
+    state.conversation = contextArchive().normalizeActiveContextSummaryDepths(saved)
     autoSeeDiscordEvent(event)
     if (currentWork) state.conversation.push({ role: "user", content: currentWork })
     state.conversation.push({
@@ -316,35 +313,28 @@ export async function wake(event: UserMessage): Promise<void> {
     })
   } else {
     autoSeeDiscordEvent(event)
-    state.conversation = normalizeActiveContextSummaryDepths(await buildBootstrap(event, await loadRestSnapshot(), {
-      clientCapabilities: modelFacingClientCapabilities(clientTools.getCapabilities()),
-      workspace: clientTools.getWorkspace(),
-      discord: areDiscordToolsAvailable(),
-      delegationProfiles: isDelegationAvailable() ? delegationProfileNames() : [],
-            currentWork,
-    }))
+    const bootstrap = await agentRuntime().buildBootstrap(event)
+    if (currentWork) bootstrap.splice(bootstrap.length - 1, 0, { role: "user", content: currentWork })
+    state.conversation = contextArchive().normalizeActiveContextSummaryDepths(bootstrap)
   }
 
-  const convId = startConversation(event.source, event.triggeredAt)
+  const convId = agentRuntime().transcript.startConversation(event.source, event.triggeredAt)
 
   const wakeMsg = state.conversation[state.conversation.length - 1]
   if (wakeMsg && wakeMsg.role === "user") {
-    logMessage(convId, "user", typeof wakeMsg.content === "string" ? wakeMsg.content : JSON.stringify(wakeMsg.content))
+    agentRuntime().transcript.logMessage(convId, "user", typeof wakeMsg.content === "string" ? wakeMsg.content : JSON.stringify(wakeMsg.content))
     emitUserEvent(event)
   }
 
   console.log("[runner] niri is awake")
 
   try {
-    const exit = await runLoop(convId, state, {
-      clientTools,
-      getTools: currentToolCatalog,
+    const exit = await runLoop(agentRuntime(), convId, state, {
       waitForEvent,
       waitForEventWithTimeout,
-      injectIncomingEvent,
-      enqueueEvent,
+      injectIncomingEvent: (id, incoming) => injectIncomingEvent(id, incoming as UserMessage),
+      enqueueEvent: (incoming, options) => enqueueEvent(incoming as UserMessage, options),
       flushDeferredEvents,
-      clearSession,
       saveSession: saveRuntimeSnapshot,
       saveShutdownSnapshot: saveRuntimeSnapshot,
       shouldShutdown: () => state.shutdownRequested,
@@ -362,13 +352,11 @@ export async function wake(event: UserMessage): Promise<void> {
     }
   } finally {
     const wasShutdownRequested = state.shutdownRequested
-    endConversation(convId, state.tokenCount)
+    agentRuntime().transcript.endConversation(convId, state.tokenCount)
     state.running = false
     state.conversation = []
     state.toolInFlight = false
-    state.memoryRecallCooldowns = {}
-    state.memoryRecallTurn = 0
-    state.memoryRecallPending = false
+    state.extras.clear()
     state.shutdownRequested = false
     state.turnInFlight = false
     if (!wasShutdownRequested) flushDeferredEvents()
@@ -379,7 +367,7 @@ export async function wake(event: UserMessage): Promise<void> {
     console.log("[runner] niri is resting")
 
     if (!wasShutdownRequested && state.pendingInputs.length > 0) {
-      const next = state.pendingInputs.shift()!
+      const next = takePendingInput()!
       console.log("[runner] pending event queued, waking again")
       await wake(next)
     }

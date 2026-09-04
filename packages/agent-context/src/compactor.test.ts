@@ -3,9 +3,22 @@ import { test } from "node:test"
 import Database from "better-sqlite3"
 import { createSqliteContextArchive } from "./sqlite-archive.js"
 import { createLcmEngine } from "./lcm.js"
-import { createContextCompactor, defaultPruneConfig, pruneToolOutputsForCompaction } from "./compactor.js"
+import {
+  createContextCompactor,
+  defaultPruneConfig,
+  pruneToolOutputsForCompaction,
+  shouldDeferSmallFollowUpCompaction,
+} from "./compactor.js"
 import { defaultSummaryPrompts } from "./prompts.js"
 import type { LcmConfig, Message, SummarizerModel, SummaryCircuit } from "./types.js"
+
+/** Niri's production thresholds, which the deferral tests are written against. */
+const LCM_DEFER: LcmConfig = {
+  summaryBatchSize: 4,
+  compactTriggerTokens: 90_000,
+  compactHardTriggerTokens: 115_000,
+  compactMinNewMessages: 24,
+}
 
 const LCM: LcmConfig = {
   summaryBatchSize: 4,
@@ -247,4 +260,18 @@ test("two agents in one process keep separate archives", async () => {
   await a.compactor.maybeCompact({ messages: conversation(20), observedPromptTokens: 5_000, phase: "pre-turn" })
   assert.ok(a.archive.grep("request 1").length > 0)
   assert.equal(b.archive.grep("request 1").length, 0)
+})
+
+test("a small follow-up compaction waits for a meaningful batch of new messages", () => {
+  // Summarizing a handful of new messages costs a model call and produces a
+  // worse summary than it saves, so defer until enough has accumulated.
+  assert.equal(shouldDeferSmallFollowUpCompaction(true, 8, 90_000, LCM_DEFER), true)
+  assert.equal(shouldDeferSmallFollowUpCompaction(true, 24, 90_000, LCM_DEFER), false)
+  // With no prior summary there is nothing to defer behind.
+  assert.equal(shouldDeferSmallFollowUpCompaction(false, 8, 90_000, LCM_DEFER), false)
+})
+
+test("hard context pressure overrides the small-batch deferral", () => {
+  assert.equal(shouldDeferSmallFollowUpCompaction(true, 8, 114_999, LCM_DEFER), true)
+  assert.equal(shouldDeferSmallFollowUpCompaction(true, 8, 115_000, LCM_DEFER), false)
 })

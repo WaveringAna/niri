@@ -3,9 +3,10 @@ import { test } from "node:test"
 import type OpenAI from "openai"
 import type { CompactionOutcome, ContextCompactor, LcmConfig } from "@mira/agent-context"
 import type { Provider, ProviderSet } from "@mira/agent-llm"
-import { createLoopState, runLoop } from "./loop.js"
+import { __loopTest, createLoopState, runLoop } from "./loop.js"
 import { resolveTools } from "./tools.js"
 import { nullEventSink, nullMetricsSink } from "./ports.js"
+import { defaultLoopConfig } from "./types.js"
 import type {
   AgentEvent,
   AgentIdentity,
@@ -408,4 +409,41 @@ test("shutdown mid-loop persists a snapshot and exits", async () => {
   assert.equal(exit, "rest")
   assert.equal(snapshots, 1)
   assert.equal(resolved, 1)
+})
+
+test("an inferred continuation delivers an event that arrives during the wait", async () => {
+  const { runtime } = buildRuntime({ turns: [] })
+  const state = createLoopState()
+  const calls: string[] = []
+  const event = { source: "chat", content: "still here", triggeredAt: "2026-05-01T04:40:00.000Z" }
+
+  await __loopTest.waitForImplicitContinuation(runtime, 42, state, hooks({
+    waitForEvent: async () => { throw new Error("unexpected indefinite wait") },
+    waitForEventWithTimeout: async (timeoutMs) => { calls.push(`wait:${timeoutMs}`); return event },
+    injectIncomingEvent: (convId, incoming) => {
+      calls.push(`inject:${incoming.content}`)
+      assert.equal(convId, 42)
+      assert.equal(incoming, event)
+    },
+    saveSession: async () => { throw new Error("event delivery should not synthesize a message") },
+  }), defaultLoopConfig)
+
+  assert.deepEqual(calls, ["wait:600000", "inject:still here"])
+  // The event itself becomes the next turn's input; no filler is added.
+  assert.deepEqual(state.conversation, [])
+})
+
+test("an inferred continuation that times out resumes with an in-band message", async () => {
+  const { runtime } = buildRuntime({ turns: [] })
+  const state = createLoopState()
+  let saved = 0
+
+  await __loopTest.waitForImplicitContinuation(runtime, 42, state, hooks({
+    waitForEventWithTimeout: async () => null,
+    saveSession: async () => { saved++ },
+  }), defaultLoopConfig)
+
+  assert.equal(state.conversation.length, 1)
+  assert.match(String(state.conversation[0]?.content), /wait elapsed with no incoming event/i)
+  assert.equal(saved, 1)
 })

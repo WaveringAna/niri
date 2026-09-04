@@ -318,4 +318,4 @@ export function createLoopState(pendingInputs: AgentInput[] = []): LoopState {
   }
 }
 
-export const __loopTest = { assistantContentText, isFunctionToolCall }
+export const __loopTest = { assistantContentText, isFunctionToolCall, waitForImplicitContinuation }

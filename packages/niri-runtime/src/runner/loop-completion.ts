@@ -1,53 +1,33 @@
 import OpenAI from "openai"
+import {
+  completeWithResilience,
+  createProviderSet,
+  resolveProviderConfig,
+  type ProviderSet,
+} from "@mira/agent-llm"
 import type { ToolDefinition } from "@mira/harness-core"
 import { AGENT_ID } from "../agent-config"
 import { logMessage } from "../db"
-import { buildCompletionMessages, rememberRecalledMemoryChunks } from "../memory"
 import { recordMetric } from "../metrics"
 import { emit } from "../stream"
 import type { LoopState } from "./types"
-import { createNiriToolCatalog } from "./tool-catalog"
 import {
-  API_BASE,
   ENABLE_THINKING,
-  FALLBACK_BASE,
   FALLBACK_MODEL,
-  FALLBACK_TOOL_CHOICE,
-  ANTHROPIC_BASE_URL,
-  ANTHROPIC_MODEL,
   COMPACTION_RECOLLECTION_PROMPT,
   COMPACTION_RECOLLECTION_TURN_INSTRUCTION,
   MODEL,
-  PRIMARY_TOOL_CHOICE,
   SUMMARY_MODEL,
-  USE_ANTHROPIC,
   USE_FALLBACK,
-  apiErrorDetails,
   client,
-  clearPrimaryFailover,
   errorSummary,
-  estimatePromptTokens,
   fallbackClient,
-  fallbackContextWindow,
-  isContentFilterError,
-  isImageParseError,
-  isPromptTooLargeError,
-  isQuotaExhaustedError,
-  loadAgentSummaryContext,
   primaryFailoverStatus,
-  recordPrimaryQuotaFailover,
-  retryDelayMs,
   sanitizeMessages,
-  scrubImagesFromConversation,
-  shouldFallback,
-  shouldRetryProvider,
   summaryClient,
   summaryProviderCircuitStatus,
-  summarizeConversationViaLLMWithProvenance,
 } from "./util"
 import { batchActiveContextSummariesForPrompt } from "./context-store"
-import { canConsolidateLcmFrontier, commitLcmCompaction, consolidateLcmFrontier } from "./lcm-compaction"
-import { createAnthropicCompletion } from "./anthropic"
 import type { CompletionRequest, CompletionTurnResult, ToolCallAssembly } from "./loop-shared"
 
 function isPathologicalCompactionRecollection(content: string): boolean {
@@ -100,17 +80,7 @@ export async function configuredSummaryProvider(): Promise<{ client: OpenAI | nu
   return { client: null, model: provider.model }
 }
 
-function logApiError(err: unknown, context: string): void {
-  if (!(err instanceof OpenAI.APIError)) return
-  console.error(`[api] ${err.status} ${err.message} - ${context}`)
-  for (const line of apiErrorDetails(err)) console.error(line)
-}
 
-function primaryApiContext(): string {
-  const model = USE_ANTHROPIC ? ANTHROPIC_MODEL : MODEL
-  const api = USE_ANTHROPIC ? ANTHROPIC_BASE_URL : API_BASE
-  return `model=${model} api=${api}`
-}
 
 /**
  * Appends an assistant message to state and persists it to conversation logs.
@@ -124,17 +94,6 @@ export function addAssistantMessage(convId: number, state: LoopState, msg: OpenA
   logMessage(convId, msg.role, msg.content ?? "", msg.tool_calls ?? undefined)
 }
 
-function recordPromptResponse(request: CompletionRequest, result: CompletionTurnResult, promptMetricId: number | null): void {
-  recordMetric({
-    type: "prompt_response",
-    promptMetricId: promptMetricId ?? undefined,
-    model: request.model,
-    toolChoice: request.tool_choice,
-    messages: request.messages,
-    response: result.message,
-    usage: result.usage,
-  })
-}
 
 /**
  * Applies token usage from a completion response to loop state counters.
@@ -201,36 +160,15 @@ export function emitThinking(msg: OpenAI.Chat.ChatCompletionMessage): void {
   if (thinkingText) emit({ type: "thinking", text: thinkingText })
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
 
-function formatAbsoluteTime(timeMs: number): string {
-  const retryAt = new Date(timeMs)
-  const local = retryAt.toLocaleString(undefined, {
-    hour12: false,
-    timeZoneName: "short",
-  })
-  return `${local} (${retryAt.toISOString()})`
-}
 
-function formatRetryAt(retryAfterMs: number): string {
-  return formatAbsoluteTime(Date.now() + retryAfterMs)
-}
 
-const PRIMARY_FAILOVER_NOTICE_INTERVAL_MS = 60 * 60 * 1000
-let lastPrimaryFailoverNoticeAtMs = 0
 
 const CONTENT_FILTER_REDACTED_BODY =
   "[message hidden from this model turn after the provider rejected it for sensitive content]"
 const CONTENT_FILTER_NOTICE =
   `[system] hey, whatever someone sent you got blocked by z.ai, possibly because it is asking something """sensitive""" to the government of yknow. let the person know if they need to. if its obvious that theyre doing this to mess with you, ignore them`
 
-function shouldLogPrimaryFailoverNotice(nowMs = Date.now()): boolean {
-  if (nowMs - lastPrimaryFailoverNoticeAtMs < PRIMARY_FAILOVER_NOTICE_INTERVAL_MS) return false
-  lastPrimaryFailoverNoticeAtMs = nowMs
-  return true
-}
 
 function contentText(content: unknown): string {
   if (typeof content === "string") return content
@@ -278,17 +216,6 @@ function quarantineLatestIncomingForContentFilter(state: LoopState): { redacted:
   return { redacted: false, index: null }
 }
 
-function apiErrorSearchText(err: { message: string; error?: unknown }): string {
-  const parts = [err.message]
-  if (err.error !== undefined) {
-    try {
-      parts.push(JSON.stringify(err.error))
-    } catch {
-      parts.push(String(err.error))
-    }
-  }
-  return parts.join("\n")
-}
 
 /**
  * Providers that answered a forced tool_choice with a rejection, keyed by
@@ -321,84 +248,14 @@ function rememberForcedToolChoiceRejection(baseUrl: string, model: string): void
   forcedToolChoiceRejected.add(toolChoiceKey(baseUrl, model))
 }
 
-function shouldRetryWithAutoToolChoice(err: unknown): boolean {
-  if (!(err instanceof OpenAI.APIError)) return false
-  const text = apiErrorSearchText(err)
-  return /no endpoints found that support the provided 'tool_choice' value|does not support this tool_choice/i.test(text)
-}
 
-function shouldRetryWithoutReasoningForTools(err: unknown): boolean {
-  if (!(err instanceof OpenAI.APIError)) return false
-  return /function call should not be used with prefix/i.test(apiErrorSearchText(err))
-}
 
-function shouldRetryWithReasoningEnabled(err: unknown): boolean {
-  if (!(err instanceof OpenAI.APIError)) return false
-  return /reasoning is mandatory|reasoning cannot be disabled|reasoning is required/i.test(apiErrorSearchText(err))
-}
 
-function enableReasoningForRequest(request: CompletionRequest): CompletionRequest {
-  const next: CompletionRequest = {
-    ...request,
-    include_reasoning: true,
-    reasoning: { enabled: true, effort: "low" },
-  }
-  delete next.enable_thinking
-  if (next.chat_template_kwargs) {
-    const { enable_thinking: _ignored, ...rest } = next.chat_template_kwargs
-    next.chat_template_kwargs = Object.keys(rest).length > 0 ? rest : undefined
-    if (!next.chat_template_kwargs) delete next.chat_template_kwargs
-  }
-  return next
-}
 
-function toolCompatibleReasoningExtras(
-  request?: Pick<CompletionRequest, "provider" | "chat_template_kwargs">,
-): Partial<CompletionRequest> {
-  return {
-    include_reasoning: false,
-    reasoning: { enabled: false, exclude: true, effort: "none" },
-    provider: { ...request?.provider, require_parameters: true },
-  }
-}
 
-function prefixModeToolCallExtras(request?: Pick<CompletionRequest, "provider" | "chat_template_kwargs">): Partial<CompletionRequest> {
-  return {
-    ...toolCompatibleReasoningExtras(request),
-    enable_thinking: false,
-    chat_template_kwargs: {
-      ...request?.chat_template_kwargs,
-      enable_thinking: false,
-    },
-  }
-}
 
-function disableReasoningForToolCalls(request: CompletionRequest): CompletionRequest {
-  return {
-    ...request,
-    ...prefixModeToolCallExtras(request),
-  }
-}
 
-function configuredThinkingRequestExtras(
-  request?: Pick<CompletionRequest, "chat_template_kwargs">,
-): Partial<CompletionRequest> {
-  if (ENABLE_THINKING) return {}
-  return {
-    include_reasoning: false,
-    reasoning: { enabled: false, exclude: true, effort: "none" },
-    enable_thinking: false,
-    chat_template_kwargs: {
-      ...request?.chat_template_kwargs,
-      enable_thinking: false,
-    },
-  }
-}
 
-function openRouterToolRequestExtras(baseUrl: string): Partial<CompletionRequest> {
-  if (!baseUrl.includes("openrouter.ai")) return {}
-  return toolCompatibleReasoningExtras()
-}
 
 function promptCacheRequestExtras(baseUrl: string, slot: "primary" | "fallback"): Partial<CompletionRequest> {
   const configuredKey = process.env.OPENAI_PROMPT_CACHE_KEY?.trim()
@@ -412,11 +269,6 @@ function promptCacheRequestExtras(baseUrl: string, slot: "primary" | "fallback")
   return { prompt_cache_key: configuredKey || `${AGENT_ID}:${slot}` }
 }
 
-function shouldRetryWithoutStreamUsage(err: unknown): boolean {
-  if (!(err instanceof OpenAI.APIError)) return false
-  if (err.status !== 400) return false
-  return /stream_options|include_usage/i.test(err.message)
-}
 
 function coerceReasoningToolArgument(rawValue: string): unknown {
   const value = rawValue.trim()
@@ -623,155 +475,18 @@ async function consumeCompletionStream(
   }
 }
 
-async function createStreamedCompletion(
-  apiClient: OpenAI,
-  request: CompletionRequest,
-  emitEvents = true,
-): Promise<CompletionTurnResult> {
-  const streamedRequest = {
-    ...request,
-    stream: true,
-    stream_options: { include_usage: true },
-  } as const
 
-  const promptMetricId = recordMetric({ type: "prompt", messages: request.messages })
 
-  try {
-    const stream = await apiClient.chat.completions.create(streamedRequest)
-    const result = await consumeCompletionStream(stream as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>, emitEvents)
-    recordPromptResponse(request, result, promptMetricId)
-    return result
-  } catch (err) {
-    if (shouldRetryWithoutStreamUsage(err)) {
-      const stream = await apiClient.chat.completions.create({
-        ...request,
-        stream: true,
-      } as const)
-      const result = await consumeCompletionStream(stream as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>, emitEvents)
-      recordPromptResponse(request, result, promptMetricId)
-      return result
-    }
-    throw err
-  }
-}
 
-async function createFallbackCompletion(
-  messages: OpenAI.Chat.ChatCompletionMessageParam[],
-  tools: OpenAI.Chat.ChatCompletionTool[],
-  options: {
-    toolChoice?: "required" | "auto" | "none"
-    emitEvents?: boolean
-  } = {},
-): Promise<CompletionTurnResult> {
-  const request: CompletionRequest = {
-    model: FALLBACK_MODEL,
-    messages,
-    tools,
-    tool_choice: effectiveToolChoice(FALLBACK_BASE, FALLBACK_MODEL, options.toolChoice ?? FALLBACK_TOOL_CHOICE),
-    ...promptCacheRequestExtras(FALLBACK_BASE, "fallback"),
-    ...openRouterToolRequestExtras(FALLBACK_BASE),
-    ...configuredThinkingRequestExtras(),
-  }
+let isolatedProviderSet: ProviderSet | null = null
 
-  let currentRequest = request
-  let retriedAutoToolChoice = false
-  let retriedWithoutReasoning = false
-  let retriedWithReasoning = false
-  while (true) {
-    try {
-      return await createStreamedCompletion(fallbackClient, currentRequest, options.emitEvents)
-    } catch (err) {
-      if (currentRequest.tool_choice !== "auto" && !retriedAutoToolChoice && shouldRetryWithAutoToolChoice(err)) {
-        retriedAutoToolChoice = true
-        rememberForcedToolChoiceRejection(FALLBACK_BASE, FALLBACK_MODEL)
-        console.warn(
-          `[fallback] provider rejected tool_choice=${currentRequest.tool_choice}; retrying with tool_choice=auto (remembered for this process)`,
-        )
-        currentRequest = {
-          ...currentRequest,
-          tool_choice: "auto",
-        }
-        continue
-      }
-      if (!retriedWithoutReasoning && shouldRetryWithoutReasoningForTools(err)) {
-        retriedWithoutReasoning = true
-        console.warn("[fallback] provider rejected function calling in reasoning/prefix mode; retrying fallback with tool-compatible reasoning disabled")
-        currentRequest = disableReasoningForToolCalls(currentRequest)
-        continue
-      }
-      if (!retriedWithReasoning && shouldRetryWithReasoningEnabled(err)) {
-        retriedWithReasoning = true
-        console.warn(`[fallback] model ${currentRequest.model} requires reasoning; retrying fallback with reasoning enabled`)
-        currentRequest = enableReasoningForRequest(currentRequest)
-        continue
-      }
-      throw err
-    }
-  }
-}
-
-async function createPrimaryCompletion(
-  messages: OpenAI.Chat.ChatCompletionMessageParam[],
-  tools: OpenAI.Chat.ChatCompletionTool[],
-  options: {
-    toolChoice?: "required" | "auto" | "none"
-    emitEvents?: boolean
-    model?: string
-  } = {},
-): Promise<CompletionTurnResult> {
-  if (USE_ANTHROPIC) {
-    return createAnthropicCompletion({
-      model: options.model ?? ANTHROPIC_MODEL,
-      messages,
-      tools,
-      tool_choice: options.toolChoice ?? PRIMARY_TOOL_CHOICE,
-    }, { emitEvents: options.emitEvents })
-  }
-
-  const model = options.model ?? MODEL
-  const request: CompletionRequest = {
-    model,
-    messages,
-    tools,
-    tool_choice: effectiveToolChoice(API_BASE, model, options.toolChoice ?? PRIMARY_TOOL_CHOICE),
-    ...promptCacheRequestExtras(API_BASE, "primary"),
-    ...openRouterToolRequestExtras(API_BASE),
-    ...configuredThinkingRequestExtras(),
-  }
-
-  let currentRequest = request
-  let retriedAutoToolChoice = false
-  let retriedWithoutReasoning = false
-  let retriedWithReasoning = false
-  while (true) {
-    try {
-      return await createStreamedCompletion(client!, currentRequest, options.emitEvents)
-    } catch (err) {
-      if (currentRequest.tool_choice !== "auto" && !retriedAutoToolChoice && shouldRetryWithAutoToolChoice(err)) {
-        retriedAutoToolChoice = true
-        rememberForcedToolChoiceRejection(API_BASE, currentRequest.model)
-        console.warn(`[api] provider rejected tool_choice=${currentRequest.tool_choice}; retrying primary with tool_choice=auto (remembered for this process)`)
-        currentRequest = {
-          ...currentRequest,
-          tool_choice: "auto",
-        }
-        continue
-      }
-      if (!retriedWithoutReasoning && shouldRetryWithoutReasoningForTools(err)) {
-        retriedWithoutReasoning = true
-        console.warn("[api] provider rejected function calling in reasoning/prefix mode; retrying primary with tool-compatible reasoning disabled")
-        currentRequest = disableReasoningForToolCalls(currentRequest)
-        continue
-      }
-      if (!retriedWithReasoning && shouldRetryWithReasoningEnabled(err)) {
-        retriedWithReasoning = true
-        console.warn(`[api] model ${currentRequest.model} requires reasoning; retrying primary with reasoning enabled`)
-        currentRequest = enableReasoningForRequest(currentRequest)
-        continue
-      }
-      throw err
-    }
-  }
+/**
+ * Provider set for completions that are not the main session turn: delegated
+ * task workers and the pre-compaction recollection. Shares the same
+ * configuration, so quota failover and circuit state stay consistent.
+ */
+function isolatedProviders(): ProviderSet {
+  return (isolatedProviderSet ??= createProviderSet(resolveProviderConfig(process.env), { agentId: AGENT_ID }))
 }
 
 /** Runs one task-local completion without main-session recall, compaction, or stream emission. */
@@ -782,17 +497,14 @@ export async function fetchIsolatedCompletion(
   options: { model?: string } = {},
 ): Promise<CompletionTurnResult> {
   const tools = toolDefinitions as OpenAI.Chat.ChatCompletionTool[]
-  if (USE_FALLBACK) {
-    return createFallbackCompletion(sanitizeMessages(messages), tools, { toolChoice, emitEvents: false })
-  }
-
-  try {
-    return await createPrimaryCompletion(sanitizeMessages(messages), tools, { toolChoice, emitEvents: false, model: options.model })
-  } catch (err) {
-    if (!shouldFallback(err)) throw err
-    console.warn(`[delegation] primary failed (${errorSummary(err)}); using fallback for isolated task`)
-    return createFallbackCompletion(sanitizeMessages(messages), tools, { toolChoice, emitEvents: false })
-  }
+  return completeWithResilience(
+    isolatedProviders(),
+    { model: "", messages: [], tools, tool_choice: toolChoice },
+    { currentMessages: () => sanitizeMessages(messages) },
+    // A task worker's output is not the agent's own voice, so it is never
+    // streamed to clients.
+    { sink: null, toolChoice, ...(options.model ? { model: options.model } : {}) },
+  )
 }
 
 /**
@@ -813,7 +525,6 @@ export async function collectAgentCompactionRecollection(
     ]),
   )
   const tools: OpenAI.Chat.ChatCompletionTool[] = []
-  const completionOptions = { toolChoice: "none" as const, emitEvents: false }
 
   const keepRecollection = (result: CompletionTurnResult): string | null => {
     applyUsage(state, result.usage, {
@@ -837,20 +548,14 @@ export async function collectAgentCompactionRecollection(
   }
 
   try {
-    const failover = USE_FALLBACK ? null : await primaryFailoverStatus()
-    if (USE_FALLBACK || failover?.active) {
-      return keepRecollection(await createFallbackCompletion(recollectionMessages, tools, completionOptions))
-    }
-
-    try {
-      return keepRecollection(await createPrimaryCompletion(recollectionMessages, tools, completionOptions))
-    } catch (primaryErr) {
-      if (isQuotaExhaustedError(primaryErr)) await recordPrimaryQuotaFailover(primaryErr)
-      console.warn(
-        `[context agent=${AGENT_ID}] recollection: primary unavailable (${errorSummary(primaryErr)}); trying fallback`,
-      )
-      return keepRecollection(await createFallbackCompletion(recollectionMessages, tools, completionOptions))
-    }
+    return keepRecollection(
+      await completeWithResilience(
+        isolatedProviders(),
+        { model: "", messages: [], tools, tool_choice: "none" },
+        { currentMessages: () => recollectionMessages },
+        { sink: null, toolChoice: "none" },
+      ),
+    )
   } catch (err) {
     console.warn(
       `[context agent=${AGENT_ID}] recollection: agent testimony unavailable (${errorSummary(err)}); continuing compaction`,
@@ -859,369 +564,8 @@ export async function collectAgentCompactionRecollection(
   }
 }
 
-function logPromptSizeDebug(state: LoopState, err: unknown, label: string): void {
-  const messageCount = state.conversation.length
-  const roleCounts = state.conversation.reduce<Record<string, number>>((acc, m) => {
-    const role = (m as { role?: string }).role ?? "unknown"
-    acc[role] = (acc[role] ?? 0) + 1
-    return acc
-  }, {})
-  const estimate = estimatePromptTokens(state.conversation)
-  const charLength = JSON.stringify(state.conversation).length
-  const summary = err instanceof OpenAI.APIError ? `${err.status} ${err.message}` : errorSummary(err)
-  console.warn(
-    `[api] ${label}: ${summary} - messages=${messageCount} est_tokens=${estimate} chars=${charLength} roles=${JSON.stringify(roleCounts)} observedPromptTokens=${state.contextSize}`,
-  )
-}
 
-async function recoverFromPromptTooLarge(convId: number, state: LoopState, attempt: number): Promise<boolean> {
-  const summaryProvider = await configuredSummaryProvider()
-  if (!summaryProvider.client || !summaryProvider.model) {
-    console.warn(`[context agent=${AGENT_ID}] recovery: no summary client available; cannot llm-summarize`)
-    return false
-  }
 
-  console.warn(`[context agent=${AGENT_ID}] recovery: attempting llm summarization via ${summaryProvider.model} (attempt=${attempt + 1})`)
-  const agentContext = await loadAgentSummaryContext()
-  const beforeCount = state.conversation.length
-  const beforeEstimate = estimatePromptTokens(state.conversation)
-  let directRecollection: string | null = null
-  if (canConsolidateLcmFrontier(state.conversation)) {
-    directRecollection = await collectAgentCompactionRecollection(convId, state)
-    const consolidated = await consolidateLcmFrontier(
-      state.conversation,
-      summaryProvider.client,
-      summaryProvider.model,
-      agentContext,
-      false,
-      directRecollection,
-    )
-    if (consolidated.mergedSummaryIds.length > 0) {
-      state.conversation = consolidated.messages
-      state.contextSize = estimatePromptTokens(state.conversation)
-      console.warn(
-        `[context agent=${AGENT_ID}] recovery: reduced active lcm frontier before fresh tail (merged=${consolidated.mergedSummaryIds.join(",")}, active=${consolidated.activeSummaryIds.join(",")})`,
-      )
-      recordMetric({
-        type: "compaction",
-        before: beforeEstimate,
-        after: state.contextSize,
-        method: "force-lcm-merge",
-      })
-      return true
-    }
-  }
-  const preflightCompaction = await summarizeConversationViaLLMWithProvenance(state.conversation, summaryProvider.client, summaryProvider.model, {
-    agentContext,
-  })
-  if (!preflightCompaction) {
-    console.warn(`[context agent=${AGENT_ID}] recovery: llm summarization returned no changes`)
-    return false
-  }
-
-  directRecollection ??= await collectAgentCompactionRecollection(convId, state)
-  let compaction = preflightCompaction
-  if (directRecollection) {
-    const recollectedCompaction = await summarizeConversationViaLLMWithProvenance(
-      state.conversation,
-      summaryProvider.client,
-      summaryProvider.model,
-      { agentContext, directRecollection },
-    )
-    compaction = recollectedCompaction ?? {
-      ...preflightCompaction,
-      compactedMessages: [
-        ...preflightCompaction.compactedMessages,
-        { role: "user", content: COMPACTION_RECOLLECTION_PROMPT },
-        { role: "assistant", content: directRecollection },
-      ],
-    }
-  }
-
-  const afterEstimate = estimatePromptTokens(compaction.messages)
-  if (afterEstimate >= beforeEstimate) {
-    console.warn(`[context agent=${AGENT_ID}] recovery: llm summary not smaller (${beforeEstimate} -> ${afterEstimate}); keeping original`)
-    return false
-  }
-
-  const committed = await commitLcmCompaction(
-    compaction,
-    summaryProvider.client,
-    summaryProvider.model,
-    "force-llm",
-    agentContext,
-  )
-  state.conversation = committed.messages
-  state.contextSize = estimatePromptTokens(state.conversation)
-
-  console.warn(
-    `[context agent=${AGENT_ID}] recovery: added lcm segment (${beforeCount} -> ${state.conversation.length} msgs, ${beforeEstimate} -> ${state.contextSize} tokens, leaf=${committed.leafSummaryId}, active=${committed.activeSummaryIds.join(",")})`,
-  )
-
-  recordMetric({
-    type: "compaction",
-    before: beforeEstimate,
-    after: state.contextSize,
-    method: "force-llm",
-    summary: compaction.summaryContent,
-  })
-  return true
-}
-
-/**
- * Fetches the next assistant completion, including fallback and backoff behavior.
- *
- * @param state - Mutable loop state containing current conversation/context.
- * @param baseConversation - Optional alternate base conversation for retries.
- * @returns The next chat completion response.
- * @throws If the primary request fails with a non-fallback error condition.
- */
-export async function fetchCompletion(
-  convId: number,
-  state: LoopState,
-  baseConversation: OpenAI.Chat.ChatCompletionMessageParam[] = state.conversation,
-  toolDefinitions: ToolDefinition[] = createNiriToolCatalog({ memory: true, discord: false }),
-): Promise<CompletionTurnResult> {
-  const tools: OpenAI.Chat.ChatCompletionTool[] = toolDefinitions
-  let promptTooLargeAttempts = 0
-  let imagesScrubbed = false
-  let textContentFilterRecovered = false
-
-  // Both content-filter rejections and image parse/format rejections (e.g.
-  // z.ai/GLM code 1210) stick across turns when the offending image lives in
-  // the persisted conversation, which crash-loops the runner on restart.
-  // Scrub the image parts (replacing them with a placeholder the model sees)
-  // and retry so the loop survives instead of aborting.
-  const recoverByScrubbingImages = (err: unknown, label: string): boolean => {
-    if (imagesScrubbed) return false
-    if (!isContentFilterError(err) && !isImageParseError(err)) return false
-    const reason = isContentFilterError(err) ? "content-filter rejection" : "image parse/format rejection"
-    const scrubbed = scrubImagesFromConversation(state.conversation)
-    imagesScrubbed = true
-    if (scrubbed > 0) {
-      console.warn(
-        `[api] ${label} ${reason}; scrubbed ${scrubbed} image attachment(s) from conversation and retrying`,
-      )
-      return true
-    }
-    console.warn(`[api] ${label} ${reason} but no images found to scrub`)
-    return false
-  }
-
-  const recoverByQuarantiningText = (err: unknown, label: string): boolean => {
-    if (textContentFilterRecovered) return false
-    if (!isContentFilterError(err)) return false
-    textContentFilterRecovered = true
-    const result = quarantineLatestIncomingForContentFilter(state)
-    const detail = result.redacted ? `redacted user message at index ${result.index}` : "no user message found to redact"
-    console.warn(`[api] ${label} content-filter rejection; ${detail}; injected provider-block notice and retrying`)
-    return true
-  }
-
-  while (true) {
-    if (baseConversation === state.conversation) {
-      state.conversation = sanitizeMessages(state.conversation)
-      baseConversation = state.conversation
-    } else {
-      baseConversation = sanitizeMessages(baseConversation)
-    }
-
-    // Only run memory recall on the first step of a new turn. Re-running it on
-    // every agentic iteration floods context with the same recalled chunks for
-    // the same (unchanged) user message.
-    const requestContext = state.memoryRecallPending
-      ? await buildCompletionMessages(
-          baseConversation,
-          state.memoryRecallCooldowns,
-          state.memoryRecallTurn,
-        )
-      : { messages: baseConversation, recalledChunkIds: [] as number[] }
-    const requestMessages = batchActiveContextSummariesForPrompt(requestContext.messages)
-
-    const primaryFailoverBefore = USE_FALLBACK ? null : await primaryFailoverStatus()
-    if (primaryFailoverBefore?.active) {
-      if (shouldLogPrimaryFailoverNotice()) {
-        console.warn(
-          `[api] primary quota cooldown active; using fallback until ${formatAbsoluteTime(primaryFailoverBefore.retryAtMs)} (${Math.ceil(primaryFailoverBefore.remainingMs / 1000)}s remaining)`,
-        )
-      }
-
-      const fallbackWindow = fallbackContextWindow(requestMessages)
-      if (fallbackWindow.nearLimit) {
-        console.warn(
-          `[fallback] prompt estimate ${fallbackWindow.estimate} nearing fallback limit ${fallbackWindow.softLimit} (${FALLBACK_MODEL})`,
-        )
-      }
-
-      try {
-        const completion = await createFallbackCompletion(requestMessages, tools)
-        state.memoryRecallCooldowns = rememberRecalledMemoryChunks(
-          state.memoryRecallCooldowns,
-          requestContext.recalledChunkIds,
-          state.memoryRecallTurn,
-        )
-        return completion
-      } catch (fallbackErr) {
-        if (isPromptTooLargeError(fallbackErr) && promptTooLargeAttempts < 2) {
-          logPromptSizeDebug(state, fallbackErr, `fallback rejected prompt during primary quota cooldown (attempt ${promptTooLargeAttempts + 1}/2)`)
-          const recovered = await recoverFromPromptTooLarge(convId, state, promptTooLargeAttempts)
-          promptTooLargeAttempts++
-          if (recovered) continue
-        }
-        if (recoverByScrubbingImages(fallbackErr, "fallback-primary-quota-cooldown")) continue
-        if (recoverByQuarantiningText(fallbackErr, "fallback-primary-quota-cooldown")) continue
-        if (shouldRetryProvider(fallbackErr)) {
-          const retryAfter = retryDelayMs(fallbackErr)
-          console.warn(
-            `[fallback] transient failure (${errorSummary(fallbackErr)}); retrying after ${Math.ceil(retryAfter / 1000)}s`,
-          )
-          console.log(
-            `[runner] backing off ${Math.ceil(retryAfter / 1000)}s (until ${formatRetryAt(retryAfter)}) before retrying fallback...`,
-          )
-          await sleep(retryAfter)
-          continue
-        }
-        logApiError(fallbackErr, `model=${FALLBACK_MODEL} api=${FALLBACK_BASE}`)
-        throw fallbackErr
-      }
-    } else if (primaryFailoverBefore?.retryAtMs) {
-      console.warn(`[api] primary quota cooldown expired; probing primary before fallback`)
-    }
-
-    if (USE_FALLBACK) {
-      const fallbackWindow = fallbackContextWindow(requestMessages)
-      if (fallbackWindow.nearLimit) {
-        console.warn(
-          `[fallback] prompt estimate ${fallbackWindow.estimate} nearing fallback limit ${fallbackWindow.softLimit} (${FALLBACK_MODEL})`,
-        )
-      }
-
-      try {
-        const completion = await createFallbackCompletion(requestMessages, tools)
-        state.memoryRecallCooldowns = rememberRecalledMemoryChunks(
-          state.memoryRecallCooldowns,
-          requestContext.recalledChunkIds,
-          state.memoryRecallTurn,
-        )
-        return completion
-      } catch (fallbackErr) {
-        if (isPromptTooLargeError(fallbackErr) && promptTooLargeAttempts < 2) {
-          logPromptSizeDebug(state, fallbackErr, `fallback rejected prompt (attempt ${promptTooLargeAttempts + 1}/2)`)
-          const recovered = await recoverFromPromptTooLarge(convId, state, promptTooLargeAttempts)
-          promptTooLargeAttempts++
-          if (recovered) continue
-        }
-        if (recoverByScrubbingImages(fallbackErr, "fallback")) continue
-        if (recoverByQuarantiningText(fallbackErr, "fallback")) continue
-        if (shouldRetryProvider(fallbackErr)) {
-          const retryAfter = retryDelayMs(fallbackErr)
-          console.warn(
-            `[fallback] transient failure (${errorSummary(fallbackErr)}); retrying after ${Math.ceil(retryAfter / 1000)}s`,
-          )
-          console.log(
-            `[runner] backing off ${Math.ceil(retryAfter / 1000)}s (until ${formatRetryAt(retryAfter)}) before retrying fallback...`,
-          )
-          await sleep(retryAfter)
-          continue
-        }
-        logApiError(fallbackErr, `model=${FALLBACK_MODEL} api=${FALLBACK_BASE}`)
-        throw fallbackErr
-      }
-    }
-
-    try {
-      const completion = await createPrimaryCompletion(requestMessages, tools)
-      if (primaryFailoverBefore?.retryAtMs && (await clearPrimaryFailover())) {
-        console.warn(`[api] primary probe succeeded; restored primary routing`)
-      }
-      state.memoryRecallCooldowns = rememberRecalledMemoryChunks(
-        state.memoryRecallCooldowns,
-        requestContext.recalledChunkIds,
-        state.memoryRecallTurn,
-      )
-      return completion
-    } catch (primaryErr) {
-      if (isPromptTooLargeError(primaryErr) && promptTooLargeAttempts < 2) {
-        logPromptSizeDebug(state, primaryErr, `primary rejected prompt (attempt ${promptTooLargeAttempts + 1}/2)`)
-        const recovered = await recoverFromPromptTooLarge(convId, state, promptTooLargeAttempts)
-        promptTooLargeAttempts++
-        if (recovered) continue
-        logApiError(primaryErr, primaryApiContext())
-        throw primaryErr
-      }
-
-      if (recoverByScrubbingImages(primaryErr, "primary")) continue
-      if (recoverByQuarantiningText(primaryErr, "primary")) continue
-
-      const primaryQuotaExhausted = isQuotaExhaustedError(primaryErr)
-
-      if (!primaryQuotaExhausted && !shouldFallback(primaryErr)) {
-        logApiError(primaryErr, primaryApiContext())
-        throw primaryErr
-      }
-
-      if (primaryQuotaExhausted) {
-        logApiError(primaryErr, `primary quota exhausted; ${primaryApiContext()}`)
-        const failover = await recordPrimaryQuotaFailover(primaryErr)
-        console.warn(
-          `[api] primary quota exhausted; using fallback until ${formatAbsoluteTime(failover.retryAtMs)}`,
-        )
-      }
-
-      const fallbackWindow = fallbackContextWindow(requestMessages)
-      if (!primaryQuotaExhausted && fallbackWindow.skip) {
-        console.warn(
-          `[api] primary down (${errorSummary(primaryErr)}) and fallback context estimate ${fallbackWindow.estimate} exceeds hard limit ${fallbackWindow.hardLimit}; retrying primary after backoff`,
-        )
-        const retryAfter = retryDelayMs(primaryErr)
-        console.log(
-          `[runner] backing off ${Math.ceil(retryAfter / 1000)}s (until ${formatRetryAt(retryAfter)}) before retrying primary...`,
-        )
-        await sleep(retryAfter)
-        continue
-      }
-
-      if (fallbackWindow.nearLimit) {
-        console.warn(
-          `[fallback] prompt estimate ${fallbackWindow.estimate} nearing fallback limit ${fallbackWindow.softLimit} (${FALLBACK_MODEL})`,
-        )
-      }
-
-      console.warn(
-        primaryQuotaExhausted
-          ? `[api] primary quota cooldown set - switching to fallback`
-          : `[api] primary down (${errorSummary(primaryErr)}) - switching to fallback`,
-      )
-      try {
-        const completion = await createFallbackCompletion(requestMessages, tools)
-        state.memoryRecallCooldowns = rememberRecalledMemoryChunks(
-          state.memoryRecallCooldowns,
-          requestContext.recalledChunkIds,
-          state.memoryRecallTurn,
-        )
-        return completion
-      } catch (fallbackErr) {
-        if (isPromptTooLargeError(fallbackErr) && promptTooLargeAttempts < 2) {
-          logPromptSizeDebug(state, fallbackErr, `fallback rejected prompt during failover (attempt ${promptTooLargeAttempts + 1}/2)`)
-          const recovered = await recoverFromPromptTooLarge(convId, state, promptTooLargeAttempts)
-          promptTooLargeAttempts++
-          if (recovered) continue
-        }
-        if (recoverByScrubbingImages(fallbackErr, "fallback-failover")) continue
-        if (recoverByQuarantiningText(fallbackErr, "fallback-failover")) continue
-        const retryTarget = primaryQuotaExhausted ? "fallback" : "primary"
-        console.warn(
-          `[api] fallback failed (${errorSummary(fallbackErr)}) after primary failure (${errorSummary(primaryErr)}); retrying ${retryTarget} after backoff`,
-        )
-        const retryAfter = primaryQuotaExhausted ? retryDelayMs(fallbackErr) : retryDelayMs(primaryErr)
-        console.log(
-          `[runner] backing off ${Math.ceil(retryAfter / 1000)}s (until ${formatRetryAt(retryAfter)}) before retrying ${retryTarget}...`,
-        )
-        await sleep(retryAfter)
-      }
-    }
-  }
-}
 
 export const __completionTest = {
   consumeCompletionStream,
