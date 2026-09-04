@@ -73,28 +73,16 @@ test("pathological compaction recollections are rejected before reaching chat", 
   assert.equal(__completionTest.isPathologicalCompactionRecollection("x".repeat(20_001)), true)
 })
 
-test("prompt cache keys are stable for official OpenAI and the local Codex bridge", () => {
-  const previousEnabled = process.env.CODEX_BRIDGE_ENABLED
-  const previousPort = process.env.CODEX_BRIDGE_PORT
+test("prompt cache keys are stable for official OpenAI endpoints", () => {
   const previousKey = process.env.OPENAI_PROMPT_CACHE_KEY
   delete process.env.OPENAI_PROMPT_CACHE_KEY
-  process.env.CODEX_BRIDGE_ENABLED = "true"
-  process.env.CODEX_BRIDGE_PORT = "8001"
   try {
     assert.deepEqual(
       __completionTest.promptCacheRequestExtras("https://api.openai.com/v1", "primary"),
       { prompt_cache_key: `${AGENT_ID}:primary` },
     )
-    assert.deepEqual(
-      __completionTest.promptCacheRequestExtras("http://127.0.0.1:8001/v1", "primary"),
-      { prompt_cache_key: `${AGENT_ID}:primary` },
-    )
     assert.deepEqual(__completionTest.promptCacheRequestExtras("https://openrouter.ai/api/v1", "fallback"), {})
   } finally {
-    if (previousEnabled === undefined) delete process.env.CODEX_BRIDGE_ENABLED
-    else process.env.CODEX_BRIDGE_ENABLED = previousEnabled
-    if (previousPort === undefined) delete process.env.CODEX_BRIDGE_PORT
-    else process.env.CODEX_BRIDGE_PORT = previousPort
     if (previousKey === undefined) delete process.env.OPENAI_PROMPT_CACHE_KEY
     else process.env.OPENAI_PROMPT_CACHE_KEY = previousKey
   }

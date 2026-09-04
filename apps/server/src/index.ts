@@ -4,7 +4,6 @@ import { deleteAgent, initControlDb, upsertAgent } from "./control/db"
 import { createControlServer } from "./control/server"
 import {
   assertNoDuplicateDiscordTokens,
-  assertNoDuplicateBridgePorts,
   buildWorkerEnvironment,
   loadAgentFiles,
   resolveLocalAgents,
@@ -40,7 +39,6 @@ async function main(): Promise<void> {
   initControlDb()
   const agents = resolveLocalAgents(loadAgentFiles(agentDirectory), { controlPort, repoRoot })
   assertNoDuplicateDiscordTokens(agents)
-  assertNoDuplicateBridgePorts(agents, controlPort)
 
   const remoteAgentIds = new Set(agents.filter((agent) => agent.workerMode === "remote").map((agent) => agent.id))
   const localAgents = agents.filter((agent) => agent.workerMode === "local")

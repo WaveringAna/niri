@@ -4,11 +4,16 @@ import path from "path"
 import { fileURLToPath } from "node:url"
 import OpenAI from "openai"
 import { AGENT_ID, NIRI_HOME } from "../agent-config"
-import { openAIHeaders, openAIUserAgent } from "../openai-headers"
 import type { Message } from "../types"
 import type { ImageDetail } from "./types"
 import type { ToolArgs } from "./loop-shared"
 import { createNiriToolCatalog } from "./tool-catalog"
+import {
+  describeProviderConfig,
+  resolveProviderConfig,
+  type ProviderConfig,
+  type ProviderEndpointConfig,
+} from "@mira/agent-llm"
 
 const HOME_DIR = NIRI_HOME
 export const AGENT_STATE_DIR = path.resolve(process.env.NIRI_AGENT_STATE_DIR ?? path.join(NIRI_HOME, "state"))
@@ -98,146 +103,72 @@ export const USE_FALLBACK = NIRI_ENV === "local"
 /** Display name for the agent, used in the summarizer prompt and grounding. */
 export const AGENT_NAME = (process.env.AGENT_NAME ?? "").trim() || "niri"
 
-export const API_BASE = process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1"
-export const MODEL = process.env.MODEL ?? ""
-export const PRIMARY_PROVIDER_REQUIRES_REASONING_REPLAY =
-  API_BASE.toLowerCase().includes("deepseek") || MODEL.toLowerCase().includes("deepseek")
-const DEFAULT_FALLBACK_BASE = "http://localhost:1234/v1"
-const isLikelyLocalBase = (baseUrl: string): boolean => {
-  const lowered = baseUrl.trim().toLowerCase()
-  return lowered.includes("localhost") || lowered.includes("127.0.0.1")
-}
-const parseBooleanEnv = (value: string | undefined, fallback: boolean): boolean => {
-  if (typeof value !== "string") return fallback
-  const normalized = value.trim().toLowerCase()
-  if (!normalized) return fallback
-  if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") return true
-  if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") return false
-  return fallback
-}
 
-/** Controls whether model reasoning/thinking is requested and streamed to clients. */
-export const ENABLE_THINKING = parseBooleanEnv(process.env.ENABLE_THINKING, true)
-const parseToolChoiceEnv = (value: string | undefined, fallback: "required" | "auto" | "none"): "required" | "auto" | "none" => {
-  if (typeof value !== "string") return fallback
-  const normalized = value.trim().toLowerCase()
-  if (normalized === "required" || normalized === "auto" || normalized === "none") return normalized
-  return fallback
+// Provider configuration is resolved by @mira/agent-llm from an env-shaped
+// record. Resolution is deliberately non-throwing here: importing this module
+// must not crash a process that only wants session helpers or the summarizer.
+// Misconfiguration is surfaced by assertProviderConfig() at startup instead.
+let providerConfigError: Error | null = null
+const providerConfig: ProviderConfig = (() => {
+  try {
+    return resolveProviderConfig(process.env)
+  } catch (err) {
+    providerConfigError = err instanceof Error ? err : new Error(String(err))
+    return { primary: null, fallback: null, summary: null, enableThinking: true, quotaRetryMs: 24 * 60 * 60 * 1000 }
+  }
+})()
+
+/**
+ * Throws if provider configuration failed to resolve.
+ *
+ * Call once during startup so a bad deployment still fails fast, without
+ * making every importer of this module depend on a valid environment.
+ */
+export function assertProviderConfig(): void {
+  if (providerConfigError) throw providerConfigError
 }
 
-export const FALLBACK_BASE =
-  process.env.FALLBACK_OPENAI_BASE_URL ?? process.env.OPENROUTER_BASE_URL ?? process.env.LMSTUDIO_BASE_URL ?? DEFAULT_FALLBACK_BASE
-export const FALLBACK_MODEL =
-  process.env.FALLBACK_MODEL ?? process.env.OPENROUTER_MODEL ?? process.env.LMSTUDIO_MODEL ?? "zai-org/glm-4.7-flash"
-export const FALLBACK_PROVIDER_REQUIRES_REASONING_REPLAY =
-  FALLBACK_BASE.toLowerCase().includes("deepseek") || FALLBACK_MODEL.toLowerCase().includes("deepseek")
-export const SUMMARY_BASE =
-  process.env.SUMMARY_OPENAI_BASE_URL ?? process.env.SUMMARY_BASE_URL ?? ""
-export const SUMMARY_MODEL = process.env.SUMMARY_MODEL ?? ""
-export const PRIMARY_TOOL_CHOICE = parseToolChoiceEnv(process.env.PRIMARY_TOOL_CHOICE ?? process.env.TOOL_CHOICE, "auto")
-export const FALLBACK_TOOL_CHOICE = parseToolChoiceEnv(process.env.FALLBACK_TOOL_CHOICE, "auto")
+export const ENABLE_THINKING = providerConfig.enableThinking
+export const API_BASE = providerConfig.primary?.kind === "openai" ? providerConfig.primary.baseUrl : (process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1")
+export const MODEL = providerConfig.primary?.kind === "openai" ? providerConfig.primary.model : (process.env.MODEL ?? "")
+export const PRIMARY_PROVIDER_REQUIRES_REASONING_REPLAY = providerConfig.primary?.requiresReasoningReplay ?? false
+export const FALLBACK_BASE = providerConfig.fallback?.baseUrl ?? "http://localhost:1234/v1"
+export const FALLBACK_MODEL = providerConfig.fallback?.model ?? ""
+export const FALLBACK_PROVIDER_REQUIRES_REASONING_REPLAY = providerConfig.fallback?.requiresReasoningReplay ?? false
+export const SUMMARY_BASE = providerConfig.summary?.baseUrl ?? ""
+export const SUMMARY_MODEL = providerConfig.summary?.model ?? ""
+export const PRIMARY_TOOL_CHOICE = providerConfig.primary?.toolChoice ?? "auto"
+export const FALLBACK_TOOL_CHOICE = providerConfig.fallback?.toolChoice ?? "auto"
 
-export const USE_ANTHROPIC = parseBooleanEnv(process.env.USE_ANTHROPIC, false)
-export const ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com/v1"
-export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? ""
-export const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL ?? ""
-export const ANTHROPIC_MAX_TOKENS = Math.max(1, Number.parseInt(process.env.ANTHROPIC_MAX_TOKENS ?? "8192", 10)) || 8192
-export const ANTHROPIC_VERSION = process.env.ANTHROPIC_VERSION ?? "2024-10-22"
-const FALLBACK_N_CTX = parseInt(process.env.FALLBACK_N_CTX ?? process.env.LMSTUDIO_N_CTX ?? "4096")
-const FALLBACK_CONTEXT_MARGIN = parseInt(process.env.FALLBACK_CONTEXT_MARGIN ?? process.env.LMSTUDIO_CONTEXT_MARGIN ?? "256")
-const FALLBACK_HARD_OVERFLOW_TOKENS = parseInt(
-  process.env.FALLBACK_HARD_OVERFLOW_TOKENS ?? process.env.LMSTUDIO_HARD_OVERFLOW_TOKENS ?? "1024",
-)
-const FALLBACK_ENFORCE_CONTEXT_LIMIT = parseBooleanEnv(
-  process.env.FALLBACK_ENFORCE_CONTEXT_LIMIT,
-  isLikelyLocalBase(FALLBACK_BASE),
-)
+export const USE_ANTHROPIC = providerConfig.primary?.kind === "anthropic"
+export const ANTHROPIC_BASE_URL = providerConfig.primary?.kind === "anthropic" ? providerConfig.primary.baseUrl : (process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com/v1")
+export const ANTHROPIC_MODEL = providerConfig.primary?.kind === "anthropic" ? providerConfig.primary.model : (process.env.ANTHROPIC_MODEL ?? "")
+export const ANTHROPIC_API_KEY = providerConfig.primary?.kind === "anthropic" ? providerConfig.primary.apiKey : (process.env.ANTHROPIC_API_KEY ?? "")
+export const ANTHROPIC_MAX_TOKENS = providerConfig.primary?.maxTokens ?? 8192
+export const ANTHROPIC_VERSION = providerConfig.primary?.apiVersion ?? "2024-10-22"
 
-const fallbackApiKey =
-  process.env.FALLBACK_OPENAI_API_KEY ??
-  process.env.OPENROUTER_API_KEY ??
-  process.env.LMSTUDIO_API_KEY ??
-  process.env.OPENAI_API_KEY ??
-  (isLikelyLocalBase(FALLBACK_BASE) ? "lm-studio" : "")
-const summaryApiKey =
-  process.env.SUMMARY_OPENAI_API_KEY ??
-  process.env.SUMMARY_API_KEY ??
-  (SUMMARY_BASE === process.env.OPENROUTER_BASE_URL ? process.env.OPENROUTER_API_KEY : undefined) ??
-  (SUMMARY_BASE === process.env.LMSTUDIO_BASE_URL ? process.env.LMSTUDIO_API_KEY : undefined) ??
-  process.env.OPENAI_API_KEY ??
-  (SUMMARY_BASE && isLikelyLocalBase(SUMMARY_BASE) ? "lm-studio" : "")
-const primaryHeaders = openAIHeaders([["User-Agent", openAIUserAgent()]])
-const fallbackHeaders = openAIHeaders([
-  ["HTTP-Referer", process.env.FALLBACK_OPENAI_REFERER],
-  ["X-Title", process.env.FALLBACK_OPENAI_TITLE],
-  ["User-Agent", openAIUserAgent(process.env.FALLBACK_OPENAI_USER_AGENT)],
-])
-const summaryHeaders = openAIHeaders([
-  ["HTTP-Referer", process.env.SUMMARY_OPENAI_REFERER],
-  ["X-Title", process.env.SUMMARY_OPENAI_TITLE],
-  ["User-Agent", openAIUserAgent(process.env.SUMMARY_OPENAI_USER_AGENT)],
-])
+const fallbackWindow = providerConfig.fallback?.contextWindow ?? null
+const FALLBACK_N_CTX = fallbackWindow?.nCtx ?? 4096
+const FALLBACK_CONTEXT_MARGIN = fallbackWindow?.margin ?? 256
+const FALLBACK_HARD_OVERFLOW_TOKENS = fallbackWindow?.hardOverflowTokens ?? 1024
+const FALLBACK_ENFORCE_CONTEXT_LIMIT = fallbackWindow !== null
 
-if (!USE_FALLBACK && !USE_ANTHROPIC && !MODEL) {
-  throw new Error("MODEL is required unless fallback is forced (NIRI_ENV=local) or Anthropic is used (USE_ANTHROPIC=true).")
+function openAIClient(endpoint: ProviderEndpointConfig | null): OpenAI | null {
+  if (!endpoint) return null
+  return new OpenAI({
+    baseURL: endpoint.baseUrl,
+    apiKey: endpoint.apiKey || "lm-studio",
+    ...(endpoint.headers ? { defaultHeaders: endpoint.headers } : {}),
+  })
 }
 
-if (!USE_FALLBACK && !USE_ANTHROPIC && !process.env.OPENAI_API_KEY) {
-  throw new Error("OPENAI_API_KEY is required unless fallback is forced (NIRI_ENV=local) or Anthropic is used (USE_ANTHROPIC=true).")
-}
+export const client = USE_FALLBACK || USE_ANTHROPIC ? null : openAIClient(providerConfig.primary)
+export const fallbackClient = openAIClient(providerConfig.fallback)!
+export const summaryClient = openAIClient(providerConfig.summary)
 
-if (USE_ANTHROPIC && !ANTHROPIC_API_KEY) {
-  throw new Error("ANTHROPIC_API_KEY is required when USE_ANTHROPIC=true.")
-}
-
-if (USE_ANTHROPIC && !ANTHROPIC_MODEL) {
-  throw new Error("ANTHROPIC_MODEL is required when USE_ANTHROPIC=true.")
-}
-
-if (USE_FALLBACK && !fallbackApiKey) {
-  throw new Error(
-    "Fallback API key is required in local mode. Set FALLBACK_OPENAI_API_KEY (or OPENROUTER_API_KEY / LMSTUDIO_API_KEY).",
-  )
-}
-
-if ((SUMMARY_BASE || SUMMARY_MODEL) && (!SUMMARY_BASE || !SUMMARY_MODEL || !summaryApiKey)) {
-  throw new Error(
-    "Summary provider requires SUMMARY_OPENAI_BASE_URL (or SUMMARY_BASE_URL), SUMMARY_MODEL, and SUMMARY_OPENAI_API_KEY (or SUMMARY_API_KEY).",
-  )
-}
-
-export const client = USE_FALLBACK
-  ? null
-  : new OpenAI({
-      baseURL: API_BASE,
-      apiKey: process.env.OPENAI_API_KEY!,
-      defaultHeaders: primaryHeaders,
-    })
-
-export const fallbackClient = new OpenAI({
-  baseURL: FALLBACK_BASE,
-  apiKey: fallbackApiKey || "lm-studio", // Keep LM Studio default when running against localhost.
-  defaultHeaders: fallbackHeaders,
-})
-
-export const summaryClient =
-  SUMMARY_BASE && SUMMARY_MODEL
-    ? new OpenAI({
-        baseURL: SUMMARY_BASE,
-        apiKey: summaryApiKey,
-        defaultHeaders: summaryHeaders,
-      })
-    : null
-
-if (USE_ANTHROPIC) {
-  console.log(`[config] primary=${ANTHROPIC_MODEL} @ ${ANTHROPIC_BASE_URL} (anthropic)`)
-} else {
-  console.log(`[config] primary=${MODEL} @ ${API_BASE}`)
-}
-console.log(`[config] fallback=${FALLBACK_MODEL} @ ${FALLBACK_BASE}`)
-if (summaryClient) console.log(`[config] summary=${SUMMARY_MODEL} @ ${SUMMARY_BASE}`)
+for (const line of describeProviderConfig(providerConfig)) console.log(`[config] ${line}`)
 console.log(`[config] env=${NIRI_ENV} use_fallback=${USE_FALLBACK}`)
-console.log(`[config] thinking=${ENABLE_THINKING}`)
+
 
 const DEFAULT_TOOLS: OpenAI.Chat.ChatCompletionTool[] = createNiriToolCatalog({ memory: true, discord: false })
 /**

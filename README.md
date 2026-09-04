@@ -203,7 +203,7 @@ delegation:
 
 Set `discord.gastownForumChannelId` to mirror each invocation into a Discord forum thread. Discord is an observable multiplayer surface over the durable SQLite task mailbox: every human who can write in the private server thread is equally authorized to steer the worker, while bot and webhook messages are ignored only to prevent mirror feedback loops. Ordinary replies go to the worker; mentioning Niri also wakes her with the message. Deliberate `task_message` progress updates, blocking questions, and bounded final results enter Niri's context; ordinary worker tool traffic remains in the task transcript and thread.
 
-Runtime tuning belongs under the first-party `runtime` section. It contains `imageMaxBytes`, tool-choice and fallback-limit options, context-compaction thresholds, `lcmSummaryBatchSize` (default `4`, the number of same-depth segments promoted into one multi-parent summary), state migration, loop limits, and `antigravity`/`codex` bridge settings. Discord batching, gateway tracing, and cooldowns are first-party fields under `discord`.
+Runtime tuning belongs under the first-party `runtime` section. It contains `imageMaxBytes`, tool-choice and fallback-limit options, context-compaction thresholds, `lcmSummaryBatchSize` (default `4`, the number of same-depth segments promoted into one multi-parent summary), state migration, and loop limits. Discord batching, gateway tracing, and cooldowns are first-party fields under `discord`.
 
 ### `worker` (agent-runtime placement)
 

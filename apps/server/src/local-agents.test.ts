@@ -4,7 +4,6 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import {
-  assertNoDuplicateBridgePorts,
   assertNoDuplicateDiscordTokens,
   buildWorkerEnvironment,
   loadAgentFiles,
@@ -126,14 +125,13 @@ test("MCP transport configuration is strict", (t) => {
   assert.throws(() => loadAgentFiles(duplicateAuth), /cannot set both auth and an Authorization header/)
 })
 
-test("Discord credentials and bridge ports cannot overlap", (t) => {
+test("Discord credentials cannot overlap between agents", (t) => {
   const directory = fixture(t, {
-    "a.yaml": "client: local\nport: 4301\ndiscord:\n  token: same\nsettings:\n  ANTIGRAVITY_BRIDGE_ENABLED: true\n  ANTIGRAVITY_BRIDGE_PORT: 4400\n",
-    "b.yaml": "client: local\nport: 4302\ndiscord:\n  token: same\nsettings:\n  CODEX_BRIDGE_ENABLED: true\n  CODEX_BRIDGE_PORT: 4400\n",
+    "a.yaml": "client: local\nport: 4301\ndiscord:\n  token: same\n",
+    "b.yaml": "client: local\nport: 4302\ndiscord:\n  token: same\n",
   })
   const agents = resolveLocalAgents(loadAgentFiles(directory), options)
   assert.throws(() => assertNoDuplicateDiscordTokens(agents), /share DISCORD_BOT_TOKEN/)
-  assert.throws(() => assertNoDuplicateBridgePorts(agents, 4300), /bridges share port 4400/)
 })
 
 test("client: iroh gets a deterministic tunnel port but requires a local worker", (t) => {

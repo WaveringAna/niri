@@ -163,34 +163,6 @@ export function assertNoDuplicateDiscordTokens(agents: ResolvedLocalAgent[]): vo
 }
 
 /**
- * Reject Antigravity/Codex bridge ports that collide with each other, the
- * control plane, or any worker port. The control plane calls this once after
- * {@link resolveLocalAgents}.
- */
-export function assertNoDuplicateBridgePorts(agents: ResolvedLocalAgent[], controlPort: number): void {
-  const owners = new Map<number, string>()
-  const workerPorts = new Map(agents.map((agent) => [agent.port, agent.id]))
-  for (const agent of agents) {
-    for (const bridge of [
-      { name: "Antigravity", enabled: "ANTIGRAVITY_BRIDGE_ENABLED", port: "ANTIGRAVITY_BRIDGE_PORT", fallback: "8000" },
-      { name: "Codex", enabled: "CODEX_BRIDGE_ENABLED", port: "CODEX_BRIDGE_PORT", fallback: "8001" },
-    ] as const) {
-      if (agent.settings[bridge.enabled]?.trim().toLowerCase() !== "true") continue
-      const port = Number.parseInt(agent.settings[bridge.port] ?? bridge.fallback, 10)
-      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`invalid ${bridge.name} bridge port for ${agent.id}`)
-      const workerOwner = workerPorts.get(port)
-      if (port === controlPort || workerOwner) {
-        throw new Error(`${bridge.name} bridge port ${port} conflicts with ${port === controlPort ? "the control plane" : `worker ${workerOwner}`}`)
-      }
-      const owner = `${agent.id} ${bridge.name}`
-      const prior = owners.get(port)
-      if (prior) throw new Error(`${prior} and ${owner} bridges share port ${port}`)
-      owners.set(port, owner)
-    }
-  }
-}
-
-/**
  * Compose the worker process environment from the parent process's safe subset
  * plus the agent's flattened settings. Used by the supervisor when spawning a
  * managed local worker.

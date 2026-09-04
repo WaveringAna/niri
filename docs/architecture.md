@@ -49,7 +49,7 @@ One process per agent — the agent itself. Owns:
 - **memory and soul**: `<home>/memories/`, `<home>/soul.md`, the `niri.db` search index
 - **Discord**: gateway connection, inbox, batching, cooldowns
 - **triggers**: cron heartbeat, `schedule` reminders, bsky, webhooks, chat
-- **MCP servers** and the codex/antigravity bridges
+- **MCP servers**
 - its **tool-host link**: how it reaches the tool host
 
 Everything durable about the agent lives in its home directory (`soul.md`, `memories/`, `state/`, `niri.db`, `metrics.db`).

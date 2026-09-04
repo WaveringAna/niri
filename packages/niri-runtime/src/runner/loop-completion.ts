@@ -403,19 +403,12 @@ function openRouterToolRequestExtras(baseUrl: string): Partial<CompletionRequest
 function promptCacheRequestExtras(baseUrl: string, slot: "primary" | "fallback"): Partial<CompletionRequest> {
   const configuredKey = process.env.OPENAI_PROMPT_CACHE_KEY?.trim()
   let isOfficialOpenAI = false
-  let isCodexBridge = false
   try {
-    const url = new URL(baseUrl)
-    isOfficialOpenAI = url.hostname === "api.openai.com"
-    const bridgePort = process.env.CODEX_BRIDGE_PORT?.trim() || "8001"
-    isCodexBridge =
-      process.env.CODEX_BRIDGE_ENABLED?.trim().toLowerCase() === "true" &&
-      (url.hostname === "127.0.0.1" || url.hostname === "localhost") &&
-      url.port === bridgePort
+    isOfficialOpenAI = new URL(baseUrl).hostname === "api.openai.com"
   } catch {
     // An invalid provider URL will fail when the client sends the request.
   }
-  if (!configuredKey && !isOfficialOpenAI && !isCodexBridge) return {}
+  if (!configuredKey && !isOfficialOpenAI) return {}
   return { prompt_cache_key: configuredKey || `${AGENT_ID}:${slot}` }
 }
 

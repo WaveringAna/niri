@@ -1,16 +1,12 @@
 {
-  "name": "@mira/harness-client-node",
+  "name": "@mira/agent-llm",
   "version": "0.1.0",
-  "description": "Zero-config HTTP host for shell, filesystem, and image tools.",
+  "description": "Provider-agnostic LLM completion, failover, and error classification for AI harnesses.",
   "license": "MIT",
   "type": "module",
   "files": [
     "dist"
   ],
-  "bin": {
-    "harness-tool-host": "./dist/cli.js",
-    "harness-tool-client": "./dist/cli.js"
-  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -26,11 +22,15 @@
     "test": "node --import tsx --test 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mira/harness-core": "0.1.0",
-    "@mira/harness-protocol": "0.1.0"
+    "openai": "^6.33.0",
+    "@anthropic-ai/sdk": "^0.100.1"
   },
-  "publishConfig": { "access": "public" },
-  "engines": { "node": ">=20" },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "devDependencies": {
     "@types/node": "^25.5.0",
     "tsx": "^4.21.0",

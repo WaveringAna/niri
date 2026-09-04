@@ -1,16 +1,12 @@
 {
-  "name": "@mira/harness-client-node",
+  "name": "@mira/agent-context",
   "version": "0.1.0",
-  "description": "Zero-config HTTP host for shell, filesystem, and image tools.",
+  "description": "Hierarchical context compaction and an immutable verbatim message archive.",
   "license": "MIT",
   "type": "module",
   "files": [
     "dist"
   ],
-  "bin": {
-    "harness-tool-host": "./dist/cli.js",
-    "harness-tool-client": "./dist/cli.js"
-  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -26,14 +22,19 @@
     "test": "node --import tsx --test 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mira/harness-core": "0.1.0",
-    "@mira/harness-protocol": "0.1.0"
+    "openai": "^6.33.0",
+    "better-sqlite3": "^12.8.0"
   },
-  "publishConfig": { "access": "public" },
-  "engines": { "node": ">=20" },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "devDependencies": {
     "@types/node": "^25.5.0",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "@types/better-sqlite3": "^7.6.13"
   }
 }

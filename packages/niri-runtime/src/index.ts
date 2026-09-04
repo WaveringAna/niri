@@ -9,11 +9,10 @@ import { startPostureReminder } from "./discord/posture"
 import { startDiscordEmbeddingBackfill } from "./discord/search"
 import { setDiscordToolsAvailable } from "./discord/availability"
 import { ensureSoulFilePlacement } from "./bootstrap"
-import { startAntigravityBridge, stopAntigravityBridge } from "./antigravity-bridge"
-import { startCodexBridge, stopCodexBridge } from "./codex-bridge"
 import { startIrohLink, stopIrohLink } from "./iroh-link"
 import { startScheduler } from "./scheduler"
 import { clientTools } from "./client"
+import { assertProviderConfig } from "./runner/util"
 import { startMcpServers, stopMcpServers } from "./mcp"
 import { initDelegation, stopDelegation } from "./delegation/manager"
 import { initProcessJobs, stopProcessJobs } from "./process-jobs"
@@ -40,19 +39,16 @@ async function main() {
   process.umask(0o077)
   console.log("[niri] starting up...")
 
+  // Provider config resolves lazily at import so tests and tooling can load
+  // this package without credentials; a real boot must still fail fast.
+  assertProviderConfig()
+
   await clientTools.start()
   await startMcpServers()
 
   await ensureSoulFilePlacement()
   initDb()
   initMetricsDb()
-  try {
-    await startAntigravityBridge()
-    await startCodexBridge()
-  } catch (err) {
-    console.error("[bridge] failed to start:", err)
-  }
-
   const discordEmbeddingBackfill = startDiscordEmbeddingBackfill()
 
   let discordGateway: Awaited<ReturnType<typeof startDiscordGateway>> = null
@@ -140,8 +136,6 @@ async function main() {
       setDiscordToolsAvailable(false)
       await clientTools.stop()
       await stopMcpServers()
-      await stopAntigravityBridge()
-      await stopCodexBridge()
       await stopIrohLink()
     }
     const cleanupTimeout = new Promise<void>((resolve) =>
