@@ -64,3 +64,13 @@ test("a deadline that expires mid-flight is cancelled, not an operation failure"
  assert.equal((await dispatchHostRpc(request(),`Bearer ${grant}`,(async()=>({ok:true})) as never)).statusCode,200)
  revokeHostRpcGrant(grant)
 })
+
+
+test("config RPC stays bound to the current outer invocation", async () => {
+ const deadline = new Date(Date.now() + 5_000).toISOString()
+ const grant = issueHostRpcGrant("outer", deadline)
+ const configRequest = { ...request(), method: "config.status", args: {} }
+ assert.equal((await dispatchHostRpc(configRequest, `Bearer ${grant}`, async () => ({ revision: 1 }))).statusCode, 200)
+ revokeHostRpcGrant(grant)
+ assert.equal((await dispatchHostRpc(configRequest, `Bearer ${grant}`, async () => ({ revision: 1 }))).statusCode, 403)
+})

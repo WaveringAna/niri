@@ -24,6 +24,8 @@ export type ResolvedLocalAgent = {
   settings: Record<string, string>
   webhooks: Record<string, WebhookConfig>
   source: string
+  /** Desired durable config revision, present for managed config workers. */
+  revision?: number
 }
 
 export {
@@ -36,15 +38,14 @@ export {
 
 /**
  * Read every `.yml`/`.yaml` file (skipping `.example.*`) in `directory` and
- * parse each into an {@link AgentFile}. Throws if the directory is missing or
- * contains no agent yaml files.
+ * parse each into an {@link AgentFile}. Missing and empty directories are valid:
+ * durable configuration may be the only source of agents.
  */
 export function loadAgentFiles(directory: string): Array<{ config: AgentFile; source: string }> {
-  if (!fs.existsSync(directory)) throw new Error(`agent directory does not exist: ${directory}`)
+  if (!fs.existsSync(directory)) return []
   const files = fs.readdirSync(directory)
     .filter((name) => /\.ya?ml$/i.test(name) && !/\.example\.ya?ml$/i.test(name))
     .sort()
-  if (files.length === 0) throw new Error(`no agent yaml files found in ${directory}`)
   return files.map((name) => {
     const source = path.join(directory, name)
     return { config: parseAgentFile(source), source }
@@ -123,6 +124,36 @@ export function resolveLocalAgents(
   }
   assertUnique(resolved, "home", (agent) => agent.home)
   return resolved
+}
+
+/** Resolve one durable config. The caller owns stable port allocation. */
+export function resolveConfiguredAgent(
+  config: AgentFile,
+  options: { controlPort: number; repoRoot: string; source?: string; clientTunnelPort?: number; revision?: number },
+): ResolvedLocalAgent {
+  const source = options.source ?? `agent ${config.id ?? "<unknown>"}`
+  const id = config.id?.trim()
+  if (!id || !/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error(`${source}: invalid agent id ${id ?? ""}`)
+  const port = config.port
+  if (!Number.isInteger(port) || !port || port < 1 || port > 65535 || port === options.controlPort) {
+    throw new Error(`${source}: invalid worker port ${port}`)
+  }
+  const home = canonicalPath(config.home
+    ? (path.isAbsolute(config.home) ? config.home : path.join(options.repoRoot, config.home))
+    : path.join(options.repoRoot, "data", "agents", id))
+  const client = config.client?.trim()
+  if (!client) throw new Error(`${source}: client is required`)
+  if (client !== "local" && client !== "iroh") {
+    const url = new URL(client)
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error(`${source}: client must be local, iroh, or an HTTP(S) URL without credentials`)
+  }
+  const workerMode = config.worker?.mode === "remote" ? "remote" : "local"
+  if (client === "iroh" && workerMode === "remote") throw new Error(`${source}: client: iroh requires worker.mode: local (the client tunnel is loopback on the control-plane host)`)
+  const workspace = config.workspace ? canonicalPath(path.isAbsolute(config.workspace) ? config.workspace : path.join(options.repoRoot, config.workspace)) : undefined
+  return { id, name: config.name ?? id, workerMode, port, home, client,
+    ...(client === "iroh" && options.clientTunnelPort !== undefined ? { clientTunnelPort: options.clientTunnelPort } : {}),
+    ...(workspace ? { workspace } : {}), settings: agentSettings(config), webhooks: config.webhooks ?? {}, source,
+    ...(options.revision !== undefined ? { revision: options.revision } : {}) }
 }
 
 function canonicalPath(value: string): string {

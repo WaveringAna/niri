@@ -16,6 +16,8 @@ import {
 } from "./db"
 import type { ControlCommand, UserMessage, WorkerEvent } from "@niri/protocol"
 import type { WebhookConfig } from "../local-agents"
+import { registerConfigurationRoutes, type ConfigurationControl } from "./config-routes"
+import { tokenMatches } from "./config-auth"
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url))
 const WEB_DIST_DIR = join(SRC_DIR, "..", "..", "..", "web", "dist")
@@ -138,6 +140,7 @@ function compactWorkerEventForChat(raw: unknown): WorkerEvent | null {
         },
       }
     }
+    if (type === "error" && typeof payload.text === "string") return { ...raw, payload: { type, text: payload.text } }
     if (type !== "user") return null
     return {
       ...raw,
@@ -292,6 +295,7 @@ export function registerControlRoutes(
     configuredAgentIds?: ReadonlySet<string>
     stopLocalAgent?: (id: string) => Promise<boolean>
     webhooks?: ReadonlyMap<string, Readonly<Record<string, WebhookConfig>>>
+    configuration?: ConfigurationControl
   } = {},
 ) {
   const findAgent = (id: string) => options.configuredAgentIds && !options.configuredAgentIds.has(id) ? null : getAgent(id)
@@ -316,7 +320,7 @@ export function registerControlRoutes(
   }
 
   app.get("/agents", async () => ({
-    agents: listAgents().filter((agent) => !options.configuredAgentIds || options.configuredAgentIds.has(agent.id)),
+    agents: options.configuration?.manager.list() ?? listAgents().filter((agent) => !options.configuredAgentIds || options.configuredAgentIds.has(agent.id)),
   }))
 
   app.get("/agents/:id/status", async (req, reply) => {
@@ -402,6 +406,12 @@ export function registerControlRoutes(
 
   app.post("/agents/:id/shutdown", async (req, reply) => {
     const { id } = req.params as { id: string }
+    if (options.configuration) {
+      if (!tokenMatches(req.headers.authorization, options.configuration.adminToken)) {
+        return reply.code(403).send({ error: "operator credential required" })
+      }
+      return reply.code(202).send(await options.configuration.manager.stop(id))
+    }
     const agent = findAgent(id)
     if (!agent) return reply.code(404).send({ error: "agent not found" })
 
@@ -597,6 +607,7 @@ export function createControlServer(options: {
   configuredAgentIds?: ReadonlySet<string>
   stopLocalAgent?: (id: string) => Promise<boolean>
   webhooks?: ReadonlyMap<string, Readonly<Record<string, WebhookConfig>>>
+  configuration?: ConfigurationControl
 } = {}) {
   const app = Fastify({ logger: false, bodyLimit: 2_000_000 })
 
@@ -606,7 +617,12 @@ export function createControlServer(options: {
     configuredAgentIds: options.configuredAgentIds,
     stopLocalAgent: options.stopLocalAgent,
     webhooks: options.webhooks,
+    configuration: options.configuration,
   })
+  if (options.configuration) {
+    const configuration = options.configuration
+    app.register(async (routes) => registerConfigurationRoutes(routes, configuration))
+  }
 
   return app
 }

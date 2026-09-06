@@ -31,7 +31,8 @@ function shouldPersistWorkerEvent(type: WorkerEventType, payload: unknown): bool
 
   if (type === "stream.event") {
     if (!isRecord(payload)) return false
-    return payload.type === "user" || payload.type === "usage" || payload.type === "tool"
+    // Errors outlive the connection that missed them, like the turns they belong to.
+    return payload.type === "user" || payload.type === "usage" || payload.type === "tool" || payload.type === "error"
   }
 
   return true

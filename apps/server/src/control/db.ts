@@ -63,11 +63,11 @@ function pruneMirroredEvents(agentId: string): void {
   db.prepare("delete from worker_events where agent_id = ? and seq <= ?").run(agentId, cutoff)
 }
 
-export function initControlDb(): void {
-  fs.mkdirSync(path.dirname(CONTROL_DB_PATH), { recursive: true, mode: 0o700 })
-  fs.chmodSync(path.dirname(CONTROL_DB_PATH), 0o700)
-  db = new Database(CONTROL_DB_PATH)
-  fs.chmodSync(CONTROL_DB_PATH, 0o600)
+export function initControlDb(dbPath: string = CONTROL_DB_PATH): void {
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: 0o700 })
+  fs.chmodSync(path.dirname(dbPath), 0o700)
+  db = new Database(dbPath)
+  fs.chmodSync(dbPath, 0o600)
   db.pragma("journal_mode = WAL")
   db.exec(`
     create table if not exists agents (
@@ -97,7 +97,7 @@ export function initControlDb(): void {
     create index if not exists idx_worker_events_type
       on worker_events(type, received_at desc);
   `)
-  console.log(`[control] db ready at ${CONTROL_DB_PATH}`)
+  console.log(`[control] db ready at ${dbPath}`)
 }
 
 export function upsertAgent(input: {

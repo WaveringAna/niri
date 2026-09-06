@@ -1,3 +1,4 @@
+import { postureReminder } from "./posture-wording"
 import {
   getDiscordMeta,
   holdPendingDiscordItems,
@@ -6,18 +7,8 @@ import {
   type PostureQueueRow,
 } from "./db"
 
+/** The two postures the runtime acts on; wording for any name lives in config. */
 export type Posture = "hearth" | "forge"
-
-export const POSTURE_DEFINITIONS: Record<Posture, { status: Posture; bio: string }> = {
-  hearth: {
-    status: "hearth",
-    bio: "violet light, warm and steady. i'm around — say hi.",
-  },
-  forge: {
-    status: "forge",
-    bio: "building and tending to something. your messages are safe — i'll find them when i come back.",
-  },
-}
 
 const POSTURE_KEY = "posture"
 const POSTURE_STARTED_AT_KEY = "posture_started_at"
@@ -116,7 +107,7 @@ export function formatPostureQueue(rows = queryPostureQueue()): string {
 }
 
 export function buildPostureReminder(): string {
-  return `you've been in forge for 2 hours, check your queue?\n\n${formatPostureQueue()}`
+  return `${postureReminder("forge")}\n\n${formatPostureQueue()}`
 }
 
 function clearPostureReminderTimer(): void {

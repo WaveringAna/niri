@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { formatPostureQueue, isPostureBypass } from "./posture"
+import { configuredPostures, postureBio, postureReminder } from "./posture-wording"
 import type { PostureQueueRow } from "./db"
 
 test("posture bypass accepts configured users and channels", () => {
@@ -50,4 +51,46 @@ test("posture queue formatting groups DMs without exposing message content or id
 
 test("posture queue reports an empty queue without inventing messages", () => {
   assert.equal(formatPostureQueue([]), "nobody's waiting, keep going")
+})
+
+const withPostures = (value: string | undefined, run: () => void): void => {
+  const original = process.env.DISCORD_POSTURES
+  if (value === undefined) delete process.env.DISCORD_POSTURES
+  else process.env.DISCORD_POSTURES = value
+  try { run() } finally {
+    if (original === undefined) delete process.env.DISCORD_POSTURES
+    else process.env.DISCORD_POSTURES = original
+  }
+}
+
+test("posture bios fall back to neutral wording that carries no persona", () => {
+  withPostures(undefined, () => {
+    assert.equal(postureBio("hearth"), "around — say hi.")
+    assert.match(postureBio("forge"), /^heads down building/)
+    assert.equal(postureBio("invented"), "")
+    assert.deepEqual(configuredPostures(), {})
+    assert.equal([postureBio("hearth"), postureBio("forge")].some((bio) => /violet/i.test(bio)), false)
+  })
+})
+
+test("configured wording wins, and unusable wording is ignored rather than fatal", () => {
+  withPostures(JSON.stringify({
+    hearth: { bio: "violet light, warm and steady.", reminder: "still in forge?" },
+    forge: { bio: "  ", description: "aimed at one thing." },
+    "Bad Name": { bio: "ignored" },
+    broken: "not an object",
+  }), () => {
+    assert.equal(postureBio("hearth"), "violet light, warm and steady.")
+    assert.match(postureBio("forge"), /^heads down building/, "a blank bio is not wording")
+    assert.deepEqual(Object.keys(configuredPostures()), ["hearth", "forge"])
+    assert.deepEqual(configuredPostures().forge, { description: "aimed at one thing." })
+  })
+  withPostures("{not json", () => { assert.deepEqual(configuredPostures(), {}) })
+})
+
+test("the forge reminder is mechanical until an agent writes its own", () => {
+  withPostures(undefined, () => { assert.equal(postureReminder("forge"), "you've been in forge for 2 hours, check your queue?") })
+  withPostures(JSON.stringify({ forge: { reminder: "two hours aimed; who is waiting?" } }), () => {
+    assert.equal(postureReminder("forge"), "two hours aimed; who is waiting?")
+  })
 })

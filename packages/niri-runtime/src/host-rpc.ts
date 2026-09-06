@@ -16,6 +16,12 @@ export function issueHostRpcGrant(invocationId: string, deadlineAt: string): str
 export function revokeHostRpcGrant(token: string | undefined): void { if(token) leases.delete(token) }
 export function clearHostRpcGrants(): void { leases.clear() }
 
+/** Active Python outer-invocation grants. Expired grants cannot strand config reconciliation. */
+export function activeHostRpcLeaseCount(now = Date.now()): number {
+  for (const [token, lease] of leases) if (!lease.active || lease.deadlineAt <= now) leases.delete(token)
+  return leases.size
+}
+
 /** Distinguishes the race's deadline arm from a service failure in the catch below. */
 class HostRpcDeadlineError extends Error {}
 

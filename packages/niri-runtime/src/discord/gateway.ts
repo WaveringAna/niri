@@ -8,7 +8,9 @@ import {
   type Message,
 } from "discord.js"
 import { handleDiscordIngress } from "./pipeline"
-import { getPosture, POSTURE_DEFINITIONS, subscribePosture, type Posture } from "./posture"
+import { getPosture, subscribePosture, type Posture } from "./posture"
+import { onSettingsChanged } from "../settings-apply"
+import { postureBio } from "./posture-wording"
 import { subscribeRunnerPresence, type RunnerPresence } from "../runner/presence"
 import { handleGastownMessage, installGastownMirror, isGastownThread, uninstallGastownMirror } from "./gastown"
 
@@ -131,20 +133,20 @@ async function setDiscordPresence(client: Client, _presence: RunnerPresence): Pr
 
   try {
     const posture = getPosture()
-    const definition = POSTURE_DEFINITIONS[posture]
+    const bio = postureBio(posture)
     await client.user.setPresence(
       {
         status: posture === "forge" ? "dnd" : "online",
         activities: [
           {
-            name: definition.status,
-            state: definition.bio,
+            name: posture,
+            state: bio,
             type: ActivityType.Custom,
           },
         ],
       },
     )
-    await updateGuildBios(client, definition.bio)
+    await updateGuildBios(client, bio)
   } catch (err) {
     console.warn("[discord gateway] failed to update presence:", err)
   }
@@ -205,6 +207,8 @@ export async function startDiscordGateway(): Promise<DiscordGatewayHandle | null
   unsubscribePosture = subscribePosture((_posture: Posture) => {
     refreshPresence()
   })
+  // New posture wording is only true once Discord shows it.
+  const unsubscribeWording = onSettingsChanged(["DISCORD_POSTURES"], () => { refreshPresence() })
 
   client.on("raw", (packet: { t?: string; d?: Record<string, unknown> }) => {
     if (packet?.t !== "MESSAGE_CREATE") return
@@ -281,6 +285,7 @@ export async function startDiscordGateway(): Promise<DiscordGatewayHandle | null
       uninstallGastownMirror()
       unsubscribePresence?.()
       unsubscribePosture?.()
+      unsubscribeWording()
       await client.destroy()
       console.log("[discord gateway] disconnected")
     },

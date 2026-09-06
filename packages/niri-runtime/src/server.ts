@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto"
 import Fastify from "fastify"
 import { AGENT_ID } from "./agent-config"
 import { clientTools } from "./client"
@@ -19,17 +20,19 @@ import type { MetricListType } from "./metrics"
 import type { UserMessage } from "./types"
 import { contextArchive } from "./runner/archive"
 import { loadSession } from "./runner/util"
-import { dispatchHostRpc, HOST_RPC_BODY_LIMIT_BYTES } from "./host-rpc"
+import { activeHostRpcLeaseCount, dispatchHostRpc, HOST_RPC_BODY_LIMIT_BYTES } from "./host-rpc"
+import { configRevision } from "./runtime-config"
+import { applySettings, onSettingsChanged } from "./settings-apply"
 
-const DISCORD_BATCH_INTERVAL_MS = Math.max(
+const discordBatchIntervalMs = (): number => Math.max(
   1_000,
   parseInt(process.env.DISCORD_BATCH_INTERVAL_MS ?? "60000", 10) || 60_000,
 )
-const DISCORD_BATCH_MAX_MESSAGES = Math.max(
+const discordBatchMaxMessages = (): number => Math.max(
   5,
   Math.min(200, parseInt(process.env.DISCORD_BATCH_MAX_MESSAGES ?? "40", 10) || 40),
 )
-const DISCORD_BATCH_SCAN = (process.env.DISCORD_BATCH_SCAN ?? "true").trim().toLowerCase() !== "false"
+const discordBatchScan = (): boolean => (process.env.DISCORD_BATCH_SCAN ?? "true").trim().toLowerCase() !== "false"
 const METRIC_LIST_TYPES = new Set<MetricListType>(["response", "summarization", "memory", "prompt", "usage", "discord"])
 const METRIC_TYPE_ALIASES: Record<string, MetricListType> = {
   compaction: "summarization",
@@ -73,7 +76,63 @@ export function createServer(options: { requestRestart?: (reason?: string) => vo
     ok: true,
     agentId: AGENT_ID,
     instanceId: process.env.NIRI_WORKER_INSTANCE_ID?.trim() || null,
+    configRevision: configRevision(),
   }))
+
+  /** Bearer check shared by the control-plane config routes. */
+  const configAuthorized = (req: { headers: { authorization?: string } }, reply: { code: (status: number) => { send: (body: unknown) => unknown } }): boolean => {
+    const expected = process.env.NIRI_CONFIG_TOKEN?.trim()
+    const authorization = req.headers.authorization
+    const presented = authorization?.startsWith("Bearer ") ? authorization.slice(7) : ""
+    if (!expected) { reply.code(503).send({ error: "runtime configuration service is not configured" }); return false }
+    const valid = Buffer.byteLength(presented) === Buffer.byteLength(expected) && timingSafeEqual(Buffer.from(presented), Buffer.from(expected))
+    if (!valid) { reply.code(401).send({ error: "invalid runtime configuration token" }); return false }
+    return true
+  }
+  const readiness = () => {
+    const liveHostRpcLeases = activeHostRpcLeaseCount()
+    const loopIdle = isWaitingForEvent()
+    // Safe means no turn is in flight: parked in the wait loop, or never woken.
+    const safeToApply = liveHostRpcLeases === 0 && (loopIdle || !isRunning())
+    return { liveHostRpcLeases, loopIdle, safeToApply, ready: safeToApply, configRevision: configRevision() }
+  }
+
+  app.get("/config/application-readiness", async (req, reply) => {
+    if (!configAuthorized(req, reply)) return
+    return readiness()
+  })
+
+  /**
+   * Apply a revision without being replaced. The control plane sends only
+   * settings it has classified as hot, and hears exactly which keys landed —
+   * a hook that throws is reported rather than swallowed.
+   */
+  app.post("/config/apply", async (req, reply) => {
+    if (!configAuthorized(req, reply)) return
+    const body = (req.body ?? {}) as { revision?: unknown; settings?: unknown }
+    const settings = body.settings
+    if (!settings || typeof settings !== "object" || Array.isArray(settings)) return reply.code(400).send({ error: "settings must be an object of key to value or null" })
+    const delta: Record<string, string | null> = {}
+    for (const [key, value] of Object.entries(settings as Record<string, unknown>)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return reply.code(400).send({ error: `invalid setting name ${key}` })
+      if (value !== null && typeof value !== "string") return reply.code(400).send({ error: `setting ${key} must be a string or null` })
+      delta[key] = value as string | null
+    }
+    const state = readiness()
+    // Never swap the environment under a running python cell or a live turn.
+    if (!state.safeToApply) return reply.code(409).send({ error: "worker is busy", ...state })
+    try {
+      const applied = await applySettings(delta)
+      if (typeof body.revision === "number" && Number.isSafeInteger(body.revision)) process.env.NIRI_CONFIG_REVISION = String(body.revision)
+      return { applied, configRevision: configRevision() }
+    } catch (error) {
+      return reply.code(500).send({
+        error: error instanceof Error ? error.message : String(error),
+        applied: Object.keys(delta),
+        configRevision: configRevision(),
+      })
+    }
+  })
 
   const runDiscordBatch = async (): Promise<void> => {
     if (discordBatchInFlight) return
@@ -83,13 +142,13 @@ export function createServer(options: { requestRestart?: (reason?: string) => vo
       if (!isWaitingForEvent()) return
       if (getPosture() === "forge") return
 
-      if (DISCORD_BATCH_SCAN) {
-        await scanDiscordChannels({ limit: DISCORD_BATCH_MAX_MESSAGES })
+      if (discordBatchScan()) {
+        await scanDiscordChannels({ limit: discordBatchMaxMessages() })
       }
 
       const digest = buildDiscordBatchDigest({
-        maxMessages: DISCORD_BATCH_MAX_MESSAGES,
-        intervalMs: DISCORD_BATCH_INTERVAL_MS,
+        maxMessages: discordBatchMaxMessages(),
+        intervalMs: discordBatchIntervalMs(),
       })
       if (!digest) return
 
@@ -113,22 +172,31 @@ export function createServer(options: { requestRestart?: (reason?: string) => vo
     }
   }
 
+  const stopDiscordBatch = (): void => {
+    if (!discordBatchTimer) return
+    clearInterval(discordBatchTimer)
+    discordBatchTimer = null
+  }
+  const startDiscordBatch = (): void => {
+    stopDiscordBatch()
+    discordBatchTimer = setInterval(() => { void runDiscordBatch() }, discordBatchIntervalMs())
+    if (typeof discordBatchTimer.unref === "function") discordBatchTimer.unref()
+  }
+
   const hasDiscordToken = discordBatchEnabled()
   if (hasDiscordToken) {
-    discordBatchTimer = setInterval(() => {
-      void runDiscordBatch()
-    }, DISCORD_BATCH_INTERVAL_MS)
-    if (typeof discordBatchTimer.unref === "function") discordBatchTimer.unref()
-
+    startDiscordBatch()
     setTimeout(() => {
       void runDiscordBatch()
     }, 5_000).unref?.()
   }
 
+  // A new digest cadence only exists once the timer runs on it.
+  const releaseBatchHook = onSettingsChanged(["DISCORD_BATCH_INTERVAL_MS"], () => { if (hasDiscordToken) startDiscordBatch() })
+
   app.addHook("onClose", async () => {
-    if (!discordBatchTimer) return
-    clearInterval(discordBatchTimer)
-    discordBatchTimer = null
+    releaseBatchHook()
+    stopDiscordBatch()
   })
 
   publishWorkerEvent("worker.hello", {

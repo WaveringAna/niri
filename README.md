@@ -1,8 +1,19 @@
 # Niri
 
-**niri runs agents.** The niri server reads `agents/*.yaml` and starts one agent runtime for each configured agent. Each agent runtime owns the agent's model loop, memory, soul, Discord connection, and triggers. Shell and file operations run through the agent's attached **tool host**, which may be embedded in the runtime or connected as a separate process.
+**niri runs agents.** The niri server imports `agents/*.yaml` as initial seeds and manages agents from durable runtime configuration. Use the first-party `niri` cli, config API, or the agent's Python repl to update configuration without editing startup files. Each agent runtime owns the agent's model loop, memory, soul, Discord connection, and triggers. Shell and file operations run through the agent's attached **tool host**, which may be embedded in the runtime or connected as a separate process.
 
 System architecture: [docs/architecture.md](docs/architecture.md)
+
+Runtime config, cli, creation defaults, and Nix seeds: [docs/runtime-configuration.md](docs/runtime-configuration.md)
+
+```sh
+npm link                 # optional: install the checkout's niri command
+niri                     # agents view; enter opens chat
+niri agents create nova  # stopped by default; prompts for model and discord
+niri chat nova
+```
+
+Without linking, use `npm run niri -- <arguments>`. Run the server itself with `niri serve` (daemon; `niri serve stop|status|logs`) or `npm start`.
 
 ## Run the server
 
@@ -14,7 +25,7 @@ chmod 600 agents/mira.yaml
 npm start
 ```
 
-The niri server reads every `.yaml` and `.yml` file in `agents/`. Files ending in `.example.yaml` or `.example.yml` are skipped.
+The niri server imports new agent ids from `.yaml` and `.yml` files in `agents/`. Files ending in `.example.yaml` or `.example.yml` are skipped. Existing ids use the durable config database; seed edits do not overwrite live edits on restart. Empty or missing seed directories are valid.
 
 ## Run a tool host
 

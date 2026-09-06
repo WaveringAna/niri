@@ -3,7 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
-import { agentSettings, parseAgentFile } from "./index.js"
+import { agentSettings, isAllowedConfigPath, isProtectedConfigPath, parseAgentConfig, parseAgentFile, resolveAgentSecrets } from "./index.js"
 
 async function withYaml(yaml: string): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "niri-agent-config-"))
@@ -179,4 +179,61 @@ delegation:
     "write_file",
     "edit_file",
   ])
+})
+
+
+test("parseAgentConfig is YAML-independent and secrets resolve only through explicit references", () => {
+  const config = parseAgentConfig({
+    id: "draft", client: "local", model: { provider: "openai", name: "test" },
+    secrets: { "model.apiKey": { env: "TEST_NIRI_KEY" }, "discord.token": { file: "/missing" } },
+  })
+  const resolved = resolveAgentSecrets(config, { TEST_NIRI_KEY: "key-from-env" })
+  assert.equal(resolved.model?.apiKey, "key-from-env")
+  assert.equal(resolveAgentSecrets(parseAgentConfig({ id: "explicit", model: { apiKey: "operator-key" }, secrets: { "model.apiKey": { env: "TEST_NIRI_KEY" } } }), { TEST_NIRI_KEY: "other" }).model?.apiKey, "operator-key")
+  assert.equal(resolved.discord?.token, undefined)
+  assert.equal(resolved.secrets, undefined)
+  const webhooks = parseAgentConfig({ webhooks: { deploy: {} }, secrets: { "webhooks.deploy.secret": { env: "TEST_NIRI_KEY" } } })
+  assert.equal(resolveAgentSecrets(webhooks, { TEST_NIRI_KEY: "hook-key" }).webhooks?.deploy.secret, "hook-key")
+  assert.throws(() => parseAgentConfig({ model: { apiKey: "[redacted]" } }), /redacted/)
+  assert.throws(() => parseAgentConfig({ discord: { token: "[redacted]" } }), /redacted/)
+  assert.throws(() => parseAgentConfig({ mcp: { remote: { url: "https://example.test", auth: { type: "bearer", token: "[redacted]" } } } }), /redacted/)
+  assert.throws(() => parseAgentConfig({ client: "local", __proto__: { poisoned: true } }), /(unsafe keys|custom prototype)/)
+})
+
+test("posture wording round-trips through the config into DISCORD_POSTURES", () => {
+  const config = parseAgentConfig({
+    id: "mira",
+    client: "local",
+    discord: {
+      enabled: true,
+      postures: {
+        hearth: { description: "warm and open.", guidance: "use it when someone needs you.", bio: "around — say hi." },
+        "deep-focus": { bio: "away, building." },
+      },
+    },
+  })
+
+  assert.deepEqual(config.discord?.postures, {
+    hearth: { description: "warm and open.", guidance: "use it when someone needs you.", bio: "around — say hi." },
+    "deep-focus": { bio: "away, building." },
+  })
+  assert.deepEqual(JSON.parse(agentSettings(config).DISCORD_POSTURES!), config.discord?.postures)
+})
+
+test("posture wording rejects unknown fields, bad names, empty text, and novels", () => {
+  const discord = (postures: unknown) => () => parseAgentConfig({ id: "mira", client: "local", discord: { postures } })
+  assert.throws(discord({ hearth: { mood: "violet" } }), /unknown keys: mood/)
+  assert.throws(discord({ "Hearth!": { bio: "hi" } }), /must match/)
+  assert.throws(discord({ hearth: { bio: "   " } }), /non-empty string/)
+  assert.throws(discord({ hearth: { bio: "x".repeat(2001) } }), /at most 2000 characters/)
+  assert.throws(discord({ hearth: "just a string" }), /must be an object/)
+  assert.equal(parseAgentConfig({ id: "mira", client: "local", discord: { postures: {} } }).discord?.postures, undefined)
+})
+
+test("an agent may write its own posture wording but never a secret path", () => {
+  assert.equal(isAllowedConfigPath(undefined, "discord.postures.hearth.bio"), true)
+  assert.equal(isProtectedConfigPath("discord.postures.hearth.bio"), false)
+  assert.equal(isAllowedConfigPath({ selfEdit: true, allowedPaths: ["model"] }, "discord.postures.hearth.bio"), false)
+  assert.equal(isAllowedConfigPath({ selfEdit: false, allowedPaths: ["discord"] }, "discord.postures.hearth.bio"), false)
+  assert.equal(isAllowedConfigPath(undefined, "discord.token"), false)
 })

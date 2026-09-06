@@ -184,6 +184,7 @@ export const HOST_RPC_METHODS = [
   "loop.budget",
   "work.create", "work.list", "work.get", "work.update", "work.close",
   "schedule.create", "schedule.list", "schedule.cancel",
+  "config.get", "config.update", "config.history", "config.status",
 ] as const
 
 export type HostRpcMethod = (typeof HOST_RPC_METHODS)[number]

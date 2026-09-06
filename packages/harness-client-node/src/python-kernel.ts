@@ -264,12 +264,17 @@ class NiriUnavailable(NiriError):
     """The host RPC service is unavailable."""
     default_code = "unavailable"
 
+class NiriConflict(NiriError):
+    """The host rejected a stale or conflicting durable update."""
+    default_code = "conflict"
+
 _NIRI_ERROR_TYPES = {
     "invalid_argument": NiriInvalid,
     "not_found": NiriNotFound,
     "unauthorized": NiriUnauthorized,
     "deadline_exceeded": NiriDeadlineExceeded,
     "unavailable": NiriUnavailable,
+    "conflict": NiriConflict,
 }
 
 def _niri_exception(message, code=None, http_status=None):
@@ -282,6 +287,8 @@ def _niri_exception(message, code=None, http_status=None):
         return NiriUnauthorized(message)
     if http_status == 408:
         return NiriDeadlineExceeded(message)
+    if http_status in (409, 412):
+        return NiriConflict(message)
     if http_status is not None and http_status >= 500:
         return NiriUnavailable(message)
     return NiriError(message, code)
@@ -369,6 +376,32 @@ class _Aliases:
     async def set(self, handle, canonical): """Coroutine: set a memory alias."""; return await _host_call("memory.alias.set", {"handle": handle, "canonical": canonical})
     async def remove(self, handle, canonical=None): """Coroutine: remove a memory alias."""; return await _host_call("memory.alias.remove", {"handle": handle, "canonical": canonical})
 
+class _Config:
+    async def get(self):
+        """Coroutine: return this agent's authoritative desired configuration snapshot."""
+        return await _host_call("config.get", {})
+    async def status(self):
+        """Coroutine: return this agent's configuration snapshot and application status."""
+        return await _host_call("config.status", {})
+    async def history(self):
+        """Coroutine: return this agent's durable configuration revision history."""
+        return await _host_call("config.history", {})
+    async def update(self, patch, expected_revision, reason=None, request_id=None):
+        """Coroutine: durably patch this agent's desired config. Returns a receipt; retain its request_id to retry safely after a deadline."""
+        if not isinstance(patch, dict):
+            raise NiriInvalid("patch must be a dict")
+        if not isinstance(expected_revision, int) or isinstance(expected_revision, bool) or expected_revision < 1:
+            raise NiriInvalid("expected_revision must be a positive integer")
+        if reason is not None and (not isinstance(reason, str) or not reason.strip()):
+            raise NiriInvalid("reason must be a non-empty string when provided")
+        if request_id is not None and (not isinstance(request_id, str) or not request_id.strip()):
+            raise NiriInvalid("request_id must be a non-empty string when provided")
+        request_id = request_id.strip() if isinstance(request_id, str) else str(uuid.uuid4())
+        try:
+            return await _host_call("config.update", {"patch": patch, "expected_revision": expected_revision, **({"reason": reason.strip()} if reason is not None else {}), "request_id": request_id})
+        except NiriDeadlineExceeded as error:
+            raise NiriDeadlineExceeded(f"{error}; retry niri.config.update(..., request_id={request_id!r})", error.code) from error
+
 def _seconds_remaining(execution):
     deadline = execution.get("deadlineAt")
     if not deadline:
@@ -380,7 +413,7 @@ def _seconds_remaining(execution):
         return 0.0
 
 class _Niri:
-    """Persistent niri API namespaces: memory, soul, context, discord, work, schedule, aliases, and scratch."""
+    """Persistent niri API namespaces: memory, soul, context, discord, work, schedule, aliases, config, and scratch."""
     scratch = os.environ["NIRI_SCRATCH"]
     memory = _Memory()
     soul = _Soul()
@@ -389,6 +422,7 @@ class _Niri:
     work = _Work()
     schedule = _Schedule()
     aliases = _Aliases()
+    config = _Config()
     async def budget(self):
         """Coroutine: return the loop turn, token, context, and current invocation deadline budget."""
         value = await _host_call("loop.budget", {})
@@ -414,7 +448,7 @@ class _Niri:
 niri = _Niri()
 _namespace.update({"niri": niri, "out": out, "read": read, "edit": edit, "sh": sh, "glob": glob, "grep": grep,
     "ShellResult": ShellResult, "NiriError": NiriError, "NiriInvalid": NiriInvalid, "NiriNotFound": NiriNotFound,
-    "NiriUnauthorized": NiriUnauthorized, "NiriDeadlineExceeded": NiriDeadlineExceeded, "NiriUnavailable": NiriUnavailable})
+    "NiriUnauthorized": NiriUnauthorized, "NiriDeadlineExceeded": NiriDeadlineExceeded, "NiriUnavailable": NiriUnavailable, "NiriConflict": NiriConflict})
 
 def _execute(source):
     tree = ast.parse(source, mode="exec")
@@ -448,7 +482,7 @@ while True:
         break
     if command.get("type") == "reset":
         keep = {key: _namespace[key] for key in ("__name__", "niri", "out", "read", "edit", "sh", "glob", "grep",
-            "ShellResult", "NiriError", "NiriInvalid", "NiriNotFound", "NiriUnauthorized", "NiriDeadlineExceeded", "NiriUnavailable")}
+            "ShellResult", "NiriError", "NiriInvalid", "NiriNotFound", "NiriUnauthorized", "NiriDeadlineExceeded", "NiriUnavailable", "NiriConflict")}
         _namespace.clear()
         _namespace.update(keep)
         _send({"type": "reset.result", "id": command.get("id")})
@@ -502,6 +536,7 @@ const INTERRUPT_GRACE_MS = 2_000
 const MAX_RETAINED_OUTPUT_BYTES = 8 * 1024 * 1024
 const MAX_OUTPUT_ARCHIVES = 32
 const MAX_OUTPUT_ARCHIVE_TOTAL_BYTES = 32 * 1024 * 1024
+const PYTHON_DENIED_ENV = new Set(["NIRI_CONFIG_TOKEN", "NIRI_CONTROL_TOKEN", "NIRI_ADMIN_TOKEN"])
 
 /** Mint one execution's cell-end token; unguessable so cell output cannot forge a boundary. */
 function cellEndToken(): string {
@@ -692,9 +727,10 @@ export class PythonKernelManager {
     ])
     SHELL_ENV.PYTHONPYCACHEPREFIX = pythonCache
     const ready = deferred<ChildProcess>()
+    const pythonEnvironment = Object.fromEntries(Object.entries(SHELL_ENV).filter(([key]) => !PYTHON_DENIED_ENV.has(key)))
     const child = spawn(process.env.NIRI_PYTHON ?? "python3", ["-u", "-c", PYTHON_BOOTSTRAP], {
       cwd: CLIENT_WORKSPACE_ROOT,
-      env: { ...SHELL_ENV, HOME: CLIENT_HOME, NIRI_WORKSPACE: CLIENT_WORKSPACE_ROOT, NIRI_SCRATCH: scratch, PYTHONPYCACHEPREFIX: pythonCache },
+      env: { ...pythonEnvironment, HOME: CLIENT_HOME, NIRI_WORKSPACE: CLIENT_WORKSPACE_ROOT, NIRI_SCRATCH: scratch, PYTHONPYCACHEPREFIX: pythonCache },
       stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
     })
     this.child = child

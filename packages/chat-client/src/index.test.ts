@@ -43,3 +43,38 @@ test("control-plane SSE unwraps worker stream.event envelopes", async () => {
   await client.stream({ onEvent: (event) => events.push(event) })
   assert.deepEqual(events, [{ type: "text", text: "hiya" }])
 })
+
+test("a failed turn arrives as an error event rather than assistant text", async () => {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: {"type":"stream.event","payload":{"type":"error","text":"401 Incorrect API key"}}\n\n'))
+      controller.close()
+    },
+  })
+  const fetchImpl: FetchLike = async () => new Response(body, { status: 200 })
+  const client = createChatClient({ baseUrl: "https://control.example", agentId: "mira", fetchImpl })
+  const events: unknown[] = []
+
+  await client.stream({ onEvent: (event) => events.push(event) })
+  assert.deepEqual(events, [{ type: "error", text: "401 Incorrect API key" }])
+})
+
+test("replayed conversation records surface the agent's own replies only", async () => {
+  const records = [
+    { type: "conversation.message", payload: { role: "user", content: "[wake] triggered by chat\n\nmeow im ana" } },
+    { type: "conversation.message", payload: { role: "assistant", content: "hi ana" } },
+    { type: "conversation.message", payload: { role: "tool", content: "tool output" } },
+  ]
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const record of records) controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(record)}\n\n`))
+      controller.close()
+    },
+  })
+  const fetchImpl: FetchLike = async () => new Response(body, { status: 200 })
+  const client = createChatClient({ baseUrl: "https://control.example", agentId: "mira", fetchImpl })
+  const events: unknown[] = []
+
+  await client.stream({ onEvent: (event) => events.push(event) })
+  assert.deepEqual(events, [{ type: "message", role: "assistant", text: "hi ana" }])
+})

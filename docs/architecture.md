@@ -2,7 +2,7 @@
 
 ## The mental model
 
-**niri runs agents.** The niri server reads `agents/*.yaml` and starts one **agent runtime** for each configured agent. Each runtime is the agent's living process: it owns the model loop, memory, soul, Discord connection, and triggers. Each agent is attached to one **tool host**, where shell and file operations run.
+**niri runs agents.** The niri server imports `agents/*.yaml` as initial seeds, then supervises enabled agents from durable configuration in its control database. The cli, config API, and agent repl share one revisioned config service. See [runtime configuration](runtime-configuration.md) for defaults, policy, Nix inputs, and application semantics. Each running agent has one **agent runtime**. Each runtime is the agent's living process: it owns the model loop, memory, soul, Discord connection, and triggers. Each agent is attached to one **tool host**, where shell and file operations run.
 
 ```
 one niri machine

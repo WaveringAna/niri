@@ -19,6 +19,11 @@ function fixture(t: test.TestContext, files: Record<string, string>): string {
 
 const options = { controlPort: 4300, repoRoot: "/tmp/niri-review" }
 
+test("missing agent directory is a valid durable-config boot", () => {
+  const directory = path.join(os.tmpdir(), `niri-no-agents-${process.pid}-${Date.now()}`)
+  assert.equal(loadAgentFiles(directory).length, 0)
+})
+
 test("one yaml file is one complete agent", (t) => {
   const directory = fixture(t, {
     "mira.yaml": `

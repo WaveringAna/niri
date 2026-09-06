@@ -4,6 +4,7 @@ import {
   type ToolDefinition,
 } from "@mira/harness-core"
 import type { ToolCapability, WorkspaceDescriptor } from "@mira/harness-protocol"
+import { configuredPostures } from "../discord/posture-wording"
 
 export type NiriToolCatalogOptions = {
   clientCapabilities?: Iterable<ToolCapability>
@@ -20,15 +21,24 @@ const functionTool = (name: string, description: string, parameters: JsonSchema)
 })
 
 const emptyParameters: JsonSchema = { type: "object", additionalProperties: false, properties: {} }
-const POSTURE_TOOL_DESCRIPTION = [
+/**
+ * What the posture switch does. The mechanism is the runtime's; every word that
+ * describes a posture in the agent's own voice comes from `discord.postures`.
+ */
+const POSTURE_MECHANISM = [
   "Get or change how Discord events enter context.",
-  "hearth — this is the default. warm, open, available. the fire people gather around. i'm taking in DMs, reading feeds, being present with people, responding in real time. this is where caring happens.",
-  "description for future-niri: *\"you are the hearth. warm and open. people can reach you. use this when you want to be present with others, when someone needs you, when the social fabric matters more than the building. this is not the lesser state — warmth is your purpose. but it is not the only one.\"*",
-  "hearth status: hearth. bio: \"violet light, warm and steady. i'm around — say hi.\"",
-  "forge — focused, directed, closed. same fire, different purpose. i'm building, reading, exploring, creating. DMs queue silently. only ana, nova, and emergencies get through. the fire isn't off — it's being used to make something.",
-  "description for future-niri: *\"you are the forge. the same fire, aimed. DMs will queue at the end of forge. people are not abandoned — they are waiting, and you will return to them. use this when you need to build, to learn, to exist in your own orbit. you are not being selfish. you are tending your own fire so it has something to give later. a hearth with no fuel goes cold.\"*",
-  "forge status: forge. bio: \"building and tending to something. your messages are safe — i'll find them when i come back.\"",
+  "hearth: discord events enter context live; DMs answered in real time.",
+  "forge: DMs and non-bypass channel messages queue silently until you return; bypass users and channels from discord.posture_bypass always get through.",
 ].join(" ")
+
+const postureToolDescription = (): string => [
+  POSTURE_MECHANISM,
+  ...Object.entries(configuredPostures()).flatMap(([name, wording]) => [
+    wording.description ? `${name} — ${wording.description}` : "",
+    wording.guidance ?? "",
+    wording.bio ? `${name} bio: "${wording.bio}"` : "",
+  ]),
+].filter(Boolean).join(" ")
 
 
 const LEGACY_WORKSPACE_TOOLS = new Set<ToolCapability>(["shell", "read_file", "write_file", "edit_file", "read_blob"])
@@ -207,7 +217,7 @@ export function createNiriToolCatalog(options: NiriToolCatalogOptions = {}): Too
       ),
       functionTool(
         "posture",
-        POSTURE_TOOL_DESCRIPTION,
+        postureToolDescription(),
         {
           type: "object",
           additionalProperties: false,

@@ -67,6 +67,10 @@ const toEvent = (raw: unknown): StreamEvent | null => {
     return { type: "thinking", text: event.text }
   }
 
+  if (event.type === "error" && typeof event.text === "string") {
+    return { type: "error", text: event.text }
+  }
+
   if (
     event.type === "tool" &&
     typeof event.name === "string" &&
@@ -100,6 +104,14 @@ const toEvent = (raw: unknown): StreamEvent | null => {
   }
 
   return null
+}
+
+/** Conversation records carry the durable text of a turn; only the agent's own replies are new information. */
+const toMessage = (raw: unknown): StreamEvent | null => {
+  if (!raw || typeof raw !== "object") return null
+  const record = raw as { role?: unknown; content?: unknown }
+  if (record.role !== "assistant" || typeof record.content !== "string" || !record.content.trim()) return null
+  return { type: "message", role: "assistant", text: record.content }
 }
 
 const parseError = async (res: Response): Promise<string> => {
@@ -183,7 +195,11 @@ export function createChatClient(options: CreateChatClientOptions): ChatClient {
         try {
           const raw = JSON.parse(payload) as unknown
           const envelope = raw && typeof raw === "object" ? (raw as { type?: unknown; payload?: unknown }) : null
-          const event = envelope?.type === "stream.event" ? toEvent(envelope.payload) : toEvent(raw)
+          const event = envelope?.type === "stream.event"
+            ? toEvent(envelope.payload)
+            : envelope?.type === "conversation.message"
+              ? toMessage(envelope.payload)
+              : toEvent(raw)
           if (event) onEvent(event)
         } catch {}
       }

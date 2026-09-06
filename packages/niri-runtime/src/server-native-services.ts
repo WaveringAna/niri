@@ -8,6 +8,7 @@ import type { ContextSearchResult } from "@mira/agent-context"
 import { readLoopBudget, type LoopBudget } from "./runner/loop-budget"
 import { WorkLedgerError, createWorkItem, getWorkItem, listWorkItems, updateWorkItem, closeWorkItem, type WorkItem, type WorkItemSummary } from "./work-ledger"
 import type { HostRpcMethod } from "@mira/harness-protocol"
+import { runtimeConfig } from "./runtime-config"
 
 /**
  * Server-native operations: one typed implementation per RPC-exposed method,
@@ -21,7 +22,7 @@ import type { HostRpcMethod } from "@mira/harness-protocol"
  */
 
 
-export type ServiceErrorCode = "invalid_argument" | "not_found"
+export type ServiceErrorCode = "invalid_argument" | "not_found" | "unauthorized" | "conflict" | "unavailable" | "operation_failed"
 
 export class ServiceError extends Error {
   readonly code: ServiceErrorCode
@@ -221,6 +222,10 @@ const OPERATIONS: Record<HostRpcMethod, (args: ServiceArgs) => Promise<unknown>>
   "schedule.create": scheduleCreate,
   "schedule.list": scheduleList,
   "schedule.cancel": scheduleCancel,
+  "config.get": (args) => runtimeConfig.get(args),
+  "config.update": (args) => runtimeConfig.update(args),
+  "config.history": (args) => runtimeConfig.history(args),
+  "config.status": (args) => runtimeConfig.status(args),
 }
 
 /** Host-RPC entry point: dispatch to the same operation the model adapter uses. */

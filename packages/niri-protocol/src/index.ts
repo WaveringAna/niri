@@ -1,5 +1,12 @@
 export type StreamEvent =
   | { type: "text"; text: string }
+  /** A turn that failed: the runner aborted and the agent said nothing. */
+  | { type: "error"; text: string }
+  /**
+   * A settled reply from the agent's own log. Live turns also arrive as `text`
+   * chunks; replayed history has only this, because chunks are not persisted.
+   */
+  | { type: "message"; role: "assistant"; text: string }
   | { type: "user"; text: string; source: string; triggeredAt: string; clientId?: string }
   | { type: "thinking"; text: string }
   | { type: "tool"; name: string; args: Record<string, unknown>; result: string }

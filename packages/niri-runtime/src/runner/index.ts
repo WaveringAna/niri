@@ -340,6 +340,8 @@ export async function wake(event: UserMessage): Promise<void> {
     const message = err instanceof Error ? err.message : String(err)
     console.error(`[runner] loop aborted: ${message}`)
     if (err instanceof Error && err.stack) console.error(err.stack)
+    // The turn produced no reply; connected clients are told why instead of waiting.
+    emit({ type: "error", text: message })
     try {
       await saveRuntimeSnapshot()
     } catch (saveErr) {

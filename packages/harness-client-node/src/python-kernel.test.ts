@@ -225,6 +225,35 @@ assert 0 < budget["seconds_remaining"] <= 10
  } finally { await host.stop(); await new Promise<void>(resolve=>server.close(()=>resolve())); await fs.rm(workspace,{recursive:true,force:true}) }
 })
 
+test("Python config facade is typed unavailable without its host RPC grant", async () => {
+ const workspace=await fs.mkdtemp(path.join(os.tmpdir(),"niri-python-config-unavailable-"));const host=new NodeToolHost({capabilities:["python"],workspace:{root:workspace}})
+ try {
+  const result=await host.execute(call({code:`try:
+    await niri.config.get()
+except NiriUnavailable as error:
+    print(error.code)
+else:
+    raise AssertionError("config should be unavailable")`}));assert.equal(result.status,"ok");assert.match(result.output??"",/unavailable/)
+ } finally {await host.stop();await fs.rm(workspace,{recursive:true,force:true})}
+})
+
+test("Python config facade sends durable update fields through host RPC without config credentials", async () => {
+ const workspace=await fs.mkdtemp(path.join(os.tmpdir(),"niri-python-config-")); let received: { method?: string; args?: Record<string, unknown> }={}
+ const server=http.createServer(async(req,res)=>{const chunks:Buffer[]=[];for await(const chunk of req)chunks.push(Buffer.from(chunk));const body=JSON.parse(Buffer.concat(chunks).toString()) as {requestId:string;method:string;args:Record<string,unknown>};received={method:body.method,args:body.args};res.writeHead(200,{"content-type":"application/json"});res.end(JSON.stringify({type:"host.result",requestId:body.requestId,status:"ok",result:{requestId:body.args.request_id,revision:3,application:"restart-required"},completedAt:new Date().toISOString()}))})
+ await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));const address=server.address();if(!address||typeof address==="string")throw new Error("no address")
+ const host=new NodeToolHost({capabilities:["python"],workspace:{root:workspace},runtime:{shellEnvironment:{NIRI_CONFIG_TOKEN:"must-not-leak",NIRI_ADMIN_TOKEN:"must-not-leak"}},hostRpcEndpoint:`http://127.0.0.1:${address.port}`})
+ try {
+  const invocation=call({code:`import os
+assert os.environ.get("NIRI_CONFIG_TOKEN") is None
+assert os.environ.get("NIRI_ADMIN_TOKEN") is None
+receipt = await niri.config.update({"model": {"name": "test"}}, 2, reason="test", request_id="retry-stable")
+assert receipt["requestId"] == "retry-stable"
+print(receipt["application"])`});invocation.hostRpcGrant="test-grant"
+  const result=await host.execute(invocation);assert.equal(result.status,"ok");assert.match(result.output??"",/restart-required/)
+  assert.deepEqual(received,{method:"config.update",args:{patch:{model:{name:"test"}},expected_revision:2,reason:"test",request_id:"retry-stable"}})
+ } finally {await host.stop();await new Promise<void>(resolve=>server.close(()=>resolve()));await fs.rm(workspace,{recursive:true,force:true})}
+})
+
 test("Python exposes typed host RPC errors that survive reset", async () => {
  const workspace=await fs.mkdtemp(path.join(os.tmpdir(),"niri-python-errors-"))
  const server=http.createServer(async(req,res)=>{const chunks:Buffer[]=[];for await(const chunk of req)chunks.push(Buffer.from(chunk));const body=JSON.parse(Buffer.concat(chunks).toString()) as {requestId:string};res.writeHead(200,{"content-type":"application/json"});res.end(JSON.stringify({type:"host.result",requestId:body.requestId,status:"error",error:{code:"not_found",message:"missing memory file"},completedAt:new Date().toISOString()}))})
