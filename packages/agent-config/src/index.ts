@@ -140,6 +140,8 @@ export type WorkerConfig = {
 /** Parsed contents of a single agent yaml file. */
 export type ConfigPolicy = {
   selfEdit?: boolean
+  /** Allow the agent's scoped webhook API to provision generated signing secrets. */
+  agentWebhooks?: boolean
   /** Dot paths an agent may edit. Defaults to behavioral blocks only. */
   allowedPaths?: string[]
   /** Operator values that an edit must retain. */
@@ -452,7 +454,7 @@ function parseWebhooks(value: unknown, label: string, secrets?: AgentSecrets): R
   const entries = object(value, label)
   const result: Record<string, WebhookConfig> = {}
   for (const [name, raw] of Object.entries(entries)) {
-    if (!/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error(`${label}.${name} has an invalid webhook name`)
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name) || DANGEROUS_KEYS.has(name)) throw new Error(`${label}.${name} has an invalid webhook name`)
     const item = object(raw, `${label}.${name}`)
     const unknown = Object.keys(item).filter((key) => !["secret", "signatureHeader", "signaturePrefix"].includes(key))
     if (unknown.length > 0) throw new Error(`${label}.${name} has unknown keys: ${unknown.join(", ")}`)
@@ -626,9 +628,9 @@ function validPolicyPath(path: string): boolean {
 }
 
 function parseConfigPolicy(value: unknown, label: string): ConfigPolicy {
-  if (value === undefined) return { selfEdit: true, allowedPaths: [...DEFAULT_AGENT_EDIT_PATHS] }
+  if (value === undefined) return { selfEdit: true, agentWebhooks: false, allowedPaths: [...DEFAULT_AGENT_EDIT_PATHS] }
   const item = object(value, label)
-  const unknown = Object.keys(item).filter((key) => !["selfEdit", "allowedPaths", "enforcedPaths"].includes(key))
+  const unknown = Object.keys(item).filter((key) => !["selfEdit", "agentWebhooks", "allowedPaths", "enforcedPaths"].includes(key))
   if (unknown.length) throw new Error(`${label} has unknown keys: ${unknown.join(", ")}`)
   const paths = (key: "allowedPaths" | "enforcedPaths"): string[] | undefined => {
     const raw = item[key]
@@ -638,6 +640,7 @@ function parseConfigPolicy(value: unknown, label: string): ConfigPolicy {
   }
   return {
     selfEdit: item.selfEdit === undefined ? true : optionalBoolean(item.selfEdit, `${label}.selfEdit`),
+    agentWebhooks: item.agentWebhooks === undefined ? false : optionalBoolean(item.agentWebhooks, `${label}.agentWebhooks`),
     allowedPaths: paths("allowedPaths") ?? [...DEFAULT_AGENT_EDIT_PATHS],
     ...(paths("enforcedPaths") ? { enforcedPaths: paths("enforcedPaths") } : {}),
   }
@@ -775,7 +778,7 @@ export const DEFAULT_NEW_AGENT_CONFIG: Omit<AgentConfig, "id"> = {
     contextCompactTriggerTokens: 100_000, contextCompactHardTriggerTokens: 120_000, contextCompactMinNewMessages: 4,
     lcmSummaryBatchSize: 4, migrateLegacyState: false,
   },
-  configPolicy: { selfEdit: true, allowedPaths: [...DEFAULT_AGENT_EDIT_PATHS] },
+  configPolicy: { selfEdit: true, agentWebhooks: false, allowedPaths: [...DEFAULT_AGENT_EDIT_PATHS] },
 }
 
 function providerSettings(prefix: string, config: OpenAiProviderConfig | undefined): Record<string, string> {

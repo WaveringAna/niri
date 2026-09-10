@@ -140,15 +140,40 @@ The operator controls policy:
 ```yaml
 configPolicy:
   selfEdit: true
+  agentWebhooks: false
   allowedPaths: [model, fallback, summary, runtime, delegation, discord]
   enforcedPaths: [model.name]
 ```
 
-An empty allowlist disables all agent edits. `selfEdit: false` disables the
-self-edit interface. Default permissions exclude secret fields, deployment,
-operator policy, arbitrary environment settings, webhooks, and MCP commands.
-Provider endpoint changes need an exact explicit allowlisted path such as
-`model.baseUrl`, because they can redirect credentials.
+An empty allowlist disables all generic agent edits. `selfEdit: false` disables
+the self-edit interface. Generic patches always exclude secret fields,
+deployment, operator policy, arbitrary environment settings, webhooks, and MCP
+commands. Provider endpoint changes need an exact explicit allowlisted path such
+as `model.baseUrl`, because they can redirect credentials.
+
+`agentWebhooks: true` opts the agent into the narrow webhook provisioning API.
+It does not expose generic webhook or secret editing. The control plane generates
+the signing secret, persists it in the protected config store, keeps config and
+history views redacted, refreshes webhook routing, and returns only the new
+webhook's signing receipt to its owning agent:
+
+```python
+cfg = await niri.config.get()
+hook = await niri.webhooks.create(
+    "deploy",
+    expected_revision=cfg["revision"],
+    signature_header="X-Hub-Signature-256",
+    request_id="deploy-webhook-1",
+    reason="receive deployment events",
+)
+print(hook["path"], hook["secret"])
+```
+
+The default signature is the lowercase `x-niri-signature` header containing
+`sha256=<hex HMAC-SHA256 of the exact request body>`. The returned `url` uses the
+control plane's loopback origin; use `path` with the externally reachable control
+plane origin when configuring the sender. Keep `request_id` to retry safely after
+a deadline: an exact replay returns the same secret without another revision.
 
 `enforcedPaths` binds selected values from the seed/config. Ordinary edits,
 including operator patches, cannot change those values. Explicit seed apply can

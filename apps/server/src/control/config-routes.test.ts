@@ -13,8 +13,9 @@ async function fixture(t: test.TestContext) {
   const store = new ConfigStore(path.join(home, "config.db"))
   const token = getOrCreateToken(path.join(home, "admin.token"))
   const scheduled: string[] = []
+  const refreshed: string[] = []
   const manager: ConfigurationManager = {
-    list: () => store.list(), validate: () => {}, schedule: id => { scheduled.push(id) },
+    list: () => store.list(), validate: () => {}, refresh: id => { refreshed.push(id) }, schedule: id => { scheduled.push(id) },
     start: async id => store.setEnabled(id, true), stop: async id => store.setEnabled(id, false),
     restart: async id => store.get(id),
   }
@@ -23,7 +24,7 @@ async function fixture(t: test.TestContext) {
   t.after(async () => { await app.close(); store.close(); fs.rmSync(home, { recursive: true, force: true }) })
   const admin = { authorization: `Bearer ${token}` }
   const agent = (id: string) => ({ authorization: `Bearer ${deriveAgentToken(token, id)}` })
-  return { app, store, admin, agent, scheduled, home, token }
+  return { app, store, admin, agent, scheduled, refreshed, home, token }
 }
 
 test("operator creates a stopped agent; config reads and lifecycle require scoped authority", async t => {
@@ -63,15 +64,87 @@ test("repl-style edits are revisioned, redacted, and return before application",
   assert.equal(history.json().history[0].actor, "agent:nova")
 })
 
+test("agent provisions an idempotent signed webhook without exposing other config secrets", async t => {
+  const { app, store, admin, agent, scheduled, refreshed } = await fixture(t)
+  await app.inject({ method: "POST", url: "/agents", headers: admin, payload: { id: "niri", config: { model: { apiKey: "existing-model-secret" }, configPolicy: { agentWebhooks: true } } } })
+  const request = {
+    method: "POST" as const,
+    url: "/agents/niri/config/webhooks",
+    headers: agent("niri"),
+    payload: { name: "deploy", expectedRevision: 1, signatureHeader: "X-Hub-Signature-256", requestId: "webhook-create-1", reason: "receive deploys" },
+  }
+  const created = await app.inject(request)
+  assert.equal(created.statusCode, 201, created.body)
+  const receipt = created.json()
+  assert.match(receipt.secret, /^[a-zA-Z0-9_-]{43}$/)
+  assert.equal(receipt.signatureHeader, "x-hub-signature-256")
+  assert.equal(receipt.signaturePrefix, "sha256=")
+  assert.equal(receipt.agentId, "niri")
+  assert.equal(receipt.path, "/agents/niri/trigger/webhook/deploy")
+  assert.equal(receipt.revision, 2)
+  assert.equal(receipt.requestId, "webhook-create-1")
+  assert.ok(scheduled.includes("niri"))
+  assert.ok(refreshed.includes("niri"))
+
+  const replay = await app.inject(request)
+  assert.equal(replay.statusCode, 201, replay.body)
+  assert.equal(replay.json().secret, receipt.secret)
+  assert.equal(replay.json().revision, 2)
+  assert.equal(store.getRaw("niri")?.webhooks?.deploy?.secret, receipt.secret)
+  assert.equal(store.get("niri")?.config.webhooks?.deploy?.secret, "[redacted]")
+  assert.doesNotMatch((await app.inject({ url: "/agents/niri/config/history", headers: agent("niri") })).body, new RegExp(`${receipt.secret}|existing-model-secret`))
+
+  const duplicate = await app.inject({ ...request, payload: { name: "deploy", expectedRevision: 2, requestId: "webhook-create-2" } })
+  assert.equal(duplicate.statusCode, 409)
+  assert.equal(duplicate.json().code, "ALREADY_EXISTS")
+  const stale = await app.inject({ ...request, payload: { name: "build", expectedRevision: 1, requestId: "webhook-create-3" } })
+  assert.equal(stale.statusCode, 409)
+  assert.equal(stale.json().code, "CONFLICT")
+  const reused = await app.inject({ ...request, payload: { name: "other", expectedRevision: 1, requestId: "webhook-create-1" } })
+  assert.equal(reused.statusCode, 409)
+  assert.equal(reused.json().code, "IDEMPOTENCY_CONFLICT")
+  assert.equal((await app.inject({ ...request, headers: agent("other") })).statusCode, 403)
+
+  store.update("niri", { actor: "operator", expectedRevision: 2, patch: { configPolicy: { agentWebhooks: false } } })
+  const disabledReplay = await app.inject(request)
+  assert.equal(disabledReplay.statusCode, 403)
+  assert.equal(disabledReplay.json().code, "POLICY_DENIED")
+})
+
+test("webhook provisioning requires operator opt-in and honors the config self-edit switch", async t => {
+  const { app, admin, agent } = await fixture(t)
+  await app.inject({ method: "POST", url: "/agents", headers: admin, payload: { id: "default" } })
+  const optedOut = await app.inject({ method: "POST", url: "/agents/default/config/webhooks", headers: agent("default"), payload: { name: "deploy", expectedRevision: 1, requestId: "default-hook" } })
+  assert.equal(optedOut.statusCode, 403)
+  assert.equal(optedOut.json().code, "POLICY_DENIED")
+
+  await app.inject({ method: "POST", url: "/agents", headers: admin, payload: { id: "locked", config: { configPolicy: { selfEdit: false, agentWebhooks: true } } } })
+  const denied = await app.inject({ method: "POST", url: "/agents/locked/config/webhooks", headers: agent("locked"), payload: { name: "deploy", expectedRevision: 1, requestId: "locked-hook" } })
+  assert.equal(denied.statusCode, 403)
+  assert.equal(denied.json().code, "POLICY_DENIED")
+})
+
 test("bad boundary inputs fail without mutating config", async t => {
-  const { app, admin } = await fixture(t)
+  const { app, store, admin, agent } = await fixture(t)
   assert.equal((await app.inject({ method: "POST", url: "/agents", headers: admin, payload: { id: "../escape" } })).statusCode, 400)
   assert.equal((await app.inject({ method: "POST", url: "/agents", headers: admin, payload: { id: "nova", config: { id: "other" } } })).statusCode, 400)
-  await app.inject({ method: "POST", url: "/agents", headers: admin, payload: { id: "nova" } })
+  await app.inject({ method: "POST", url: "/agents", headers: admin, payload: { id: "nova", config: { configPolicy: { agentWebhooks: true } } } })
   for (const expectedRevision of [undefined, -1, "1", 0]) {
     assert.equal((await app.inject({ method: "PATCH", url: "/agents/nova/config", headers: admin, payload: { patch: {}, expectedRevision } })).statusCode, 400)
   }
   assert.equal((await app.inject({ method: "POST", url: "/agents/nova/config/seed", headers: admin, payload: { config: { id: "other", client: "local" }, expectedRevision: 1 } })).statusCode, 400)
+  for (const payload of [
+    { name: "../escape", expectedRevision: 1, requestId: "bad-name" },
+    { name: "__proto__", expectedRevision: 1, requestId: "reserved-name" },
+    { name: "deploy", expectedRevision: 1, signatureHeader: "bad header", requestId: "bad-header" },
+    { name: "deploy", expectedRevision: 1, signaturePrefix: 42, requestId: "bad-prefix" },
+    { name: "deploy", expectedRevision: 1, requestId: "unknown", extra: true },
+    { name: "deploy", expectedRevision: 1 },
+    { name: "deploy", expectedRevision: 0, requestId: "bad-revision" },
+  ]) {
+    assert.equal((await app.inject({ method: "POST", url: "/agents/nova/config/webhooks", headers: agent("nova"), payload })).statusCode, 400)
+  }
+  assert.equal(store.get("nova")?.revision, 1)
 })
 
 

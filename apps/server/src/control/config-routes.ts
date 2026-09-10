@@ -8,6 +8,7 @@ export interface ConfigurationManager {
   start(id: string): Promise<unknown>
   stop(id: string): Promise<unknown>
   restart(id: string): Promise<unknown>
+  refresh(id: string): void
   schedule(id: string): void
   validate(config: AgentFile, id?: string): void
 }
@@ -42,6 +43,16 @@ function optionalText(value: unknown, label: string): string | undefined {
   if (value === undefined) return undefined
   if (typeof value !== "string" || !value.trim() || value.length > 2000) throw new ConfigError(400, "INVALID_CONFIG", `${label} must be a non-empty string of at most 2000 characters`)
   return value.trim()
+}
+function requiredText(value: unknown, label: string): string {
+  const result = optionalText(value, label)
+  if (!result) throw new ConfigError(400, "INVALID_CONFIG", `${label} is required`)
+  return result
+}
+function optionalPrefix(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== "string" || value.length > 128) throw new ConfigError(400, "INVALID_CONFIG", "signaturePrefix must be a string of at most 128 characters")
+  return value
 }
 function metadata(body: Record<string, unknown>, actor: ConfigActor) {
   return { actor, reason: optionalText(body.reason, "reason"), idempotencyKey: optionalText(body.requestId, "requestId") }
@@ -95,6 +106,32 @@ export async function registerConfigurationRoutes(app: FastifyInstance, control:
     manager.schedule(id)
     return result
   })
+  app.post("/agents/:id/config/webhooks", async (request, reply) => {
+    const id = agentId(request)
+    const who = actor(control, request, id)
+    const body = object(request.body)
+    const unknown = Object.keys(body).filter((key) => !["name", "expectedRevision", "signatureHeader", "signaturePrefix", "reason", "requestId"].includes(key))
+    if (unknown.length) throw new ConfigError(400, "INVALID_CONFIG", `unknown webhook fields: ${unknown.join(", ")}`)
+    const requestId = requiredText(body.requestId, "requestId")
+    const provisioned = store.provisionWebhook(id, {
+      actor: who,
+      name: requiredText(body.name, "name"),
+      expectedRevision: revision(body.expectedRevision),
+      ...(body.signatureHeader !== undefined ? { signatureHeader: requiredText(body.signatureHeader, "signatureHeader") } : {}),
+      ...(body.signaturePrefix !== undefined ? { signaturePrefix: optionalPrefix(body.signaturePrefix)! } : {}),
+      ...(body.reason !== undefined ? { reason: requiredText(body.reason, "reason") } : {}),
+      idempotencyKey: requestId,
+    })
+    manager.refresh(id)
+    manager.schedule(id)
+    return reply.code(201).send({
+      ...provisioned,
+      agentId: id,
+      path: `/agents/${encodeURIComponent(id)}/trigger/webhook/${encodeURIComponent(provisioned.name)}`,
+      requestId,
+    })
+  })
+
   app.post("/agents/:id/config/rollback", async (request) => {
     requireOperator(control, request)
     const id = agentId(request)

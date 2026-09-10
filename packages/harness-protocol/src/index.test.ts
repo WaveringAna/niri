@@ -91,7 +91,7 @@ test("host RPC accepts listed work methods only", () => {
 
 test("host RPC config surface is an explicit allowlist", () => {
  const now=new Date(); const base={type:"host.call",requestId:"r",outerInvocationId:"i",args:{},issuedAt:now.toISOString(),deadlineAt:new Date(now.getTime()+1000).toISOString()}
- for (const method of ["config.get", "config.update", "config.history", "config.status"]) assert.equal(parseHostRpcRequest({...base,method})?.method,method)
+ for (const method of ["config.get", "config.update", "config.history", "config.status", "webhooks.create"]) assert.equal(parseHostRpcRequest({...base,method})?.method,method)
  assert.equal(parseHostRpcRequest({...base,method:"config.delete"}),null)
  assert.equal(parseHostRpcRequest({...base,method:"config.apply"}),null)
 })

@@ -226,6 +226,7 @@ const OPERATIONS: Record<HostRpcMethod, (args: ServiceArgs) => Promise<unknown>>
   "config.update": (args) => runtimeConfig.update(args),
   "config.history": (args) => runtimeConfig.history(args),
   "config.status": (args) => runtimeConfig.status(args),
+  "webhooks.create": (args) => runtimeConfig.createWebhook(args),
 }
 
 /** Host-RPC entry point: dispatch to the same operation the model adapter uses. */

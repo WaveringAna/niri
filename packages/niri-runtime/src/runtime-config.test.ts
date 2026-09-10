@@ -53,6 +53,43 @@ test("runtime config forwards only this agent and its scoped bearer token", asyn
   }
 })
 
+test("runtime config provisions a webhook through the scoped control origin", async () => {
+  let observed: { method?: string; url?: string; authorization?: string; body?: unknown } = {}
+  const server = await listen(async (request, response) => {
+    const chunks: Buffer[] = []
+    for await (const chunk of request) chunks.push(Buffer.from(chunk))
+    observed = {
+      method: request.method,
+      url: request.url,
+      authorization: request.headers.authorization,
+      body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+    }
+    response.writeHead(201, { "content-type": "application/json" })
+    response.end(JSON.stringify({
+      name: "deploy", secret: "generated", signatureHeader: "x-hub-signature-256", signaturePrefix: "sha256=",
+      path: "/agents/niri/trigger/webhook/deploy", revision: 4,
+    }))
+  })
+  try {
+    const origin = address(server)
+    const service = new RuntimeConfigService({ agentId: "niri", environment: { NIRI_CONFIG_SERVER_URL: origin, NIRI_CONFIG_TOKEN: "agent-scoped-token" } })
+    const receipt = await service.createWebhook({
+      name: "deploy", expected_revision: 3, signature_header: "X-Hub-Signature-256", signature_prefix: "sha256=", reason: "receive deploys", request_id: "hook-1",
+    }) as Record<string, unknown>
+    assert.equal(receipt.url, `${origin}/agents/niri/trigger/webhook/deploy`)
+    assert.equal(receipt.secret, "generated")
+    assert.equal(receipt.requestId, "hook-1")
+    assert.deepEqual(observed, {
+      method: "POST",
+      url: "/agents/niri/config/webhooks",
+      authorization: "Bearer agent-scoped-token",
+      body: { name: "deploy", expectedRevision: 3, signatureHeader: "X-Hub-Signature-256", signaturePrefix: "sha256=", reason: "receive deploys", requestId: "hook-1" },
+    })
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})
+
 test("runtime config rejects arbitrary target fields and non-loopback control URLs", async () => {
   const service = new RuntimeConfigService({ agentId: "niri", environment: { NIRI_CONFIG_SERVER_URL: "http://example.test", NIRI_CONFIG_TOKEN: "scoped" } })
   await assert.rejects(service.get({}), (error: unknown) => error instanceof ServiceError && error.code === "unavailable")

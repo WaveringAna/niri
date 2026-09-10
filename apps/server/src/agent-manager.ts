@@ -95,6 +95,13 @@ export class AgentManager {
     assertNoDuplicateDiscordTokens([...fleet, candidate])
   }
 
+  /** Refresh control-plane-owned config before a mutation receipt is returned. */
+  refresh(id: string): void {
+    const view = this.options.store.get(id)
+    if (!view) throw new Error(`agent ${id} not found`)
+    this.index(view)
+  }
+
   /** Queue a serialized, latest-wins reconciliation without delaying an HTTP mutation. */
   schedule(id: string): void {
     if (this.closed) return
@@ -286,9 +293,14 @@ export class AgentManager {
       delta = settingsDelta(supervisor.environment, this.workerEnvironment(agent, revision))
     } catch { return false }
     delete delta.NIRI_CONFIG_REVISION
+    const keys = Object.keys(delta)
+    if (!keys.length) {
+      this.options.store.markActive(id, revision)
+      return true
+    }
     const cold = coldKeys(delta)
-    if (cold.length || !Object.keys(delta).length) return false
-    const expected = Object.keys(delta).sort()
+    if (cold.length) return false
+    const expected = keys.sort()
     try {
       const applied = [...await supervisor.applySettings(delta, revision)].sort()
       if (applied.length !== expected.length || expected.some((key, index) => key !== applied[index])) {
@@ -364,4 +376,4 @@ export class AgentManager {
   }
 }
 
-export type ConfigurationManager = Pick<AgentManager, "list" | "start" | "stop" | "restart" | "schedule" | "validate">
+export type ConfigurationManager = Pick<AgentManager, "list" | "start" | "stop" | "restart" | "refresh" | "schedule" | "validate">

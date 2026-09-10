@@ -254,6 +254,20 @@ print(receipt["application"])`});invocation.hostRpcGrant="test-grant"
  } finally {await host.stop();await new Promise<void>(resolve=>server.close(()=>resolve()));await fs.rm(workspace,{recursive:true,force:true})}
 })
 
+test("Python webhook facade generates a retry-stable scoped RPC call", async () => {
+ const workspace=await fs.mkdtemp(path.join(os.tmpdir(),"niri-python-webhook-")); let received: { method?: string; args?: Record<string, unknown> }={}
+ const server=http.createServer(async(req,res)=>{const chunks:Buffer[]=[];for await(const chunk of req)chunks.push(Buffer.from(chunk));const body=JSON.parse(Buffer.concat(chunks).toString()) as {requestId:string;method:string;args:Record<string,unknown>};received={method:body.method,args:body.args};res.writeHead(200,{"content-type":"application/json"});res.end(JSON.stringify({type:"host.result",requestId:body.requestId,status:"ok",result:{requestId:body.args.request_id,name:"deploy",secret:"generated",url:"http://127.0.0.1/hook"},completedAt:new Date().toISOString()}))})
+ await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));const address=server.address();if(!address||typeof address==="string")throw new Error("no address")
+ const host=new NodeToolHost({capabilities:["python"],workspace:{root:workspace},hostRpcEndpoint:`http://127.0.0.1:${address.port}`})
+ try {
+  const invocation=call({code:`receipt = await niri.webhooks.create("deploy", 2, signature_header="X-Hub-Signature-256", signature_prefix="sha256=", reason="receive deploys", request_id="hook-retry")
+assert receipt["secret"] == "generated"
+print(receipt["url"])`});invocation.hostRpcGrant="test-grant"
+  const result=await host.execute(invocation);assert.equal(result.status,"ok");assert.match(result.output??"",/http:\/\/127\.0\.0\.1\/hook/)
+  assert.deepEqual(received,{method:"webhooks.create",args:{name:"deploy",expected_revision:2,signature_header:"X-Hub-Signature-256",signature_prefix:"sha256=",reason:"receive deploys",request_id:"hook-retry"}})
+ } finally {await host.stop();await new Promise<void>(resolve=>server.close(()=>resolve()));await fs.rm(workspace,{recursive:true,force:true})}
+})
+
 test("Python exposes typed host RPC errors that survive reset", async () => {
  const workspace=await fs.mkdtemp(path.join(os.tmpdir(),"niri-python-errors-"))
  const server=http.createServer(async(req,res)=>{const chunks:Buffer[]=[];for await(const chunk of req)chunks.push(Buffer.from(chunk));const body=JSON.parse(Buffer.concat(chunks).toString()) as {requestId:string};res.writeHead(200,{"content-type":"application/json"});res.end(JSON.stringify({type:"host.result",requestId:body.requestId,status:"error",error:{code:"not_found",message:"missing memory file"},completedAt:new Date().toISOString()}))})

@@ -402,6 +402,34 @@ class _Config:
         except NiriDeadlineExceeded as error:
             raise NiriDeadlineExceeded(f"{error}; retry niri.config.update(..., request_id={request_id!r})", error.code) from error
 
+class _Webhooks:
+    async def create(self, name, expected_revision, signature_header=None, signature_prefix=None, reason=None, request_id=None):
+        """Coroutine: create a signed webhook with a server-generated secret and return its endpoint receipt."""
+        if not isinstance(name, str) or not name.strip():
+            raise NiriInvalid("name must be a non-empty string")
+        if not isinstance(expected_revision, int) or isinstance(expected_revision, bool) or expected_revision < 1:
+            raise NiriInvalid("expected_revision must be a positive integer")
+        if signature_header is not None and (not isinstance(signature_header, str) or not signature_header.strip()):
+            raise NiriInvalid("signature_header must be a non-empty string when provided")
+        if signature_prefix is not None and not isinstance(signature_prefix, str):
+            raise NiriInvalid("signature_prefix must be a string when provided")
+        if reason is not None and (not isinstance(reason, str) or not reason.strip()):
+            raise NiriInvalid("reason must be a non-empty string when provided")
+        if request_id is not None and (not isinstance(request_id, str) or not request_id.strip()):
+            raise NiriInvalid("request_id must be a non-empty string when provided")
+        request_id = request_id.strip() if isinstance(request_id, str) else str(uuid.uuid4())
+        args = {"name": name.strip(), "expected_revision": expected_revision, "request_id": request_id}
+        if signature_header is not None:
+            args["signature_header"] = signature_header.strip()
+        if signature_prefix is not None:
+            args["signature_prefix"] = signature_prefix
+        if reason is not None:
+            args["reason"] = reason.strip()
+        try:
+            return await _host_call("webhooks.create", args)
+        except NiriDeadlineExceeded as error:
+            raise NiriDeadlineExceeded(f"{error}; retry niri.webhooks.create(..., request_id={request_id!r})", error.code) from error
+
 def _seconds_remaining(execution):
     deadline = execution.get("deadlineAt")
     if not deadline:
@@ -413,7 +441,7 @@ def _seconds_remaining(execution):
         return 0.0
 
 class _Niri:
-    """Persistent niri API namespaces: memory, soul, context, discord, work, schedule, aliases, config, and scratch."""
+    """Persistent niri API namespaces: memory, soul, context, discord, work, schedule, aliases, config, webhooks, and scratch."""
     scratch = os.environ["NIRI_SCRATCH"]
     memory = _Memory()
     soul = _Soul()
@@ -423,6 +451,7 @@ class _Niri:
     schedule = _Schedule()
     aliases = _Aliases()
     config = _Config()
+    webhooks = _Webhooks()
     async def budget(self):
         """Coroutine: return the loop turn, token, context, and current invocation deadline budget."""
         value = await _host_call("loop.budget", {})

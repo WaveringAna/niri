@@ -10,7 +10,7 @@ type ConfigRuntimeOptions = {
   fetch?: ConfigFetch
 }
 
-type ConfigMethod = "config" | "history" | "status"
+type ConfigMethod = "config" | "history" | "status" | "webhooks"
 
 function text(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) throw new ServiceError("invalid_argument", `${name} is required`)
@@ -133,7 +133,40 @@ export class RuntimeConfigService {
     return { ...(receipt as Record<string, unknown>), requestId }
   }
 
-  private async forward(method: "GET" | "PATCH", target: ConfigMethod, body?: Record<string, unknown>): Promise<unknown> {
+  async createWebhook(args: ServiceArgs): Promise<unknown> {
+    if (Object.keys(args).some((key) => !["name", "expected_revision", "signature_header", "signature_prefix", "reason", "request_id"].includes(key))) {
+      throw new ServiceError("invalid_argument", "unknown webhook creation argument")
+    }
+    const name = text(args.name, "name")
+    const expectedRevision = args.expected_revision
+    if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1) {
+      throw new ServiceError("invalid_argument", "expected_revision must be a positive integer")
+    }
+    const requestId = text(args.request_id, "request_id")
+    const signatureHeader = args.signature_header === undefined ? undefined : text(args.signature_header, "signature_header")
+    if (args.signature_prefix !== undefined && typeof args.signature_prefix !== "string") {
+      throw new ServiceError("invalid_argument", "signature_prefix must be a string")
+    }
+    const reason = args.reason === undefined ? undefined : text(args.reason, "reason")
+    const receipt = await this.forward("POST", "webhooks", {
+      name,
+      expectedRevision,
+      ...(signatureHeader ? { signatureHeader } : {}),
+      ...(typeof args.signature_prefix === "string" ? { signaturePrefix: args.signature_prefix } : {}),
+      ...(reason ? { reason } : {}),
+      requestId,
+    })
+    if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
+      throw new ServiceError("unavailable", "runtime configuration service returned an invalid webhook receipt")
+    }
+    const result = receipt as Record<string, unknown>
+    if (typeof result.path !== "string" || !result.path.startsWith(`/agents/${encodeURIComponent(this.agentId)}/trigger/webhook/`)) {
+      throw new ServiceError("unavailable", "runtime configuration service returned an invalid webhook path")
+    }
+    return { ...result, url: new URL(result.path, configBase(this.environment)).toString(), requestId }
+  }
+
+  private async forward(method: "GET" | "PATCH" | "POST", target: ConfigMethod, body?: Record<string, unknown>): Promise<unknown> {
     const base = configBase(this.environment)
     const token = configToken(this.environment)
     let response: Response

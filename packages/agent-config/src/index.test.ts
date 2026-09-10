@@ -236,4 +236,6 @@ test("an agent may write its own posture wording but never a secret path", () =>
   assert.equal(isAllowedConfigPath({ selfEdit: true, allowedPaths: ["model"] }, "discord.postures.hearth.bio"), false)
   assert.equal(isAllowedConfigPath({ selfEdit: false, allowedPaths: ["discord"] }, "discord.postures.hearth.bio"), false)
   assert.equal(isAllowedConfigPath(undefined, "discord.token"), false)
+  assert.equal(parseAgentConfig({ id: "niri" }).configPolicy.agentWebhooks, false)
+  assert.equal(parseAgentConfig({ id: "niri", configPolicy: { agentWebhooks: true } }).configPolicy.agentWebhooks, true)
 })

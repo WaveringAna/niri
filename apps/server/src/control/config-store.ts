@@ -1,4 +1,5 @@
 import Database from "better-sqlite3"
+import { randomBytes } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import {
@@ -51,6 +52,15 @@ export type MutationMeta = { actor: ConfigActor; reason?: string; requestId?: st
 export type CreateConfigInput = MutationMeta & { config: Partial<AgentConfig> & { id: string }; enabled?: boolean; /** Preserve this imported config as a future three-way seed baseline. */ seed?: boolean }
 export type UpdateConfigInput = MutationMeta & { patch: unknown; expectedRevision: number }
 export type SeedConfigInput = MutationMeta & { config: AgentFile; reapply?: boolean; expectedRevision?: number }
+export type ProvisionWebhookInput = MutationMeta & { name: string; expectedRevision: number; signatureHeader?: string; signaturePrefix?: string }
+export type ProvisionedWebhook = {
+  name: string
+  secret: string
+  signatureHeader: string
+  signaturePrefix: string
+  revision: number
+  application: ConfigApplication
+}
 export type CandidateValidator = (candidate: AgentConfig, id: string) => void
 export type ConfigStoreOptions = { validate?: CandidateValidator }
 
@@ -237,15 +247,15 @@ export class ConfigStore {
     delete value.idempotencyKey; delete value.requestId
     return json(value)
   }
-  private idempotent(id: string, operation: string, meta: MutationMeta, input: unknown): ConfigView | undefined {
+  private idempotent<T = ConfigView>(id: string, operation: string, meta: MutationMeta, input: unknown): T | undefined {
     const key = meta.idempotencyKey ?? meta.requestId
     if (!key) return undefined
     const row = this.db.prepare("select response,actor,fingerprint from agent_config_idempotency where agent_id=? and key=? and operation=?").get(id, key, operation) as { response: string; actor: string; fingerprint: string } | undefined
     if (!row) return undefined
     if (row.actor !== meta.actor || row.fingerprint !== this.fingerprint(input)) throw new ConfigError(409, "IDEMPOTENCY_CONFLICT", "request id was already used for another mutation")
-    return parseJson<ConfigView>(row.response)
+    return parseJson<T>(row.response)
   }
-  private remember(id: string, operation: string, meta: MutationMeta, input: unknown, result: ConfigView): void {
+  private remember<T>(id: string, operation: string, meta: MutationMeta, input: unknown, result: T): void {
     const key = meta.idempotencyKey ?? meta.requestId
     if (key) this.db.prepare("insert into agent_config_idempotency(agent_id,key,operation,actor,fingerprint,response,created_at) values(?,?,?,?,?,?,?)").run(id, key, operation, meta.actor, this.fingerprint(input), json(result), now())
   }
@@ -291,6 +301,77 @@ export class ConfigStore {
     this.revision(id, revision, after, input)
     const result = this.get(id)!; this.remember(id, operation, input, fingerprint, result); return result
   }
+  provisionWebhook(id: string, input: ProvisionWebhookInput): ProvisionedWebhook {
+    return this.db.transaction(() => {
+      safe(input)
+      const row = this.row(id)
+      if (!row) throw new ConfigError(404, "NOT_FOUND", `agent ${id} not found`)
+      const before = parseAgentConfig(parseJson(row.config), `stored config ${id}`)
+      if (input.actor.startsWith("agent:") && input.actor !== `agent:${id}`) {
+        throw new ConfigError(403, "POLICY_DENIED", "agent actor does not own this config")
+      }
+      if (input.actor.startsWith("agent:") && before.configPolicy.selfEdit === false) {
+        throw new ConfigError(403, "POLICY_DENIED", "agent config self-editing is disabled")
+      }
+      if (input.actor.startsWith("agent:") && before.configPolicy.agentWebhooks !== true) {
+        throw new ConfigError(403, "POLICY_DENIED", "agent webhook provisioning is disabled")
+      }
+      const name = input.name.trim()
+      if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name) || unsafe.has(name)) throw new ConfigError(400, "INVALID_CONFIG", "webhook name must match [a-zA-Z0-9_-]{1,64} and not be a reserved object key")
+      const replay = this.idempotent<ProvisionedWebhook>(id, "webhook.create", input, input)
+      if (replay) {
+        if (before.webhooks?.[name]?.secret !== replay.secret) throw new ConfigError(409, "IDEMPOTENCY_CONFLICT", "webhook changed since this request id was used")
+        return replay
+      }
+      if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) {
+        throw new ConfigError(400, "INVALID_CONFIG", "expectedRevision must be a positive integer")
+      }
+      if (row.desired_revision !== input.expectedRevision) {
+        throw new ConfigError(409, "CONFLICT", "config revision does not match", { expectedRevision: input.expectedRevision, actualRevision: row.desired_revision })
+      }
+      if (before.webhooks?.[name]) throw new ConfigError(409, "ALREADY_EXISTS", `webhook ${name} already exists`)
+      if (Object.keys(before.webhooks ?? {}).length >= 32) throw new ConfigError(409, "CONFLICT", "agent webhook limit reached")
+      const target = `webhooks.${name}`
+      const enforced = row.enforced_values ? parseJson<Record<string, unknown>>(row.enforced_values) : {}
+      if (Object.keys(enforced).some((path) => pathsOverlap(path, target))) {
+        throw new ConfigError(403, "POLICY_DENIED", `${target} is enforced by the operator`)
+      }
+
+      const secret = randomBytes(32).toString("base64url")
+      let after: AgentConfig
+      try {
+        after = parseAgentConfig(merge(before, {
+          webhooks: {
+            [name]: {
+              secret,
+              ...(input.signatureHeader !== undefined ? { signatureHeader: input.signatureHeader } : {}),
+              ...(input.signaturePrefix !== undefined ? { signaturePrefix: input.signaturePrefix } : {}),
+            },
+          },
+        }), `agent ${id} webhook`)
+      } catch (error) {
+        throw new ConfigError(400, "INVALID_CONFIG", error instanceof Error ? error.message : String(error))
+      }
+      this.validate(after, id)
+      const revision = row.desired_revision + 1
+      const updated = now()
+      this.db.prepare("update agent_configs set config=?,desired_revision=?,application_state='pending',application_error=null,updated_at=? where id=?").run(json(after), revision, updated, id)
+      this.revision(id, revision, after, input)
+      const application = this.get(id)!.application
+      const webhook = after.webhooks![name]!
+      const result: ProvisionedWebhook = {
+        name,
+        secret,
+        signatureHeader: webhook.signatureHeader ?? "x-niri-signature",
+        signaturePrefix: webhook.signaturePrefix ?? "sha256=",
+        revision,
+        application,
+      }
+      this.remember(id, "webhook.create", input, input, result)
+      return result
+    })()
+  }
+
   history(id: string): ConfigRevision[] {
     if (!this.row(id)) throw new ConfigError(404, "NOT_FOUND", `agent ${id} not found`)
     return (this.db.prepare("select * from agent_config_revisions where agent_id=? order by revision desc").all(id) as RevisionRow[]).map((row) => ({ id: row.agent_id, revision: row.revision, config: redactAgentConfig(parseAgentConfig(parseJson(row.config), `revision ${row.revision}`)), actor: row.actor, ...(row.reason ? { reason: row.reason } : {}), createdAt: row.created_at }))
