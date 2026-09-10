@@ -14,8 +14,11 @@ async function fixture(t: test.TestContext) {
   const token = getOrCreateToken(path.join(home, "admin.token"))
   const scheduled: string[] = []
   const refreshed: string[] = []
+  const events: string[] = []
   const manager: ConfigurationManager = {
-    list: () => store.list(), validate: () => {}, refresh: id => { refreshed.push(id) }, schedule: id => { scheduled.push(id) },
+    list: () => store.list(), validate: () => {},
+    refresh: id => { refreshed.push(id); events.push(`refresh:${id}`) },
+    schedule: id => { scheduled.push(id); events.push(`schedule:${id}`) },
     start: async id => store.setEnabled(id, true), stop: async id => store.setEnabled(id, false),
     restart: async id => store.get(id),
   }
@@ -24,7 +27,7 @@ async function fixture(t: test.TestContext) {
   t.after(async () => { await app.close(); store.close(); fs.rmSync(home, { recursive: true, force: true }) })
   const admin = { authorization: `Bearer ${token}` }
   const agent = (id: string) => ({ authorization: `Bearer ${deriveAgentToken(token, id)}` })
-  return { app, store, admin, agent, scheduled, refreshed, home, token }
+  return { app, store, admin, agent, scheduled, refreshed, events, home, token }
 }
 
 test("operator creates a stopped agent; config reads and lifecycle require scoped authority", async t => {
@@ -43,7 +46,7 @@ test("operator creates a stopped agent; config reads and lifecycle require scope
 })
 
 test("repl-style edits are revisioned, redacted, and return before application", async t => {
-  const { app, admin, agent, scheduled } = await fixture(t)
+  const { app, admin, agent, scheduled, events } = await fixture(t)
   await app.inject({ method: "POST", url: "/agents", headers: admin, payload: { id: "nova", config: { model: { apiKey: "never-show-this" } } } })
   const change = { patch: { model: { name: "a-new-model" } }, expectedRevision: 1, requestId: "same-change", reason: "test self edit" }
   const updated = await app.inject({ method: "PATCH", url: "/agents/nova/config", headers: agent("nova"), payload: change })
@@ -51,6 +54,7 @@ test("repl-style edits are revisioned, redacted, and return before application",
   assert.equal(updated.json().revision, 2)
   assert.equal(updated.json().application.state, "pending")
   assert.ok(!updated.body.includes("never-show-this"))
+  assert.deepEqual(events.slice(-2), ["refresh:nova", "schedule:nova"])
   const replay = await app.inject({ method: "PATCH", url: "/agents/nova/config", headers: agent("nova"), payload: change })
   assert.equal(replay.statusCode, 200, replay.body)
   assert.equal(replay.json().revision, 2)
@@ -105,7 +109,12 @@ test("agent provisions an idempotent signed webhook without exposing other confi
   assert.equal(reused.json().code, "IDEMPOTENCY_CONFLICT")
   assert.equal((await app.inject({ ...request, headers: agent("other") })).statusCode, 403)
 
-  store.update("niri", { actor: "operator", expectedRevision: 2, patch: { configPolicy: { agentWebhooks: false } } })
+  store.update("niri", { actor: "operator", expectedRevision: 2, patch: { webhooks: { deploy: { signatureHeader: "x-rotated-signature" } } } })
+  const driftedReplay = await app.inject(request)
+  assert.equal(driftedReplay.statusCode, 409)
+  assert.equal(driftedReplay.json().code, "IDEMPOTENCY_CONFLICT")
+
+  store.update("niri", { actor: "operator", expectedRevision: 3, patch: { configPolicy: { agentWebhooks: false } } })
   const disabledReplay = await app.inject(request)
   assert.equal(disabledReplay.statusCode, 403)
   assert.equal(disabledReplay.json().code, "POLICY_DENIED")
@@ -148,18 +157,28 @@ test("bad boundary inputs fail without mutating config", async t => {
 })
 
 
-test("file creation keeps a seed baseline and enforces operator-owned paths", async t => {
-  const { app, admin, agent } = await fixture(t)
-  const config = { client: "local", model: { name: "fixed" }, configPolicy: { enforcedPaths: ["model.name"] } }
+test("every durable config mutation refreshes routing before reconciliation", async t => {
+  const { app, admin, events } = await fixture(t)
+  const config = { client: "local", model: { name: "fixed" } }
   const created = await app.inject({ method: "POST", url: "/agents", headers: admin, payload: { id: "nova", config, seed: true } })
   assert.equal(created.statusCode, 201, created.body)
-  const denied = await app.inject({ method: "PATCH", url: "/agents/nova/config", headers: agent("nova"), payload: { patch: { model: { name: "other" } }, expectedRevision: 1 } })
-  assert.equal(denied.statusCode, 403, denied.body)
+  assert.deepEqual(events.slice(-2), ["refresh:nova", "schedule:nova"])
+
+  const patched = await app.inject({ method: "PATCH", url: "/agents/nova/config", headers: admin, payload: { patch: { model: { name: "patched" } }, expectedRevision: 1 } })
+  assert.equal(patched.statusCode, 200, patched.body)
+  assert.deepEqual(events.slice(-2), ["refresh:nova", "schedule:nova"])
+
+  const rolledBack = await app.inject({ method: "POST", url: "/agents/nova/config/rollback", headers: admin, payload: { revision: 1, expectedRevision: 2 } })
+  assert.equal(rolledBack.statusCode, 200, rolledBack.body)
+  assert.equal(rolledBack.json().config.model.name, "fixed")
+  assert.deepEqual(events.slice(-2), ["refresh:nova", "schedule:nova"])
+
   const next = { ...config, model: { name: "updated" } }
-  const preview = await app.inject({ method: "POST", url: "/agents/nova/config/diff", headers: admin, payload: { config: next, expectedRevision: 1 } })
+  const preview = await app.inject({ method: "POST", url: "/agents/nova/config/diff", headers: admin, payload: { config: next, expectedRevision: 3 } })
   assert.equal(preview.statusCode, 200, preview.body)
   assert.deepEqual(preview.json().conflicts, [])
-  const applied = await app.inject({ method: "POST", url: "/agents/nova/config/seed", headers: admin, payload: { config: next, expectedRevision: 1 } })
+  const applied = await app.inject({ method: "POST", url: "/agents/nova/config/seed", headers: admin, payload: { config: next, expectedRevision: 3 } })
   assert.equal(applied.statusCode, 200, applied.body)
   assert.equal(applied.json().config.model.name, "updated")
+  assert.deepEqual(events.slice(-2), ["refresh:nova", "schedule:nova"])
 })

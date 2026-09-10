@@ -96,14 +96,25 @@ function expandPaths(patch: unknown): unknown {
   if (!own(patch)) return patch
   let expanded: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(patch)) {
-    if (!key.includes(".")) { expanded = merge(expanded, { [key]: value }) as Record<string, unknown>; continue }
     const [head, ...rest] = key.split(".")
-    const nested = head === "secrets"
-      ? { secrets: { [rest.join(".")]: value } }
-      : [head!, ...rest].reduceRight<unknown>((inner, part) => ({ [part!]: inner }), value)
-    expanded = merge(expanded, nested) as Record<string, unknown>
+    const nested = !rest.length
+      ? { [head!]: value }
+      : head === "secrets"
+        ? { secrets: { [rest.join(".")]: value } }
+        : [head!, ...rest].reduceRight<unknown>((inner, part) => ({ [part!]: inner }), value)
+    expanded = combinePatch(expanded, nested) as Record<string, unknown>
   }
   return expanded
+}
+
+/** Combine patch fragments without applying their null-as-delete semantics yet. */
+function combinePatch(base: unknown, addition: unknown): unknown {
+  if (!own(addition)) return structuredClone(addition)
+  const result: Record<string, unknown> = own(base) ? structuredClone(base) as Record<string, unknown> : {}
+  for (const [key, value] of Object.entries(addition)) {
+    result[key] = own(value) && own(result[key]) ? combinePatch(result[key], value) : structuredClone(value)
+  }
+  return result
 }
 
 /** JSON merge patch: objects merge, arrays replace, and null removes a member. */
@@ -320,7 +331,11 @@ export class ConfigStore {
       if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name) || unsafe.has(name)) throw new ConfigError(400, "INVALID_CONFIG", "webhook name must match [a-zA-Z0-9_-]{1,64} and not be a reserved object key")
       const replay = this.idempotent<ProvisionedWebhook>(id, "webhook.create", input, input)
       if (replay) {
-        if (before.webhooks?.[name]?.secret !== replay.secret) throw new ConfigError(409, "IDEMPOTENCY_CONFLICT", "webhook changed since this request id was used")
+        const current = before.webhooks?.[name]
+        const unchanged = current?.secret === replay.secret
+          && (current.signatureHeader ?? "x-niri-signature") === replay.signatureHeader
+          && (current.signaturePrefix ?? "sha256=") === replay.signaturePrefix
+        if (!unchanged) throw new ConfigError(409, "IDEMPOTENCY_CONFLICT", "webhook changed since this request id was used")
         return replay
       }
       if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) {

@@ -90,6 +90,18 @@ test("runtime config provisions a webhook through the scoped control origin", as
   }
 })
 
+test("webhook transport failures preserve the retry request id", async () => {
+  const service = new RuntimeConfigService({
+    agentId: "niri",
+    environment: { NIRI_CONFIG_SERVER_URL: "http://127.0.0.1:4000", NIRI_CONFIG_TOKEN: "scoped" },
+    fetch: async () => { throw new Error("offline") },
+  })
+  await assert.rejects(
+    service.createWebhook({ name: "deploy", expected_revision: 1, request_id: "hook-retry" }),
+    (error: unknown) => error instanceof ServiceError && error.code === "unavailable" && /request_id "hook-retry"/.test(error.message),
+  )
+})
+
 test("runtime config rejects arbitrary target fields and non-loopback control URLs", async () => {
   const service = new RuntimeConfigService({ agentId: "niri", environment: { NIRI_CONFIG_SERVER_URL: "http://example.test", NIRI_CONFIG_TOKEN: "scoped" } })
   await assert.rejects(service.get({}), (error: unknown) => error instanceof ServiceError && error.code === "unavailable")

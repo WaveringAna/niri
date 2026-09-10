@@ -48,9 +48,9 @@ async function fetchWorkerJson(agent: { baseUrl: string; id: string }, path: str
   return data
 }
 
-export function verifyWebhookSignature(rawBody: Buffer, signature: string | undefined, config: WebhookConfig): boolean {
+export function verifyWebhookSignature(rawBody: Buffer, signature: string | string[] | undefined, config: WebhookConfig): boolean {
   const prefix = config.signaturePrefix ?? "sha256="
-  if (!signature?.startsWith(prefix)) return false
+  if (typeof signature !== "string" || !signature.startsWith(prefix)) return false
   const suppliedHex = signature.slice(prefix.length)
   if (!/^[0-9a-fA-F]{64}$/.test(suppliedHex)) return false
   const expected = createHmac("sha256", config.secret).update(rawBody).digest()
@@ -465,8 +465,7 @@ export function registerControlRoutes(
 
       const body = req.body as { rawBody: Buffer; payload: unknown }
       const header = config.signatureHeader ?? "x-niri-signature"
-      const headerValue = req.headers[header]
-      const signature = Array.isArray(headerValue) ? headerValue[0] : headerValue
+      const signature = req.headers[header]
       if (!verifyWebhookSignature(body.rawBody, signature, config)) {
         return reply.code(401).send({ error: "invalid webhook signature" })
       }

@@ -148,8 +148,16 @@ test("a control-plane webhook revision activates without replacing the worker", 
   const provisioned = f.store.provisionWebhook("mira", { actor: "agent:mira", name: "deploy", expectedRevision: 1, idempotencyKey: "deploy-hook" })
   f.manager.refresh("mira")
   assert.equal(f.manager.webhooks.get("mira")?.deploy?.secret, provisioned.secret, "webhook routing refreshes before reconciliation")
+
+  f.store.update("mira", { actor: "operator", expectedRevision: 2, patch: { webhooks: { deploy: { secret: "rotated-secret", signatureHeader: "x-rotated-signature" } } } })
+  f.manager.refresh("mira")
+  assert.deepEqual(f.manager.webhooks.get("mira")?.deploy, { secret: "rotated-secret", signatureHeader: "x-rotated-signature" }, "operator rotation replaces routing synchronously")
+
+  f.store.rollback("mira", 1, { actor: "operator", expectedRevision: 3 })
+  f.manager.refresh("mira")
+  assert.equal(f.manager.webhooks.get("mira")?.deploy, undefined, "operator rollback revokes routing synchronously")
   f.manager.schedule("mira")
-  await eventually(() => assert.equal(f.store.get("mira")?.application.activeRevision, 2))
+  await eventually(() => assert.equal(f.store.get("mira")?.application.activeRevision, 4))
   assert.deepEqual(launches(f.log), ["1"], "control-plane-only config does not replace the worker")
   assert.equal(f.store.get("mira")?.application.state, "active")
 })

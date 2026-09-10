@@ -94,12 +94,18 @@ test("a patch names fields by path or by block, and a rejected one teaches its s
   const bySecretPath = db.update("mira", { actor: "operator", expectedRevision: 2, patch: { "secrets.model.apiKey": { env: "OPENAI_API_KEY" } } })
   assert.deepEqual(bySecretPath.config.secrets as unknown, "[redacted]")
 
+  const deletedByPath = db.update("mira", { actor: "operator", expectedRevision: 3, patch: { "discord.postures": null } })
+  assert.equal(deletedByPath.config.discord?.postures, undefined)
+  assert.equal(deletedByPath.config.discord?.enabled, true)
+  const deletedBlock = db.update("mira", { actor: "operator", expectedRevision: 4, patch: { discord: null } })
+  assert.equal(deletedBlock.config.discord, undefined)
+
   assert.throws(
-    () => db.update("mira", { actor: "operator", expectedRevision: 3, patch: { config: { model: { name: "b" } } } }),
+    () => db.update("mira", { actor: "operator", expectedRevision: 5, patch: { config: { model: { name: "b" } } } }),
     /drop the outer "config" wrapper/,
   )
   assert.throws(
-    () => db.update("mira", { actor: "operator", expectedRevision: 3, patch: { mood: "violet" } }),
+    () => db.update("mira", { actor: "operator", expectedRevision: 5, patch: { mood: "violet" } }),
     /discord\.dmWhitelist/,
   )
 })

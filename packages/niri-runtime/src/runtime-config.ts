@@ -148,14 +148,22 @@ export class RuntimeConfigService {
       throw new ServiceError("invalid_argument", "signature_prefix must be a string")
     }
     const reason = args.reason === undefined ? undefined : text(args.reason, "reason")
-    const receipt = await this.forward("POST", "webhooks", {
-      name,
-      expectedRevision,
-      ...(signatureHeader ? { signatureHeader } : {}),
-      ...(typeof args.signature_prefix === "string" ? { signaturePrefix: args.signature_prefix } : {}),
-      ...(reason ? { reason } : {}),
-      requestId,
-    })
+    let receipt: unknown
+    try {
+      receipt = await this.forward("POST", "webhooks", {
+        name,
+        expectedRevision,
+        ...(signatureHeader ? { signatureHeader } : {}),
+        ...(typeof args.signature_prefix === "string" ? { signaturePrefix: args.signature_prefix } : {}),
+        ...(reason ? { reason } : {}),
+        requestId,
+      })
+    } catch (error) {
+      if (error instanceof ServiceError && error.code === "unavailable") {
+        throw new ServiceError("unavailable", `${error.message}; retry with request_id ${JSON.stringify(requestId)}`)
+      }
+      throw error
+    }
     if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
       throw new ServiceError("unavailable", "runtime configuration service returned an invalid webhook receipt")
     }

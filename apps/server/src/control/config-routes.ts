@@ -72,6 +72,10 @@ export async function registerConfigurationRoutes(app: FastifyInstance, control:
     return config
   }
   const agentId = (request: FastifyRequest) => (request.params as { id: string }).id
+  const changed = (id: string): void => {
+    try { manager.refresh(id) }
+    finally { manager.schedule(id) }
+  }
 
   app.post("/agents", async (request, reply) => {
     requireOperator(control, request)
@@ -82,7 +86,7 @@ export async function registerConfigurationRoutes(app: FastifyInstance, control:
     const config = body.config === undefined ? {} : object(body.config)
     if (config.id !== undefined && config.id !== body.id) throw new ConfigError(400, "INVALID_CONFIG", "config.id must match id")
     const created = store.create({ config: { ...config, id: body.id }, enabled: body.start === true, seed: body.seed === true, ...metadata(body, "operator") })
-    manager.schedule(created.id)
+    changed(created.id)
     return reply.code(201).send(created)
   })
   for (const suffix of ["", "/status"]) {
@@ -103,7 +107,7 @@ export async function registerConfigurationRoutes(app: FastifyInstance, control:
     const body = object(request.body)
     object(body.patch)
     const result = store.update(id, { patch: body.patch, expectedRevision: revision(body.expectedRevision), ...metadata(body, who) })
-    manager.schedule(id)
+    changed(id)
     return result
   })
   app.post("/agents/:id/config/webhooks", async (request, reply) => {
@@ -122,8 +126,7 @@ export async function registerConfigurationRoutes(app: FastifyInstance, control:
       ...(body.reason !== undefined ? { reason: requiredText(body.reason, "reason") } : {}),
       idempotencyKey: requestId,
     })
-    manager.refresh(id)
-    manager.schedule(id)
+    changed(id)
     return reply.code(201).send({
       ...provisioned,
       agentId: id,
@@ -138,7 +141,7 @@ export async function registerConfigurationRoutes(app: FastifyInstance, control:
     const body = object(request.body)
     const target = revision(body.revision)
     const result = store.rollback(id, target, { expectedRevision: revision(body.expectedRevision), ...metadata(body, "operator") })
-    manager.schedule(id)
+    changed(id)
     return result
   })
   for (const operation of ["diff", "seed"] as const) {
@@ -154,7 +157,7 @@ export async function registerConfigurationRoutes(app: FastifyInstance, control:
       const input = { config, expectedRevision: revision(body.expectedRevision), reapply: true, ...metadata(body, "operator") }
       if (operation === "diff") return store.previewSeed(input)
       const result = store.seed(input)
-      manager.schedule(id)
+      changed(id)
       return result
     })
   }
