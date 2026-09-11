@@ -188,6 +188,33 @@ test("the loop runs turns until a tool signals rest", async () => {
   assert.deepEqual(log, ["rest"])
 })
 
+test("compaction can ask the active agent what must survive", async () => {
+  const { runtime } = buildRuntime({ turns: [{ calls: [{ name: "rest" }] }] })
+  const state = createLoopState()
+  const recollections: string[] = []
+  runtime.collectCompactionRecollection = async (conversationId, activeState) => {
+    assert.equal(conversationId, 42)
+    assert.equal(activeState, state)
+    return "keep the exact social promise"
+  }
+  Object.defineProperty(runtime, "compactor", { value: {
+    config: LCM,
+    async maybeCompact(input: Parameters<ContextCompactor["maybeCompact"]>[0]) {
+      recollections.push(await input.directRecollection?.() ?? "")
+      return {
+        applied: false,
+        method: input.phase,
+        beforeTokens: input.observedPromptTokens,
+        afterTokens: input.observedPromptTokens,
+        messages: input.messages,
+      }
+    },
+  } satisfies ContextCompactor })
+
+  await runLoop(runtime, 42, state, hooks())
+  assert.deepEqual(recollections, ["keep the exact social promise"])
+})
+
 test("tool modules compose, and each keeps its own handlers", async () => {
   const calls: string[] = []
   const github: ToolModule = {

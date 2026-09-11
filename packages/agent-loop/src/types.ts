@@ -161,6 +161,9 @@ export interface AgentRuntime {
   /** Build the opening conversation for a fresh wake. */
   buildBootstrap(input: AgentInput): Promise<Message[]>
 
+  /** Let the active agent choose what must survive an imminent compaction. */
+  collectCompactionRecollection?(conversationId: number, state: LoopState): Promise<string | null>
+
   /**
    * Last transform before a request is sent, re-run on every attempt.
    * Returning `messages` unchanged is a valid implementation.

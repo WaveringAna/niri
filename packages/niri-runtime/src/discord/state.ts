@@ -87,6 +87,11 @@ export type DiscordBatchDigest = {
   to: string
 }
 
+export type PreparedDiscordBatch = {
+  digest: DiscordBatchDigest
+  acknowledge(): void
+}
+
 // ── formatting helpers ─────────────────────────────────────────────────
 
 function compactText(value: unknown, maxChars = 180): string {
@@ -366,13 +371,13 @@ const DEFAULT_SCAN_LIMIT = 50
  * Builds a formatted batch digest of recent Discord activity for the runner.
  *
  * @param params - Optional batch parameters.
- * @returns Formatted digest, or `null` when no new messages exist.
+ * @returns A retryable digest and its delivery acknowledgement, or `null` when empty.
  */
-export function buildDiscordBatchDigest(params?: {
+export function prepareDiscordBatch(params?: {
   maxMessages?: number
   pendingPreviewLimit?: number
   intervalMs?: number
-}): DiscordBatchDigest | null {
+}): PreparedDiscordBatch | null {
   if (getPosture() === "forge") return null
 
   const now = new Date()
@@ -481,26 +486,26 @@ export function buildDiscordBatchDigest(params?: {
   lines.push("")
   lines.push("you can reply if useful via discord_send using source_item_id from the target message, or choose not to reply.")
 
-  // Only mark items we actually surfaced as seen. Inactive cooldown-channel
-  // items are left `pending` so they reappear once their window opens.
-  for (const row of visibleRecentMessages) {
-    if (row.item_id) {
-      updateInboxItem(row.item_id, "seen", "noted", "auto-seen after inclusion in Discord batch context")
-    }
-  }
-  for (const row of visiblePendingPreview) {
-    updateInboxItem(row.item_id, "seen", "noted", "auto-seen after inclusion in Discord batch context")
-  }
-
+  const surfacedItemIds = [...new Set(
+    [...visibleRecentMessages, ...visiblePendingPreview].flatMap((row) => row.item_id ? [row.item_id] : []),
+  )]
   const lastVisibleRecent = visibleRecentMessages.at(-1)
-  setDiscordMeta("discord_batch_last_dispatched_at", truncated && lastVisibleRecent ? lastVisibleRecent.first_seen_at : nowIso)
+  const dispatchedAt = truncated && lastVisibleRecent ? lastVisibleRecent.first_seen_at : nowIso
 
   return {
-    content: lines.join("\n"),
-    messageCount: recentMessages.length,
-    pendingCount,
-    from,
-    to: nowIso,
+    digest: {
+      content: lines.join("\n"),
+      messageCount: recentMessages.length,
+      pendingCount,
+      from,
+      to: nowIso,
+    },
+    acknowledge() {
+      for (const itemId of surfacedItemIds) {
+        updateInboxItem(itemId, "seen", "noted", "auto-seen after inclusion in Discord batch context")
+      }
+      setDiscordMeta("discord_batch_last_dispatched_at", dispatchedAt)
+    },
   }
 }
 

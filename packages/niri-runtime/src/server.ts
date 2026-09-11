@@ -5,7 +5,7 @@ import { clientTools } from "./client"
 import { listWorkerEvents, publishWorkerEvent, subscribeWorkerEvents } from "./awp/outbox"
 import type { ControlCommand } from "./awp/types"
 import { wake, isRunning, isWaitingForEvent, enqueueEvent, getRunnerStatus } from "./runner/index"
-import { buildDiscordBatchDigest, scanDiscordChannels } from "./discord/state"
+import { prepareDiscordBatch, scanDiscordChannels } from "./discord/state"
 import { handleDiscordIngress } from "./discord/pipeline"
 import { asEnabled } from "./discord/gateway"
 import { getPosture } from "./discord/posture"
@@ -146,25 +146,26 @@ export function createServer(options: { requestRestart?: (reason?: string) => vo
         await scanDiscordChannels({ limit: discordBatchMaxMessages() })
       }
 
-      const digest = buildDiscordBatchDigest({
+      const batch = prepareDiscordBatch({
         maxMessages: discordBatchMaxMessages(),
         intervalMs: discordBatchIntervalMs(),
       })
-      if (!digest) return
+      if (!batch) return
 
-      enqueueEvent(
+      const accepted = enqueueEvent(
         {
           source: "discord",
           triggeredAt: new Date().toISOString(),
-          content: digest.content,
+          content: batch.digest.content,
           raw: {
             type: "discord_batch",
-            digest,
+            digest: batch.digest,
             source: "gateway_cache",
           },
         },
         { onlyIfWaiting: true },
       )
+      if (accepted) batch.acknowledge()
     } catch (err) {
       console.warn("[discord batch] failed:", err instanceof Error ? err.message : String(err))
     } finally {

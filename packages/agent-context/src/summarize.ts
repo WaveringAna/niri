@@ -163,6 +163,24 @@ function compactDiscordBatch(content: string): string {
   return kept.join(" ")
 }
 
+function socialOutboundLine(content: string): string | null {
+  const prefix = "[social outbound] "
+  const marker = content.indexOf(prefix)
+  if (marker < 0) return null
+  const encoded = content.slice(marker + prefix.length).split("\n", 1)[0]?.match(/\{.*\}/)?.[0]
+  if (!encoded) return null
+  try {
+    const receipt = JSON.parse(encoded) as Record<string, unknown>
+    const channel = typeof receipt.channel === "string" ? receipt.channel.trim() : ""
+    const to = typeof receipt.to === "string" ? receipt.to.trim() : ""
+    const text = typeof receipt.text === "string" ? normalizeSummaryText(receipt.text) : ""
+    if (!/^[a-z0-9_-]{1,32}$/i.test(channel) || !to || !text) return null
+    return `- assistant outbound ${channel} -> ${truncateSummaryText(to, 100)}: ${truncateSummaryText(text, 4_000)}`
+  } catch {
+    return null
+  }
+}
+
 function compactToolResult(content: string): string | null {
   const trimmed = content.trim()
   if (!trimmed) return null
@@ -251,6 +269,8 @@ function summarizeMessageLine(message: Message, toolName = ""): string | null {
   }
 
   if (role === "tool") {
+    const outbound = socialOutboundLine(rawContent)
+    if (outbound) return outbound
     if (!toolName.startsWith("discord_")) return null
     const compact = compactToolResult(rawContent)
     if (compact === null) return null
@@ -340,8 +360,8 @@ export function countConversationCompactionCandidates(
   } = {},
 ): number {
   const recentMinKeep = options.recentMinKeep === 0 ? 0 : Math.max(2, options.recentMinKeep ?? 6)
-  const recentMaxKeep = options.recentMaxKeep === 0 ? 0 : Math.max(recentMinKeep, options.recentMaxKeep ?? 40)
-  const tailCharBudget = Math.max(8_000, options.tailCharBudget ?? 60_000)
+  const recentMaxKeep = Math.max(recentMinKeep, options.recentMaxKeep ?? 40)
+  const tailCharBudget = options.tailCharBudget === 0 ? 0 : Math.max(8_000, options.tailCharBudget ?? 60_000)
   const leadingSystems = countLeadingSystemMessages(messages)
   const rawMessages = messages
     .slice(leadingSystems)
@@ -379,9 +399,9 @@ export async function summarizeConversationViaLLMWithProvenance(
     directRecollection?: string | null | undefined
   } = {},
 ): Promise<ConversationCompaction | null> {
-  const recentMinKeep = Math.max(2, options.recentMinKeep ?? 6)
+  const recentMinKeep = options.recentMinKeep === 0 ? 0 : Math.max(2, options.recentMinKeep ?? 6)
   const recentMaxKeep = Math.max(recentMinKeep, options.recentMaxKeep ?? 40)
-  const tailCharBudget = Math.max(8_000, options.tailCharBudget ?? 60_000)
+  const tailCharBudget = options.tailCharBudget === 0 ? 0 : Math.max(8_000, options.tailCharBudget ?? 60_000)
   const maxTranscriptChars = Math.max(2_000, options.maxTranscriptChars ?? 40_000)
 
   const leadingSystems = countLeadingSystemMessages(messages)

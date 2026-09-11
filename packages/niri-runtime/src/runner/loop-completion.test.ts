@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import type { LoopState } from "./types"
 import { __completionTest } from "./loop-completion"
-import { recallState } from "./runtime"
+import { recallState } from "./recall-state"
 import { AGENT_ID } from "../agent-config"
 
 test("consumeCompletionStream preserves reasoning_content on assistant messages", async () => {

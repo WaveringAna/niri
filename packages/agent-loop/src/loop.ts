@@ -230,7 +230,8 @@ export async function runLoop(
   hooks: LoopHooks,
   config: LoopConfig = defaultLoopConfig,
 ): Promise<RunLoopExit> {
-  const recollect = async (): Promise<string | null> => null
+  const recollect = (): Promise<string | null> =>
+    runtime.collectCompactionRecollection?.(convId, state) ?? Promise.resolve(null)
 
   while (true) {
     if (await compact(runtime, state, "pre-turn", recollect)) await hooks.saveSession()

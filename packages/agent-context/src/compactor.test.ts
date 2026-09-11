@@ -4,6 +4,7 @@ import Database from "better-sqlite3"
 import { createSqliteContextArchive } from "./sqlite-archive.js"
 import { createLcmEngine } from "./lcm.js"
 import {
+  commitRestCompaction,
   createContextCompactor,
   defaultPruneConfig,
   pruneToolOutputsForCompaction,
@@ -112,6 +113,28 @@ test("compaction replaces the middle with a summary and preserves the tail verba
   assert.ok(summarizer.calls.length > 0)
 })
 
+test("rest compaction folds the complete raw tail into its summary", async () => {
+  const { archive, lcm, summarizer } = build()
+  const messages = conversation(8)
+  const compacted = await commitRestCompaction({
+    agentName: "reviewer",
+    archive,
+    lcm,
+    prompts: defaultSummaryPrompts,
+    model: summarizer.model,
+    circuit: summarizer.circuit,
+    conversation: messages,
+    grounding: null,
+    directRecollection: "I want the completed review to survive.",
+  })
+
+  assert.ok(compacted)
+  assert.equal(compacted.length, 2)
+  assert.equal(compacted[0], messages[0])
+  assert.match(String(compacted[1]?.content), /^\[context summary v1\]/)
+  assert.ok(!JSON.stringify(compacted).includes("request 7:"), "rest keeps no unsummarized raw tail")
+})
+
 test("the archive keeps compacted messages verbatim and grep can recover them", async () => {
   const { archive, compactor } = build()
   const messages = conversation(20)
@@ -126,6 +149,26 @@ test("the archive keeps compacted messages verbatim and grep can recover them", 
   assert.equal(hits.length, 1)
   assert.ok(hits[0]!.content.includes("distinctive-marker-zebra"))
   assert.ok(hits[0]!.summaryIds.length > 0, "hit is attributed to the summary that replaced it")
+})
+
+test("structured social receipts survive non-social tool wrappers", async () => {
+  const { compactor, summarizer } = build()
+  const messages = conversation(20)
+  messages[3] = {
+    role: "assistant",
+    content: null,
+    tool_calls: [{ id: "signal-send", type: "function", function: { name: "python", arguments: "{}" } }],
+  } as Message
+  messages[4] = {
+    role: "tool",
+    tool_call_id: "signal-send",
+    content: '[social outbound] {"channel":"signal","to":"baubaugc","text":"hello there"} 0',
+  } as Message
+
+  await compactor.maybeCompact({ messages, observedPromptTokens: 5_000, phase: "pre-turn" })
+
+  assert.ok(summarizer.calls.some(({ user }) =>
+    user.includes("- assistant outbound signal -> baubaugc: hello there")))
 })
 
 test("a summary can be described and expanded back to its source messages", async () => {

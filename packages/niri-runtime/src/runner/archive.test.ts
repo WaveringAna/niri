@@ -2,7 +2,8 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { defaultPruneConfig, pruneToolOutputsForCompaction } from "@mira/agent-context"
 import type { Message } from "@mira/agent-context"
-import { isProtectedToolOutput } from "./archive"
+import type { ProviderSet } from "@mira/agent-llm"
+import { compactConversationForRest, isProtectedToolOutput } from "./archive"
 
 const PRUNE = { ...defaultPruneConfig, protectedToolNames: isProtectedToolOutput }
 
@@ -41,4 +42,11 @@ test("the protected set covers the record, not reproducible workspace output", (
   for (const tool of ["python", "shell", "read_file", "process_job", ""]) {
     assert.ok(!isProtectedToolOutput(tool), `${tool} should be prunable`)
   }
+})
+
+test("rest compaction reports unavailability instead of replacing raw context", async () => {
+  const providers = { resolveSummary: async () => null } as unknown as ProviderSet
+  const conversation: Message[] = [{ role: "user", content: "do not forget this" }]
+
+  assert.equal(await compactConversationForRest(providers, conversation), null)
 })

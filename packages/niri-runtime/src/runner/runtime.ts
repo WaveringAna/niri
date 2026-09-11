@@ -1,6 +1,6 @@
 import type { Message as ContextMessage } from "@mira/agent-context"
 import { createProviderSet, resolveProviderConfig, type ProviderSet } from "@mira/agent-llm"
-import type { AgentEvent, AgentInput, AgentRuntime, LoopState } from "@mira/agent-loop"
+import type { AgentEvent, AgentInput, AgentRuntime } from "@mira/agent-loop"
 import { resolveTools } from "@mira/agent-loop"
 import { AGENT_ID, NIRI_HOME } from "../agent-config"
 import { buildBootstrap } from "../bootstrap"
@@ -16,6 +16,8 @@ import { createNiriCompactor, contextArchive } from "./archive"
 import { niriToolModules } from "./modules"
 import { niriTurnPolicies } from "./policies"
 import { modelFacingClientCapabilities } from "./tool-catalog"
+import { collectAgentCompactionRecollection } from "./loop-completion"
+import { recallState } from "./recall-state"
 import {
   AGENT_NAME,
   AGENT_STATE_DIR,
@@ -39,35 +41,6 @@ import {
 const RECENT_MIN_KEEP = 6
 const RECENT_MAX_KEEP = 40
 const TAIL_CHAR_BUDGET = 60_000
-
-/**
- * Passive memory recall bookkeeping.
- *
- * This used to be three fields on `LoopState`, which meant every harness built
- * on the loop carried Niri's memory model. It lives in `state.extras` now,
- * keyed by the module that owns it.
- */
-export type RecallState = {
-  cooldowns: Record<number, number>
-  turn: number
-  pending: boolean
-}
-
-const RECALL_KEY = "memory"
-
-export function recallState(state: LoopState): RecallState {
-  let recall = state.extras.get(RECALL_KEY) as RecallState | undefined
-  if (!recall) {
-    recall = { cooldowns: {}, turn: 0, pending: false }
-    state.extras.set(RECALL_KEY, recall)
-  }
-  return recall
-}
-
-/** Marks the start of a new incoming turn, so recall runs once for it. */
-export function markRecallPending(state: LoopState): void {
-  recallState(state).pending = true
-}
 
 export function createNiriProviders(): ProviderSet {
   return createProviderSet(resolveProviderConfig(process.env), { agentId: AGENT_ID })
@@ -117,6 +90,7 @@ export function createNiriRuntime(providers: ProviderSet): AgentRuntime {
 
     getTools,
     summaryGrounding: loadAgentSummaryContext,
+    collectCompactionRecollection: collectAgentCompactionRecollection,
 
     async buildBootstrap(input: AgentInput) {
       return (await buildBootstrap(input as UserMessage, await loadRestSnapshot(), {

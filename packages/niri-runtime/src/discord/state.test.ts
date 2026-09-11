@@ -4,7 +4,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import * as os from "node:os"
 import { initDb } from "../db"
-import { ingestDiscordEvent } from "./state"
+import { ingestDiscordEvent, prepareDiscordBatch } from "./state"
 
 test("discord dm whitelist tests", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "niri-test-state-"))
@@ -111,6 +111,24 @@ test("discord dm whitelist tests", () => {
     }
     const res5 = ingestDiscordEvent(channelMsgFromUserC)
     assert.equal(res5.stored, true, "Should store non-DM channel messages even if sender is not whitelisted")
+
+    // Preparing a batch is retryable; only delivery acknowledgement advances its cursor.
+    ingestDiscordEvent({
+      ...dmFromUserA_2,
+      message: {
+        ...dmFromUserA_2.message,
+        id: `msg_batch_retry_${Date.now()}`,
+        content: "batch delivery marker",
+        timestamp: new Date().toISOString(),
+      },
+    })
+    const prepared = prepareDiscordBatch({ intervalMs: 60_000 })
+    assert.ok(prepared)
+    assert.ok(prepared.digest.content.includes("batch delivery marker"))
+    const retried = prepareDiscordBatch({ intervalMs: 60_000 })
+    assert.ok(retried?.digest.content.includes("batch delivery marker"))
+    prepared.acknowledge()
+    assert.ok(!prepareDiscordBatch({ intervalMs: 60_000 })?.digest.content.includes("batch delivery marker"))
 
   } finally {
     process.env.NIRI_HOME = originalHome

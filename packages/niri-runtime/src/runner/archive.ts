@@ -144,16 +144,16 @@ export function createNiriCompactor(
  * turn to preserve context for. Everything folds into one summary segment, and
  * the raw messages live on in the archive.
  *
- * Returns the conversation to snapshot. Falls back to the input unchanged when
- * no summarizer is available, so resting never blocks on the model.
+ * Returns the semantic summary to snapshot, or null when compaction is unavailable.
+ * Callers must preserve the active raw session when null is returned.
  */
 export async function compactConversationForRest(
   providers: ProviderSet,
   conversation: ContextMessage[],
   options: { directRecollection?: string | null } = {},
-): Promise<ContextMessage[]> {
+): Promise<ContextMessage[] | null> {
   const summarizer = await summarizerFor(providers)()
-  if (!summarizer) return conversation
+  if (!summarizer) return null
 
   const config = lcmConfigFromEnv()
   const archiveInstance = contextArchive()

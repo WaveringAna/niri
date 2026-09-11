@@ -390,6 +390,12 @@ export function buildToolHandlers(
       const restConversation = await compactConversationForRest(providers, state.conversation, {
         directRecollection,
       })
+      if (!restConversation) {
+        console.warn(`[context agent=${AGENT_ID}] rest: semantic compaction unavailable; preserving active session`)
+        await runtime.session.save(state.conversation)
+        await resetClientPythonAtSessionBoundary(hooks)
+        return { shouldRest: true }
+      }
       const snapshot = contextArchive().recordRestSnapshot(restConversation, args.note as string | undefined)
       console.log(`[context agent=${AGENT_ID}] rest: archived ${snapshot.sourceCount} raw message(s); active=${snapshot.summaryIds.join(",")}`)
       await saveRestSnapshot(

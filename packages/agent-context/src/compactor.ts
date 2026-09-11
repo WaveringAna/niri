@@ -340,10 +340,10 @@ export type RestCompactionInput = {
  * goes to zero and everything becomes summary — the raw messages remain in the
  * archive and stay reachable by id.
  *
- * Returns the input unchanged if the summarizer declines, so resting is never
- * blocked by a model failure.
+ * Returns null if the summarizer declines so the caller can preserve the
+ * active raw session instead of mistaking it for a semantic rest snapshot.
  */
-export async function commitRestCompaction(input: RestCompactionInput): Promise<Message[]> {
+export async function commitRestCompaction(input: RestCompactionInput): Promise<Message[] | null> {
   const { agentName, prompts, model, circuit } = input
   const compaction = await summarizeConversationViaLLMWithProvenance(
     agentName,
@@ -359,7 +359,7 @@ export async function commitRestCompaction(input: RestCompactionInput): Promise<
       directRecollection: input.directRecollection,
     },
   )
-  if (!compaction) return input.conversation
+  if (!compaction) return null
 
   const committed = await input.lcm.commitLcmCompaction(
     compaction, model, circuit, prompts, "rest-llm", input.grounding,
