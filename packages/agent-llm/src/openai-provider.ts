@@ -300,6 +300,7 @@ async function createStreamedCompletion(
   request: CompletionRequest,
   sink: CompletionStreamSink | null,
   enableThinking: boolean,
+  signal?: AbortSignal,
 ): Promise<CompletionTurnResult> {
   const streamedRequest = {
     ...request,
@@ -308,13 +309,13 @@ async function createStreamedCompletion(
   } as const
 
   try {
-    const stream = await apiClient.chat.completions.create(streamedRequest)
+    const stream = await apiClient.chat.completions.create(streamedRequest, { signal })
     return await consumeCompletionStream(stream as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>, sink, enableThinking)
   } catch (err) {
     // Some gateways reject stream_options.include_usage. Retry without it and
     // accept missing usage numbers rather than failing the whole turn.
     if (shouldRetryWithoutStreamUsage(err)) {
-      const stream = await apiClient.chat.completions.create({ ...request, stream: true } as const)
+      const stream = await apiClient.chat.completions.create({ ...request, stream: true } as const, { signal })
       return await consumeCompletionStream(stream as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>, sink, enableThinking)
     }
     throw err
@@ -360,7 +361,13 @@ export function createOpenAIProvider(config: ProviderEndpointConfig, deps: OpenA
         // unless reasoning is explicitly disabled for tool-bearing requests.
         ...(request.tools.length > 0 ? openRouterToolRequestExtras(config.baseUrl) : {}),
       }
-      const result = await createStreamedCompletion(client, merged, options.sink ?? null, deps.enableThinking)
+      const result = await createStreamedCompletion(
+        client,
+        merged,
+        options.sink ?? null,
+        deps.enableThinking,
+        options.signal,
+      )
       return { ...result, servedBy: deps.slot }
     },
   }

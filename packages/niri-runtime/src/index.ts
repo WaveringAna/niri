@@ -126,11 +126,11 @@ async function main() {
       setTimeout(() => { console.log("[niri] shutdown timed out, forcing exit"); resolve() }, 60_000)
     )
 
+    stopDelegation()
     await Promise.race([shutdown(), timeout])
 
     const cleanup = async () => {
       discordEmbeddingBackfill.stop()
-      stopDelegation()
       await stopProcessJobs()
       if (discordGateway) await discordGateway.stop()
       setDiscordToolsAvailable(false)

@@ -66,7 +66,48 @@ export const defaultResilienceConfig: ResilientCompletionConfig = {
   maxRetryDelayMs: 60_000,
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new Error("operation aborted")
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortReason(signal)
+}
+
+function waitForAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise
+  throwIfAborted(signal)
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal))
+    signal.addEventListener("abort", onAbort, { once: true })
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort)
+        resolve(value)
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort)
+        reject(error)
+      },
+    )
+  })
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms))
+  throwIfAborted(signal)
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(abortReason(signal))
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
+}
 
 class Attempted extends Error {
   constructor(readonly slot: ProviderSlot, readonly cause: unknown) {
@@ -81,7 +122,8 @@ async function attempt(
   options: CompletionOptions,
 ): Promise<CompletionTurnResult> {
   try {
-    return await provider.complete(request, options)
+    throwIfAborted(options.signal)
+    return await waitForAbort(provider.complete(request, options), options.signal)
   } catch (err) {
     throw new Attempted(slot, err)
   }
@@ -107,6 +149,7 @@ export async function completeWithResilience(
   let retries = 0
 
   while (true) {
+    throwIfAborted(options.signal)
     const resolved = await providers.resolvePrimary()
     if (!resolved) throw new Error("no model provider is configured")
 
@@ -122,6 +165,7 @@ export async function completeWithResilience(
       providers.recordSuccess(resolved.provider)
       return result
     } catch (thrown) {
+      throwIfAborted(options.signal)
       const { slot, cause: err } = thrown instanceof Attempted
         ? thrown
         : new Attempted(resolved.slot, thrown)
@@ -166,7 +210,7 @@ export async function completeWithResilience(
       const delayMs = Math.min(config.maxRetryDelayMs, retryDelayMs(err))
       hooks.onRetry?.({ slot, kind, delayMs, error: err })
       console.warn(`[api] ${slot} ${kind} (${errorSummary(err)}); retrying in ${delayMs}ms`)
-      await sleep(delayMs)
+      await sleep(delayMs, options.signal)
     }
   }
 }

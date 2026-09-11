@@ -1,10 +1,12 @@
 import assert from "node:assert/strict"
+import { createServer } from "node:http"
 import { test } from "node:test"
 import OpenAI from "openai"
 import { ProviderConfigError, resolveProviderConfig } from "./config.js"
+import { createOpenAIProvider } from "./openai-provider.js"
 import { createProviderSet, memoryFailoverStore } from "./provider-set.js"
 import { completeWithResilience, defaultResilienceConfig } from "./resilient.js"
-import type { CompletionRequest, CompletionTurnResult, Provider, ProviderSet } from "./types.js"
+import type { CompletionOptions, CompletionRequest, CompletionTurnResult, Provider, ProviderSet } from "./types.js"
 
 const OPENAI_ENV = { MODEL: "gpt-5", OPENAI_API_KEY: "sk-test" }
 
@@ -126,6 +128,40 @@ test("a partially configured summary provider is rejected", () => {
   )
 })
 
+test("OpenAI provider forwards caller cancellation to the HTTP request", async () => {
+  let markRequested!: () => void
+  const requested = new Promise<void>((resolve) => { markRequested = resolve })
+  const server = createServer(() => { markRequested() })
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  assert.ok(address && typeof address === "object")
+
+  const provider = createOpenAIProvider({
+    kind: "openai",
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    apiKey: "sk-test",
+    model: "test",
+    toolChoice: "auto",
+  }, { agentId: "test", slot: "primary", enableThinking: false })
+  const controller = new AbortController()
+  const completion = provider.complete(
+    { model: "test", messages: [], tools: [], tool_choice: "auto" },
+    { signal: controller.signal },
+  )
+
+  try {
+    await requested
+    controller.abort(new Error("stop request"))
+    await assert.rejects(completion)
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})
+
 // ---------------------------------------------------------------------------
 // Resilience
 // ---------------------------------------------------------------------------
@@ -136,7 +172,7 @@ function apiError(status: number, message: string, code?: string): unknown {
 
 function stubProvider(
   id: string,
-  behaviour: (request: CompletionRequest) => Promise<CompletionTurnResult>,
+  behaviour: (request: CompletionRequest, options?: CompletionOptions) => Promise<CompletionTurnResult>,
 ): Provider {
   return {
     id,
@@ -266,6 +302,55 @@ test("retries are bounded and the last error propagates", async () => {
     /service unavailable/,
   )
   assert.equal(calls, FAST.maxRetries + 1)
+})
+
+test("caller abort interrupts an in-flight completion without retrying", async () => {
+  const controller = new AbortController()
+  const cancelled = new Error("task cancelled")
+  let calls = 0
+  let markStarted!: () => void
+  const started = new Promise<void>((resolve) => { markStarted = resolve })
+  const provider = stubProvider("p", async () => {
+    calls++
+    markStarted()
+    return new Promise<CompletionTurnResult>(() => {})
+  })
+
+  const completion = completeWithResilience(
+    stubSet(provider),
+    REQUEST,
+    { currentMessages: () => [] },
+    { signal: controller.signal },
+    FAST,
+  )
+  await started
+  controller.abort(cancelled)
+
+  await assert.rejects(completion, /task cancelled/)
+  assert.equal(calls, 1)
+})
+
+test("caller abort interrupts retry backoff", async () => {
+  const controller = new AbortController()
+  const provider = stubProvider("p", async () => { throw apiError(503, "service unavailable") })
+  let retries = 0
+
+  await assert.rejects(
+    completeWithResilience(
+      stubSet(provider),
+      REQUEST,
+      {
+        currentMessages: () => [],
+        onRetry: () => {
+          retries++
+          controller.abort(new Error("task cancelled during retry"))
+        },
+      },
+      { signal: controller.signal },
+    ),
+    /task cancelled during retry/,
+  )
+  assert.equal(retries, 1)
 })
 
 test("messages are re-read on each attempt so caller edits take effect", async () => {

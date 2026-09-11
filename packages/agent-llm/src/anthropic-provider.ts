@@ -480,7 +480,7 @@ export function createAnthropicProvider(
       }
 
       try {
-        const stream = await client.messages.create({ ...body, stream: true })
+        const stream = await client.messages.create({ ...body, stream: true }, { signal: options.signal })
         const converted = anthropicStreamToOpenAI(stream)
         const result = await consumeAnthropicStream(converted, sink, enableThinking)
         return { ...result, servedBy: deps.slot }

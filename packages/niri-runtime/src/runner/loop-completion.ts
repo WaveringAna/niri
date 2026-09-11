@@ -495,7 +495,7 @@ export async function fetchIsolatedCompletion(
   messages: OpenAI.Chat.ChatCompletionMessageParam[],
   toolDefinitions: ToolDefinition[],
   toolChoice: "required" | "auto" | "none" = "auto",
-  options: { model?: string } = {},
+  options: { model?: string; signal?: AbortSignal } = {},
 ): Promise<CompletionTurnResult> {
   const tools = toolDefinitions as OpenAI.Chat.ChatCompletionTool[]
   return completeWithResilience(

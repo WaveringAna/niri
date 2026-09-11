@@ -29,6 +29,7 @@ export type DelegationMirror = {
 type ActiveTask = {
   cancelled: boolean
   profile: DelegationProfile
+  controller: AbortController
 }
 
 let deliverMain: DeliverMain | null = null
@@ -183,7 +184,7 @@ function truncateResult(result: string): string {
 }
 
 async function runTask(task: DelegatedTask, profile: DelegationProfile): Promise<void> {
-  const active: ActiveTask = { cancelled: false, profile }
+  const active: ActiveTask = { cancelled: false, profile, controller: new AbortController() }
   activeTasks.set(task.id, active)
   updateDelegatedTask(task.id, { status: "running", startedAt: new Date().toISOString() })
   const convId = startConversation(`delegation:${profile.name}`, new Date().toISOString())
@@ -192,6 +193,7 @@ async function runTask(task: DelegatedTask, profile: DelegationProfile): Promise
   try {
     const { runDelegatedSubagent } = await import("./subagent.js")
     const result = await runDelegatedSubagent(convId, task, profile, {
+      signal: active.controller.signal,
       publish: (kind, content) => publishWorkerMessage(task.id, kind, content),
       readInbox: (afterSeq) => listDelegatedTaskMessages(task.id, { afterSeq, limit: 100 }).filter((message) => message.senderKind !== "subagent"),
       waitForInput: (afterSeq, timeoutMs) => waitForInput(task.id, afterSeq, timeoutMs),
@@ -281,6 +283,7 @@ export function stopDelegation(): void {
   stopping = true
   for (const [taskId, active] of activeTasks) {
     active.cancelled = true
+    active.controller.abort(new Error("task cancelled"))
     updateDelegatedTask(taskId, { cancelRequested: true })
     wakeInputWaiters(taskId)
   }
@@ -380,7 +383,10 @@ export async function cancelDelegatedTask(taskId: string): Promise<DelegatedTask
   if (!task) throw new Error(`unknown task ${taskId}`)
   if (["completed", "failed", "cancelled", "interrupted"].includes(task.status)) return task
   const active = activeTasks.get(taskId)
-  if (active) active.cancelled = true
+  if (active) {
+    active.cancelled = true
+    active.controller.abort(new Error("task cancelled"))
+  }
   const cancelled = updateDelegatedTask(taskId, {
     status: active ? task.status : "cancelled",
     cancelRequested: true,

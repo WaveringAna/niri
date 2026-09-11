@@ -36,6 +36,7 @@ const TASK_MESSAGE_TOOL: ToolDefinition = {
 }
 
 export type DelegatedSubagentCallbacks = {
+  signal: AbortSignal
   publish: (kind: Extract<DelegatedMessageKind, "progress" | "question" | "result">, content: string) => Promise<void>
   readInbox: (afterSeq: number) => DelegatedTaskMessage[]
   waitForInput: (afterSeq: number, timeoutMs: number) => Promise<void>
@@ -169,6 +170,8 @@ export async function runDelegatedSubagent(
     resolveShutdown: () => {},
   }
   const deadline = Date.now() + timeoutMs
+  const timeoutSignal = AbortSignal.timeout(timeoutMs)
+  const signal = AbortSignal.any([callbacks.signal, timeoutSignal])
   let lastInboxSeq = 1
   let lastText = ""
   const activeShellSessions = new Set<string>()
@@ -184,7 +187,7 @@ export async function runDelegatedSubagent(
         state.conversation as OpenAI.Chat.ChatCompletionMessageParam[],
         tools,
         "auto",
-        { model: profile.model },
+        { model: profile.model, signal },
       )
       applyUsage(
         state,
@@ -268,6 +271,10 @@ export async function runDelegatedSubagent(
     await callbacks.publish("result", result)
     logMessage(convId, "system", `[delegation] ${result}`)
     return { result, tokenCount: state.tokenCount, contextSize: state.contextSize }
+  } catch (err) {
+    if (callbacks.isCancelled() || callbacks.signal.aborted) throw new Error("task cancelled")
+    if (timeoutSignal.aborted) throw new Error(`task exceeded ${timeoutMs}ms timeout`)
+    throw err
   } finally {
     await terminateShellSessions(activeShellSessions)
   }
