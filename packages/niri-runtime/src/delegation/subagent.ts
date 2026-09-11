@@ -15,6 +15,7 @@ import type { FunctionToolCall } from "../runner/loop-shared"
 import type { LoopState } from "../runner/types"
 import type { DelegationProfile } from "./config"
 import { listDelegationProfileFeedback, type DelegatedTask, type DelegatedTaskMessage, type DelegatedMessageKind } from "./store"
+import { addCompletionUsage, emptyDelegatedTokenUsage, type DelegatedTokenUsage } from "./usage"
 
 const PROFILE_FEEDBACK_MAX_CHARS = 12_000
 
@@ -41,13 +42,12 @@ export type DelegatedSubagentCallbacks = {
   readInbox: (afterSeq: number) => DelegatedTaskMessage[]
   waitForInput: (afterSeq: number, timeoutMs: number) => Promise<void>
   isCancelled: () => boolean
-  recordUsage: (tokenCount: number, contextSize: number) => void
+  recordUsage: (usage: DelegatedTokenUsage) => void
 }
 
 export type DelegatedSubagentResult = {
   result: string
-  tokenCount: number
-  contextSize: number
+  usage: DelegatedTokenUsage
 }
 
 function workerTools(profile: DelegationProfile): ToolDefinition[] {
@@ -174,6 +174,7 @@ export async function runDelegatedSubagent(
   const signal = AbortSignal.any([callbacks.signal, timeoutSignal])
   let lastInboxSeq = 1
   let lastText = ""
+  let usage = emptyDelegatedTokenUsage()
   const activeShellSessions = new Set<string>()
 
   try {
@@ -195,7 +196,8 @@ export async function runDelegatedSubagent(
         { elapsedMs: response.elapsedMs, tokensPerSecond: response.tokensPerSecond },
         { emitEvent: false },
       )
-      callbacks.recordUsage(state.tokenCount, state.contextSize)
+      usage = addCompletionUsage(usage, response.usage)
+      callbacks.recordUsage(usage)
       addAssistantMessage(convId, state, response.message)
       remainingTaskMs(deadline, timeoutMs, callbacks)
       const text = typeof response.message.content === "string" ? response.message.content.trim() : ""
@@ -205,7 +207,7 @@ export async function runDelegatedSubagent(
       if (calls.length === 0) {
         const result = lastText || "task completed without a textual result"
         await callbacks.publish("result", result)
-        return { result, tokenCount: state.tokenCount, contextSize: state.contextSize }
+        return { result, usage }
       }
 
       let publishedResult: string | null = null
@@ -262,7 +264,7 @@ export async function runDelegatedSubagent(
       }
 
       if (publishedResult) {
-        return { result: publishedResult, tokenCount: state.tokenCount, contextSize: state.contextSize }
+        return { result: publishedResult, usage }
       }
     }
 
@@ -270,7 +272,7 @@ export async function runDelegatedSubagent(
     const result = lastText || `task reached its ${profile.maxTurns}-turn limit without a final result`
     await callbacks.publish("result", result)
     logMessage(convId, "system", `[delegation] ${result}`)
-    return { result, tokenCount: state.tokenCount, contextSize: state.contextSize }
+    return { result, usage }
   } catch (err) {
     if (callbacks.isCancelled() || callbacks.signal.aborted) throw new Error("task cancelled")
     if (timeoutSignal.aborted) throw new Error(`task exceeded ${timeoutMs}ms timeout`)

@@ -10,6 +10,30 @@ test("every human in a mapped Gastown thread can steer the same task", async () 
   process.env.NIRI_ENV = "local"
   process.env.NIRI_DELEGATION_CONFIG = JSON.stringify({ enabled: false, profiles: [] })
 
+  const Database = (await import("better-sqlite3")).default
+  const legacyDb = new Database(path.join(home, "niri.db"))
+  legacyDb.exec(`
+    create table delegated_tasks (
+      id text primary key,
+      profile text not null,
+      objective text not null,
+      status text not null,
+      created_by_kind text not null,
+      created_by_id text,
+      created_by_name text,
+      created_at text not null,
+      started_at text,
+      completed_at text,
+      result_summary text,
+      error text,
+      discord_thread_id text unique,
+      cancel_requested integer not null default 0,
+      token_count integer not null default 0,
+      context_size integer not null default 0
+    )
+  `)
+  legacyDb.close()
+
   const { initDb } = await import("../db.js")
   const {
     appendDelegatedTaskMessage,
@@ -111,7 +135,13 @@ test("every human in a mapped Gastown thread can steer the same task", async () 
   assert.match(prompt, new RegExp(task.id))
 
   const verbose = createDelegatedTask({ profile: "researcher", objective: "o".repeat(500) })
-  updateDelegatedTask(verbose.id, { resultSummary: "r".repeat(1000), error: "e".repeat(1000) })
+  updateDelegatedTask(verbose.id, {
+    resultSummary: "r".repeat(1000),
+    error: "e".repeat(1000),
+    cacheReadTokens: 120,
+    uncachedInputTokens: 30,
+    outputTokens: 7,
+  })
   const status = describeDelegatedTask(verbose.id)
   assert.equal("objective" in status, false)
   assert.equal("resultSummary" in status, false)
@@ -119,5 +149,10 @@ test("every human in a mapped Gastown thread can steer the same task", async () 
   assert.equal(status.objectivePreview.length, 301)
   assert.equal(status.hasResult, true)
   assert.equal(status.errorPreview?.length, 501)
+  assert.equal(status.cacheReadTokens, 120)
+  assert.equal(status.uncachedInputTokens, 30)
+  assert.equal(status.outputTokens, 7)
+  assert.equal("tokenCount" in status, false)
+  assert.equal("contextSize" in status, false)
   assert.ok(recentDelegatedTasks().every((entry) => !("resultSummary" in entry)))
 })

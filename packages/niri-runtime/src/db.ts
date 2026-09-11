@@ -210,9 +210,12 @@ export function initDb(): void {
       result_summary    text,
       error             text,
       discord_thread_id text unique,
-      cancel_requested  integer not null default 0,
-      token_count       integer not null default 0,
-      context_size      integer not null default 0
+      cancel_requested      integer not null default 0,
+      token_count           integer not null default 0,
+      context_size          integer not null default 0,
+      cache_read_tokens     integer not null default 0,
+      uncached_input_tokens integer not null default 0,
+      output_tokens         integer not null default 0
     );
 
     create index if not exists idx_delegated_tasks_status
@@ -336,6 +339,17 @@ export function initDb(): void {
       updated_at   text    not null default (datetime('now'))
     );
   `)
+
+  const delegatedTaskColumns = new Set(
+    (db.prepare("pragma table_info(delegated_tasks)").all() as Array<{ name: string }>).map(({ name }) => name),
+  )
+  for (const [name, declaration] of [
+    ["cache_read_tokens", "integer not null default 0"],
+    ["uncached_input_tokens", "integer not null default 0"],
+    ["output_tokens", "integer not null default 0"],
+  ] as const) {
+    if (!delegatedTaskColumns.has(name)) db.exec(`alter table delegated_tasks add column ${name} ${declaration}`)
+  }
 
   if (vecAvailable) {
     db.exec(`

@@ -237,14 +237,27 @@ async function* anthropicStreamToOpenAI(
   stream: AsyncIterable<Anthropic.Messages.RawMessageStreamEvent>,
 ): AsyncGenerator<OpenAI.Chat.ChatCompletionChunk> {
   const toolBuffers = new Map<number, { id: string; name: string; arguments: string }>()
-  let usage: { prompt_tokens: number; completion_tokens: number } | undefined
+  let usage: {
+    prompt_tokens: number
+    completion_tokens: number
+    cached_tokens: number
+    cache_write_tokens: number
+  } | undefined
 
   for await (const event of stream) {
     switch (event.type) {
       case "message_start": {
-        const inputTokens = event.message.usage?.input_tokens
-        if (inputTokens != null) {
-          usage = { prompt_tokens: inputTokens, completion_tokens: 0 }
+        const rawUsage = event.message.usage
+        if (rawUsage) {
+          const uncachedInputTokens = rawUsage.input_tokens ?? 0
+          const cachedTokens = rawUsage.cache_read_input_tokens ?? 0
+          const cacheWriteTokens = rawUsage.cache_creation_input_tokens ?? 0
+          usage = {
+            prompt_tokens: uncachedInputTokens + cachedTokens + cacheWriteTokens,
+            completion_tokens: 0,
+            cached_tokens: cachedTokens,
+            cache_write_tokens: cacheWriteTokens,
+          }
         }
         yield makeChunk({ role: "assistant" })
         break
@@ -320,6 +333,10 @@ async function* anthropicStreamToOpenAI(
         prompt_tokens: usage.prompt_tokens,
         completion_tokens: usage.completion_tokens,
         total_tokens: usage.prompt_tokens + usage.completion_tokens,
+        prompt_tokens_details: {
+          cached_tokens: usage.cached_tokens,
+          cache_write_tokens: usage.cache_write_tokens,
+        },
       },
     }
   }

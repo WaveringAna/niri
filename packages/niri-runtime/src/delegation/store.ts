@@ -20,8 +20,9 @@ export type DelegatedTask = {
   error: string | null
   discordThreadId: string | null
   cancelRequested: boolean
-  tokenCount: number
-  contextSize: number
+  cacheReadTokens: number
+  uncachedInputTokens: number
+  outputTokens: number
 }
 
 export type DelegatedTaskMessage = {
@@ -60,8 +61,9 @@ type TaskRow = {
   error: string | null
   discord_thread_id: string | null
   cancel_requested: number
-  token_count: number
-  context_size: number
+  cache_read_tokens: number
+  uncached_input_tokens: number
+  output_tokens: number
 }
 
 type MessageRow = {
@@ -101,8 +103,9 @@ function taskFromRow(row: TaskRow): DelegatedTask {
     error: row.error,
     discordThreadId: row.discord_thread_id,
     cancelRequested: row.cancel_requested === 1,
-    tokenCount: row.token_count,
-    contextSize: row.context_size,
+    cacheReadTokens: row.cache_read_tokens,
+    uncachedInputTokens: row.uncached_input_tokens,
+    outputTokens: row.output_tokens,
   }
 }
 
@@ -154,8 +157,9 @@ export function createDelegatedTask(input: {
     error: null,
     discordThreadId: null,
     cancelRequested: false,
-    tokenCount: 0,
-    contextSize: 0,
+    cacheReadTokens: 0,
+    uncachedInputTokens: 0,
+    outputTokens: 0,
   }
   getDb().prepare(`
     insert into delegated_tasks (
@@ -192,8 +196,9 @@ export function updateDelegatedTask(id: string, patch: {
   error?: string | null
   discordThreadId?: string | null
   cancelRequested?: boolean
-  tokenCount?: number
-  contextSize?: number
+  cacheReadTokens?: number
+  uncachedInputTokens?: number
+  outputTokens?: number
 }): DelegatedTask | null {
   const columns: string[] = []
   const values: unknown[] = []
@@ -205,8 +210,9 @@ export function updateDelegatedTask(id: string, patch: {
     ["error", "error", (value) => value],
     ["discordThreadId", "discord_thread_id", (value) => value],
     ["cancelRequested", "cancel_requested", (value) => value ? 1 : 0],
-    ["tokenCount", "token_count", (value) => value],
-    ["contextSize", "context_size", (value) => value],
+    ["cacheReadTokens", "cache_read_tokens", (value) => value],
+    ["uncachedInputTokens", "uncached_input_tokens", (value) => value],
+    ["outputTokens", "output_tokens", (value) => value],
   ]
   for (const [key, column, convert] of entries) {
     if (!(key in patch)) continue

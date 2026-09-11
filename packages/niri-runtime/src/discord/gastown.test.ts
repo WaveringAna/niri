@@ -18,8 +18,9 @@ const task: DelegatedTask = {
   error: null,
   discordThreadId: null,
   cancelRequested: false,
-  tokenCount: 0,
-  contextSize: 0,
+  cacheReadTokens: 0,
+  uncachedInputTokens: 0,
+  outputTokens: 0,
 }
 
 test("Gastown forum creation executes a webhook as the task worker", () => {

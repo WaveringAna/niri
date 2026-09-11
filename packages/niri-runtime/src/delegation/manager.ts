@@ -16,6 +16,7 @@ import {
   type DelegatedTask,
   type DelegatedTaskMessage,
 } from "./store"
+import { formatDelegatedTokenUsage, totalDelegatedTokens } from "./usage"
 
 type DeliverMain = (event: UserMessage, options?: { priority?: boolean }) => void
 
@@ -198,8 +199,8 @@ async function runTask(task: DelegatedTask, profile: DelegationProfile): Promise
       readInbox: (afterSeq) => listDelegatedTaskMessages(task.id, { afterSeq, limit: 100 }).filter((message) => message.senderKind !== "subagent"),
       waitForInput: (afterSeq, timeoutMs) => waitForInput(task.id, afterSeq, timeoutMs),
       isCancelled: () => active.cancelled || Boolean(getDelegatedTask(task.id)?.cancelRequested),
-      recordUsage: (tokenCount, contextSize) => {
-        updateDelegatedTask(task.id, { tokenCount, contextSize })
+      recordUsage: (usage) => {
+        updateDelegatedTask(task.id, usage)
       },
     }, delegationConfig.timeoutMs)
     const cancelled = active.cancelled || Boolean(getDelegatedTask(task.id)?.cancelRequested)
@@ -207,16 +208,15 @@ async function runTask(task: DelegatedTask, profile: DelegationProfile): Promise
       status: cancelled ? "cancelled" : "completed",
       completedAt: new Date().toISOString(),
       resultSummary: result.result,
-      tokenCount: result.tokenCount,
-      contextSize: result.contextSize,
+      ...result.usage,
     })
-    endConversation(convId, result.tokenCount)
+    endConversation(convId, totalDelegatedTokens(result.usage))
     if (completed) {
       await updateMirrorStatus(completed.id)
       if (!cancelled) {
         const thread = completed.discordThreadId && mirror ? `\nthread: ${mirror.threadUrl(completed.discordThreadId)}` : ""
         deliverToMain(
-          `[delegated task completed]\ntask_id: ${completed.id}\nworker: ${completed.profile}\nusage: ${completed.tokenCount} tokens\n\n${truncateResult(result.result)}${thread}`,
+          `[delegated task completed]\ntask_id: ${completed.id}\nworker: ${completed.profile}\nusage: ${formatDelegatedTokenUsage(completed)}\n\n${truncateResult(result.result)}${thread}`,
           completed,
         )
       }
@@ -229,7 +229,8 @@ async function runTask(task: DelegatedTask, profile: DelegationProfile): Promise
       completedAt: new Date().toISOString(),
       error: message,
     })
-    endConversation(convId, getDelegatedTask(task.id)?.tokenCount ?? 0)
+    const usage = getDelegatedTask(task.id)
+    endConversation(convId, usage ? totalDelegatedTokens(usage) : 0)
     if (failed) {
       const event = appendDelegatedTaskMessage({
         taskId: task.id,
